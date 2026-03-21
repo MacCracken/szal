@@ -1,0 +1,31 @@
+[package]
+name = "szal"
+version = "0.21.3"
+edition = "2024"
+rust-version = "1.89"
+license = "AGPL-3.0-only"
+description = "Workflow engine — step/flow execution with branching, retry, rollback, and parallel stages"
+homepage = "https://github.com/MacCracken/szal"
+repository = "https://github.com/MacCracken/szal"
+readme = "README.md"
+keywords = ["workflow", "pipeline", "orchestration", "dag", "automation"]
+categories = ["asynchronous", "concurrency"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio-test = "0.4"
+
+[[bench]]
+name = "workflow"
+harness = false
