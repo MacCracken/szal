@@ -132,3 +132,39 @@ mod tests {
         assert_eq!(back.name, "test");
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn serde_roundtrip_any(
+            name in "[a-z][a-z0-9_-]{0,30}",
+            timeout in 1u64..600_000,
+            retries in 0u32..10,
+            delay in 0u64..60_000,
+        ) {
+            let step = StepDef::new(name.clone())
+                .with_timeout(timeout)
+                .with_retries(retries, delay);
+            let json = serde_json::to_string(&step).unwrap();
+            let back: StepDef = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(&back.name, &name);
+            prop_assert_eq!(back.timeout_ms, timeout);
+            prop_assert_eq!(back.max_retries, retries);
+            prop_assert_eq!(back.retry_delay_ms, delay);
+        }
+
+        #[test]
+        fn builder_preserves_id(
+            name in "[a-z][a-z0-9_-]{0,30}",
+        ) {
+            let step = StepDef::new(name);
+            let id = step.id;
+            let step = step.with_timeout(5000).with_retries(2, 1000).with_rollback();
+            prop_assert_eq!(step.id, id);
+        }
+    }
+}

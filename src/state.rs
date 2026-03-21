@@ -84,4 +84,85 @@ mod tests {
     fn display() {
         assert_eq!(WorkflowState::RollingBack.to_string(), "rolling_back");
     }
+
+    #[test]
+    fn no_transition_from_terminal() {
+        let terminals = [
+            WorkflowState::Completed,
+            WorkflowState::RolledBack,
+            WorkflowState::Cancelled,
+        ];
+        let all = [
+            WorkflowState::Created,
+            WorkflowState::Running,
+            WorkflowState::Paused,
+            WorkflowState::Completed,
+            WorkflowState::Failed,
+            WorkflowState::RollingBack,
+            WorkflowState::RolledBack,
+            WorkflowState::Cancelled,
+        ];
+        for t in &terminals {
+            for target in &all {
+                assert!(
+                    !t.valid_transition(target),
+                    "{t} should not transition to {target}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let state = WorkflowState::RollingBack;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: WorkflowState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, state);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_state() -> impl Strategy<Value = WorkflowState> {
+        prop_oneof![
+            Just(WorkflowState::Created),
+            Just(WorkflowState::Running),
+            Just(WorkflowState::Paused),
+            Just(WorkflowState::Completed),
+            Just(WorkflowState::Failed),
+            Just(WorkflowState::RollingBack),
+            Just(WorkflowState::RolledBack),
+            Just(WorkflowState::Cancelled),
+        ]
+    }
+
+    proptest! {
+        /// True terminal states (no outgoing transitions) must reject all targets.
+        /// Note: Failed is NOT fully terminal — it can transition to RollingBack.
+        #[test]
+        fn fully_terminal_states_have_no_outgoing(from in arb_state(), to in arb_state()) {
+            let fully_terminal = matches!(
+                from,
+                WorkflowState::Completed | WorkflowState::RolledBack | WorkflowState::Cancelled
+            );
+            if fully_terminal {
+                prop_assert!(!from.valid_transition(&to));
+            }
+        }
+
+        #[test]
+        fn display_never_empty(state in arb_state()) {
+            prop_assert!(!state.to_string().is_empty());
+        }
+
+        #[test]
+        fn serde_roundtrip_any(state in arb_state()) {
+            let json = serde_json::to_string(&state).unwrap();
+            let back: WorkflowState = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(back, state);
+        }
+    }
 }

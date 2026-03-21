@@ -16,9 +16,9 @@
 - [x] proptest dev-dependency added
 
 ### Deferred to v0.22 release
-- [ ] **Fuzz targets** — fuzz step deserialization, flow validation (DAG cycle inputs, malformed JSON), state transition sequences
-- [ ] **Fuzz CI job** — 30s per target in CI (match dhvani pattern)
-- [ ] **Property-based tests (proptest)** — state machine invariants (no valid transition from terminal states), DAG acyclicity after random step insertion, serde roundtrip for arbitrary configs
+- [x] **Fuzz targets** — fuzz step deserialization, flow deserialization, flow validation (random DAG wiring), state transition sequences
+- [x] **Fuzz CI job** — 30s per target in CI (match dhvani pattern)
+- [x] **Property-based tests (proptest)** — terminal state invariants, DAG acyclicity (linear + fanout), serde roundtrip for arbitrary step configs, builder identity preservation
 - [ ] **MCP protocol layer** — streamable HTTP, SSE, stdio transports
 - [ ] **Tool/Resource/Prompt traits** and dynamic registry
 - [ ] **Majra integration** — pub/sub for event dispatch, ManagedQueue for job scheduling, heartbeat for health

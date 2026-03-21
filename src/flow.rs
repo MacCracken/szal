@@ -187,4 +187,62 @@ mod tests {
         assert!(flow.rollback_on_failure);
         assert_eq!(flow.timeout_ms, Some(120_000));
     }
+
+    #[test]
+    fn flow_serde_roundtrip() {
+        let build = StepDef::new("build");
+        let test = StepDef::new("test").depends_on(build.id);
+        let mut flow = FlowDef::new("pipeline", FlowMode::Dag).with_rollback();
+        flow.add_step(build);
+        flow.add_step(test);
+        let json = serde_json::to_string(&flow).unwrap();
+        let back: FlowDef = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "pipeline");
+        assert_eq!(back.steps.len(), 2);
+        assert!(back.rollback_on_failure);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn linear_dag_never_cycles(n in 2usize..50) {
+            let mut flow = FlowDef::new("linear", FlowMode::Dag);
+            let mut prev_id = None;
+            for i in 0..n {
+                let mut step = StepDef::new(format!("s{i}"));
+                if let Some(pid) = prev_id {
+                    step = step.depends_on(pid);
+                }
+                prev_id = Some(step.id);
+                flow.add_step(step);
+            }
+            prop_assert!(flow.validate().is_ok());
+        }
+
+        #[test]
+        fn fanout_dag_never_cycles(leaves in 2usize..50) {
+            let root = StepDef::new("root");
+            let root_id = root.id;
+            let mut flow = FlowDef::new("fanout", FlowMode::Dag);
+            flow.add_step(root);
+            for i in 0..leaves {
+                flow.add_step(StepDef::new(format!("leaf{i}")).depends_on(root_id));
+            }
+            prop_assert!(flow.validate().is_ok());
+        }
+
+        #[test]
+        fn sequential_always_valid(n in 1usize..50) {
+            let mut flow = FlowDef::new("seq", FlowMode::Sequential);
+            for i in 0..n {
+                flow.add_step(StepDef::new(format!("s{i}")));
+            }
+            prop_assert!(flow.validate().is_ok());
+        }
+    }
 }

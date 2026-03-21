@@ -1,0 +1,44 @@
+[package]
+name = "szal-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.szal]
+path = ".."
+
+[[bin]]
+name = "fuzz_step_deser"
+path = "fuzz_targets/fuzz_step_deser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_flow_deser"
+path = "fuzz_targets/fuzz_flow_deser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_flow_validate"
+path = "fuzz_targets/fuzz_flow_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_state_transitions"
+path = "fuzz_targets/fuzz_state_transitions.rs"
+test = false
+doc = false
+bench = false

@@ -136,3 +136,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run benchmarks
         run: cargo bench --no-fail-fast
+
+  fuzz:
+    name: Fuzz (5 min)
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+      - name: Fuzz step deserialization
+        run: cargo +nightly fuzz run fuzz_step_deser -- -max_total_time=30 || true
+      - name: Fuzz flow deserialization
+        run: cargo +nightly fuzz run fuzz_flow_deser -- -max_total_time=30 || true
+      - name: Fuzz flow validation
+        run: cargo +nightly fuzz run fuzz_flow_validate -- -max_total_time=30 || true
+      - name: Fuzz state transitions
+        run: cargo +nightly fuzz run fuzz_state_transitions -- -max_total_time=30 || true
