@@ -25,7 +25,32 @@ chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
 tokio-test = "0.4"
+proptest = "1"
 
 [[bench]]
 name = "workflow"
 harness = false
+
+[[bench]]
+name = "step"
+harness = false
+
+[[bench]]
+name = "flow"
+harness = false
+
+[[bench]]
+name = "state"
+harness = false
+
+[[example]]
+name = "sequential"
+
+[[example]]
+name = "dag"
+
+[[example]]
+name = "state_machine"
+
+[[example]]
+name = "retry_rollback"
