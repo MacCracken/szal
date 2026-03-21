@@ -29,6 +29,13 @@
 - [ ] **Majra ManagedQueue** — queue-backed step execution for distributed workloads
 - [ ] **Majra heartbeat** — engine health reporting
 
+### Engineering Backlog
+- [ ] Extract duplicate "unlock dependents" DAG logic into helper (`engine.rs` — 3 identical blocks)
+- [ ] Hierarchical execution mode — currently a silent no-op delegating to sequential
+- [ ] Integrate `EventBus` into `Engine::run()` — bus exists but is disconnected from execution
+- [ ] `DirList` recursive mode silently swallows subdirectory read errors
+- [ ] `Exec` command metacharacter filter is misleading — `Command::new()` doesn't use a shell; validate `cwd` for path traversal instead
+
 ## v0.23 — Agent Orchestration + LLM Gateway
 
 - [ ] Port daimon agent orchestrator (sub-agent delegation, swarms, teams, DAG workflows)

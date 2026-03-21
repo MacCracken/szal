@@ -49,7 +49,7 @@ pub fn register_tools() -> Dispatcher {
             Arc::new(move |args: serde_json::Value| {
                 let t = t.clone();
                 let rt = tokio::runtime::Handle::current();
-                std::thread::scope(|_| rt.block_on(async { t.call(args).await }))
+                rt.block_on(t.call(args))
             }),
         );
     }

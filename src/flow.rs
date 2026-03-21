@@ -108,6 +108,11 @@ impl FlowDef {
     pub fn validate(&self) -> crate::Result<()> {
         if self.mode == FlowMode::Dag {
             self.check_cycles()?;
+        } else if self.steps.iter().any(|s| !s.depends_on.is_empty()) {
+            return Err(crate::SzalError::InvalidFlow(format!(
+                "steps have dependencies but flow mode is {} (use dag mode for dependencies)",
+                self.mode
+            )));
         }
         Ok(())
     }

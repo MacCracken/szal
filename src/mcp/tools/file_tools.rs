@@ -35,7 +35,12 @@ impl Tool for FileRead {
             match std::fs::read_to_string(path) {
                 Ok(content) => {
                     if content.len() > max_bytes {
-                        result_ok(&content[..max_bytes])
+                        let end = content[..max_bytes]
+                            .char_indices()
+                            .last()
+                            .map(|(i, c)| i + c.len_utf8())
+                            .unwrap_or(0);
+                        result_ok(&content[..end])
                     } else {
                         result_ok(&content)
                     }
@@ -189,7 +194,7 @@ impl Tool for FileStat {
                 None => return result_error("missing required field: path"),
             };
 
-            match std::fs::metadata(path) {
+            match std::fs::symlink_metadata(path) {
                 Ok(meta) => {
                     let kind = if meta.is_dir() {
                         "directory"

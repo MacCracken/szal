@@ -42,7 +42,7 @@ impl WorkflowState {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::Failed | Self::RolledBack | Self::Cancelled
+            Self::Completed | Self::RolledBack | Self::Cancelled
         )
     }
 
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn terminal_states() {
         assert!(WorkflowState::Completed.is_terminal());
-        assert!(WorkflowState::Failed.is_terminal());
+        assert!(!WorkflowState::Failed.is_terminal());
         assert!(WorkflowState::RolledBack.is_terminal());
         assert!(WorkflowState::Cancelled.is_terminal());
         assert!(!WorkflowState::Running.is_terminal());

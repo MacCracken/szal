@@ -140,12 +140,11 @@ impl Tool for RandomToken {
         Box::pin(async move {
             let bytes = args.get("bytes").and_then(|v| v.as_u64()).unwrap_or(32).min(256) as usize;
 
-            // Use UUIDs as entropy source (no external deps needed)
-            let mut hex = String::with_capacity(bytes * 2);
-            while hex.len() < bytes * 2 {
-                hex.push_str(&uuid::Uuid::new_v4().simple().to_string());
-            }
-            hex.truncate(bytes * 2);
+            let mut buf = vec![0u8; bytes];
+            use std::io::Read;
+            let mut f = std::fs::File::open("/dev/urandom").unwrap();
+            f.read_exact(&mut buf).unwrap();
+            let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
             result_ok(&hex)
         })
     }

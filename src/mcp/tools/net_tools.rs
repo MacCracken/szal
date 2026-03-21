@@ -207,13 +207,14 @@ impl Tool for UrlEncode {
 
             match op {
                 "encode" => {
-                    let encoded: String = input.chars().map(|c| {
-                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
-                            c.to_string()
+                    let mut encoded = String::new();
+                    for byte in input.bytes() {
+                        if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+                            encoded.push(byte as char);
                         } else {
-                            format!("%{:02X}", c as u32)
+                            encoded.push_str(&format!("%{:02X}", byte));
                         }
-                    }).collect();
+                    }
                     result_ok(&encoded)
                 }
                 "decode" => {

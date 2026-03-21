@@ -164,8 +164,8 @@ impl Engine {
     async fn run_parallel(
         &self,
         steps: &[StepDef],
-        _timeout_ms: u64,
-        _start: std::time::Instant,
+        timeout_ms: u64,
+        start: std::time::Instant,
     ) -> Vec<StepResult> {
         let sem = Arc::new(Semaphore::new(self.config.max_concurrency));
         let mut handles = Vec::with_capacity(steps.len());
@@ -184,6 +184,18 @@ impl Engine {
 
         let mut results = Vec::with_capacity(handles.len());
         for (handle, original_id) in handles.into_iter().zip(step_ids) {
+            if start.elapsed().as_millis() as u64 > timeout_ms {
+                handle.abort();
+                results.push(StepResult {
+                    step_id: original_id,
+                    status: StepStatus::Skipped,
+                    output: serde_json::json!(null),
+                    duration_ms: 0,
+                    attempts: 0,
+                    error: Some("flow timeout exceeded".into()),
+                });
+                continue;
+            }
             match handle.await {
                 Ok(result) => results.push(result),
                 Err(e) => results.push(StepResult {
@@ -294,14 +306,13 @@ impl Engine {
             for (handle, original_id) in handles.into_iter().zip(dag_step_ids) {
                 match handle.await {
                     Ok(result) => {
-                        let id = result.step_id;
                         if result.status == StepStatus::Completed {
-                            completed.insert(id);
+                            completed.insert(original_id);
                         } else {
-                            failed.insert(id);
+                            failed.insert(original_id);
                         }
                         // Unlock dependents
-                        if let Some(deps) = dependents.get(&id) {
+                        if let Some(deps) = dependents.get(&original_id) {
                             for &dep_id in deps {
                                 if let Some(deg) = in_degree.get_mut(&dep_id) {
                                     *deg = deg.saturating_sub(1);
@@ -350,6 +361,7 @@ impl Engine {
 async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> StepResult {
     let max_attempts = step.max_retries + 1;
     let mut last_error = None;
+    let total_start = std::time::Instant::now();
 
     for attempt in 1..=max_attempts {
         let step_start = std::time::Instant::now();
@@ -395,7 +407,7 @@ async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> Ste
         step_id: step.id,
         status: StepStatus::Failed,
         output: serde_json::json!(null),
-        duration_ms: 0,
+        duration_ms: total_start.elapsed().as_millis() as u64,
         attempts: max_attempts,
         error: last_error,
     }
