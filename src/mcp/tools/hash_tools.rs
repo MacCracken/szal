@@ -3,6 +3,7 @@
 use crate::mcp::{Tool, tool_def, result_ok, result_error};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
+use sha2::Digest;
 use std::pin::Pin;
 
 
@@ -36,37 +37,13 @@ impl Tool for Sha256 {
                 return result_error("provide either 'input' or 'file'");
             };
 
-            // Use system sha256sum for real hashing
-            let output = tokio::process::Command::new("sha256sum")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn();
-
-            match output {
-                Ok(mut child) => {
-                    use tokio::io::AsyncWriteExt;
-                    if let Some(mut stdin) = child.stdin.take() {
-                        let _ = stdin.write_all(&data).await;
-                        drop(stdin);
-                    }
-                    match child.wait_with_output().await {
-                        Ok(out) => {
-                            let hash = String::from_utf8_lossy(&out.stdout)
-                                .split_whitespace()
-                                .next()
-                                .unwrap_or("")
-                                .to_string();
-                            result_ok(&json!({
-                                "algorithm": "sha256",
-                                "hash": hash,
-                                "input_bytes": data.len(),
-                            }).to_string())
-                        }
-                        Err(e) => result_error(format!("sha256sum failed: {e}")),
-                    }
-                }
-                Err(e) => result_error(format!("sha256sum not available: {e}")),
-            }
+            let hash = sha2::Sha256::digest(&data);
+            let hex = format!("{hash:x}");
+            result_ok(&serde_json::to_string_pretty(&json!({
+                "algorithm": "sha256",
+                "hash": hex,
+                "input_bytes": data.len(),
+            })).unwrap_or_default())
         })
     }
 }
@@ -93,32 +70,9 @@ impl Tool for Md5 {
                 None => return result_error("missing required field: input"),
             };
 
-            let output = tokio::process::Command::new("md5sum")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn();
-
-            match output {
-                Ok(mut child) => {
-                    use tokio::io::AsyncWriteExt;
-                    if let Some(mut stdin) = child.stdin.take() {
-                        let _ = stdin.write_all(input.as_bytes()).await;
-                        drop(stdin);
-                    }
-                    match child.wait_with_output().await {
-                        Ok(out) => {
-                            let hash = String::from_utf8_lossy(&out.stdout)
-                                .split_whitespace()
-                                .next()
-                                .unwrap_or("")
-                                .to_string();
-                            result_ok(&hash)
-                        }
-                        Err(e) => result_error(format!("md5sum failed: {e}")),
-                    }
-                }
-                Err(e) => result_error(format!("md5sum not available: {e}")),
-            }
+            let hash = md5::Md5::digest(input.as_bytes());
+            let hex = format!("{hash:x}");
+            result_ok(&hex)
         })
     }
 }
@@ -142,8 +96,13 @@ impl Tool for RandomToken {
 
             let mut buf = vec![0u8; bytes];
             use std::io::Read;
-            let mut f = std::fs::File::open("/dev/urandom").unwrap();
-            f.read_exact(&mut buf).unwrap();
+            let mut f = match std::fs::File::open("/dev/urandom") {
+                Ok(f) => f,
+                Err(e) => return result_error(format!("failed to open /dev/urandom: {e}")),
+            };
+            if let Err(e) = f.read_exact(&mut buf) {
+                return result_error(format!("failed to read random bytes: {e}"));
+            }
             let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
             result_ok(&hex)
         })

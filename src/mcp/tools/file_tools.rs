@@ -6,6 +6,46 @@ use serde_json::json;
 use std::path::Path;
 use std::pin::Pin;
 
+/// Validate that a path resolves to a location under the current working directory.
+/// For paths that don't exist yet (e.g. FileWrite to a new file), the parent must exist.
+fn validate_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let p = std::path::Path::new(path);
+
+    // Resolve to absolute path
+    let resolved = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("failed to get cwd: {e}"))?
+            .join(p)
+    };
+
+    // Canonicalize to resolve symlinks and ..
+    // For new files (FileWrite), parent must exist
+    let canonical = if resolved.exists() {
+        resolved.canonicalize()
+            .map_err(|e| format!("failed to resolve path: {e}"))?
+    } else {
+        // For non-existent paths, canonicalize the parent
+        let parent = resolved.parent()
+            .ok_or_else(|| "invalid path".to_string())?;
+        let canonical_parent = parent.canonicalize()
+            .map_err(|e| format!("failed to resolve parent path: {e}"))?;
+        canonical_parent.join(resolved.file_name().unwrap_or_default())
+    };
+
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("failed to get cwd: {e}"))?
+        .canonicalize()
+        .map_err(|e| format!("failed to resolve cwd: {e}"))?;
+
+    if !canonical.starts_with(&cwd) {
+        return Err(format!("path '{}' is outside working directory", path));
+    }
+
+    Ok(canonical)
+}
+
 
 
 /// Read a file's contents.
@@ -30,6 +70,11 @@ impl Tool for FileRead {
                 Some(p) => p,
                 None => return result_error("missing required field: path"),
             };
+            let path = match validate_path(path) {
+                Ok(p) => p.display().to_string(),
+                Err(e) => return result_error(e),
+            };
+            let path = path.as_str();
             let max_bytes = args.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(1_048_576) as usize;
 
             match std::fs::read_to_string(path) {
@@ -74,6 +119,11 @@ impl Tool for FileWrite {
                 Some(p) => p,
                 None => return result_error("missing required field: path"),
             };
+            let path = match validate_path(path) {
+                Ok(p) => p.display().to_string(),
+                Err(e) => return result_error(e),
+            };
+            let path = path.as_str();
             let content = match args.get("content").and_then(|v| v.as_str()) {
                 Some(c) => c,
                 None => return result_error("missing required field: content"),
@@ -119,11 +169,16 @@ impl Tool for DirList {
     fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            let path = match validate_path(path) {
+                Ok(p) => p.display().to_string(),
+                Err(e) => return result_error(e),
+            };
+            let path = path.as_str();
             let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
-            let max = args.get("max_entries").and_then(|v| v.as_u64()).unwrap_or(500) as usize;
+            let max = args.get("max_entries").and_then(|v| v.as_u64()).unwrap_or(500).min(10_000) as usize;
 
             let mut entries = Vec::new();
-            if let Err(e) = collect_dir(Path::new(path), recursive, max, &mut entries) {
+            if let Err(e) = collect_dir(Path::new(path), recursive, max, &mut entries, 0) {
                 return result_error(format!("failed to list {path}: {e}"));
             }
 
@@ -137,7 +192,11 @@ fn collect_dir(
     recursive: bool,
     max: usize,
     entries: &mut Vec<serde_json::Value>,
+    depth: usize,
 ) -> std::io::Result<()> {
+    if depth > 20 {
+        return Ok(());
+    }
     for entry in std::fs::read_dir(path)? {
         if entries.len() >= max {
             break;
@@ -168,7 +227,7 @@ fn collect_dir(
         entries.push(info);
 
         if recursive && ft.is_dir() && entries.len() < max {
-            let _ = collect_dir(&entry.path(), true, max, entries);
+            let _ = collect_dir(&entry.path(), true, max, entries, depth + 1);
         }
     }
     Ok(())
@@ -193,6 +252,11 @@ impl Tool for FileStat {
                 Some(p) => p,
                 None => return result_error("missing required field: path"),
             };
+            let path = match validate_path(path) {
+                Ok(p) => p.display().to_string(),
+                Err(e) => return result_error(e),
+            };
+            let path = path.as_str();
 
             match std::fs::symlink_metadata(path) {
                 Ok(meta) => {
@@ -242,12 +306,15 @@ impl Tool for PathExists {
                 Some(p) => p,
                 None => return result_error("missing required field: path"),
             };
-            let p = Path::new(path);
+            let validated = match validate_path(path) {
+                Ok(p) => p,
+                Err(e) => return result_error(e),
+            };
             result_ok(&serde_json::to_string_pretty(&json!({
-                "path": path,
-                "exists": p.exists(),
-                "is_file": p.is_file(),
-                "is_dir": p.is_dir(),
+                "path": validated.display().to_string(),
+                "exists": validated.exists(),
+                "is_file": validated.is_file(),
+                "is_dir": validated.is_dir(),
             })).unwrap_or_default())
         })
     }
@@ -258,9 +325,15 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Create a TempDir under the current working directory so paths pass validation.
+    fn cwd_tempdir() -> TempDir {
+        let cwd = std::env::current_dir().unwrap();
+        TempDir::new_in(cwd).unwrap()
+    }
+
     #[tokio::test]
     async fn file_read_write() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = cwd_tempdir();
         let path = tmp.path().join("test.txt");
         let path_str = path.display().to_string();
 
@@ -274,7 +347,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_write_append() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = cwd_tempdir();
         let path = tmp.path().join("append.txt");
         let path_str = path.display().to_string();
 
@@ -287,13 +360,22 @@ mod tests {
 
     #[tokio::test]
     async fn file_read_missing() {
+        // Path outside cwd should be rejected
         let result = FileRead.call(json!({"path": "/nonexistent/file/xyz"})).await;
         assert_eq!(result["isError"], true);
     }
 
     #[tokio::test]
+    async fn file_read_rejects_path_traversal() {
+        let result = FileRead.call(json!({"path": "/etc/passwd"})).await;
+        assert_eq!(result["isError"], true);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("outside working directory"));
+    }
+
+    #[tokio::test]
     async fn dir_list() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = cwd_tempdir();
         std::fs::write(tmp.path().join("a.txt"), "").unwrap();
         std::fs::write(tmp.path().join("b.txt"), "").unwrap();
 
@@ -306,7 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_stat() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = cwd_tempdir();
         let path = tmp.path().join("stat.txt");
         std::fs::write(&path, "12345").unwrap();
 
@@ -318,14 +400,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn path_exists() {
-        let result = PathExists.call(json!({"path": "/tmp"})).await;
+    async fn path_exists_cwd() {
+        // "." is always under cwd
+        let result = PathExists.call(json!({"path": "."})).await;
+        assert_eq!(result["isError"], false);
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"exists\": true"));
         assert!(text.contains("\"is_dir\": true"));
+    }
 
-        let result = PathExists.call(json!({"path": "/nonexistent_xyz_123"})).await;
+    #[tokio::test]
+    async fn path_exists_rejects_outside_cwd() {
+        let result = PathExists.call(json!({"path": "/tmp"})).await;
+        assert_eq!(result["isError"], true);
         let text = result["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("\"exists\": false"));
+        assert!(text.contains("outside working directory"));
     }
 }

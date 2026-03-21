@@ -5,6 +5,51 @@ use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
 
+/// Check that a URL does not target private/internal addresses or cloud metadata endpoints.
+fn is_safe_url(url: &str) -> Result<(), String> {
+    // Block cloud metadata endpoints
+    let blocked_hosts = [
+        "169.254.169.254",
+        "metadata.google.internal",
+        "metadata.goog",
+    ];
+
+    // Extract host from URL
+    let host_part = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+
+    for blocked in &blocked_hosts {
+        if host_part.eq_ignore_ascii_case(blocked) {
+            return Err(format!("requests to {host_part} are blocked"));
+        }
+    }
+
+    // Block localhost and private ranges
+    if host_part == "localhost"
+        || host_part == "127.0.0.1"
+        || host_part == "::1"
+        || host_part == "0.0.0.0"
+        || host_part.starts_with("10.")
+        || host_part.starts_with("192.168.")
+        || (host_part.starts_with("172.") && {
+            host_part.split('.').nth(1)
+                .and_then(|s| s.parse::<u8>().ok())
+                .is_some_and(|n| (16..=31).contains(&n))
+        })
+    {
+        return Err(format!("requests to private/internal addresses are blocked: {host_part}"));
+    }
+
+    Ok(())
+}
+
 
 
 /// HTTP request via curl.
@@ -32,6 +77,12 @@ impl Tool for HttpRequest {
                 Some(u) => u,
                 None => return result_error("missing required field: url"),
             };
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return result_error("only http:// and https:// URLs are allowed");
+            }
+            if let Err(e) = is_safe_url(url) {
+                return result_error(e);
+            }
             let method = args.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
             let timeout = args.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(30);
 
@@ -159,7 +210,8 @@ impl Tool for PortCheck {
         Box::pin(async move {
             let host = args.get("host").and_then(|v| v.as_str()).unwrap_or("127.0.0.1");
             let port = match args.get("port").and_then(|v| v.as_u64()) {
-                Some(p) => p as u16,
+                Some(p) if p <= 65535 => p as u16,
+                Some(p) => return result_error(format!("port {p} out of range (0-65535)")),
                 None => return result_error("missing required field: port"),
             };
             let timeout_ms = args.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(3000);
@@ -218,24 +270,28 @@ impl Tool for UrlEncode {
                     result_ok(&encoded)
                 }
                 "decode" => {
-                    let mut result = String::new();
+                    let mut bytes = Vec::new();
                     let mut chars = input.chars();
                     while let Some(c) = chars.next() {
                         if c == '%' {
                             let hex: String = chars.by_ref().take(2).collect();
                             if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                                result.push(byte as char);
+                                bytes.push(byte);
                             } else {
-                                result.push('%');
-                                result.push_str(&hex);
+                                bytes.push(b'%');
+                                bytes.extend_from_slice(hex.as_bytes());
                             }
                         } else if c == '+' {
-                            result.push(' ');
+                            bytes.push(b' ');
                         } else {
-                            result.push(c);
+                            let mut buf = [0u8; 4];
+                            bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
                         }
                     }
-                    result_ok(&result)
+                    match String::from_utf8(bytes) {
+                        Ok(s) => result_ok(&s),
+                        Err(_) => result_error("decoded bytes are not valid UTF-8"),
+                    }
                 }
                 _ => result_error(format!("invalid operation: {op}")),
             }
@@ -289,5 +345,61 @@ mod tests {
         let enc_text = encoded["content"][0]["text"].as_str().unwrap();
         let decoded = UrlEncode.call(json!({"input": enc_text, "operation": "decode"})).await;
         assert_eq!(decoded["content"][0]["text"].as_str().unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn url_encode_decode_utf8() {
+        let original = "hello 中文 world";
+        let encoded = UrlEncode.call(json!({"input": original})).await;
+        let enc_text = encoded["content"][0]["text"].as_str().unwrap();
+        // Should not contain raw multi-byte chars
+        assert!(!enc_text.contains("中"));
+        // Roundtrip
+        let decoded = UrlEncode.call(json!({"input": enc_text, "operation": "decode"})).await;
+        assert_eq!(decoded["content"][0]["text"].as_str().unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn port_check_rejects_invalid_port() {
+        let result = PortCheck.call(json!({"port": 70000})).await;
+        assert_eq!(result["isError"], true);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("out of range"));
+    }
+
+    #[tokio::test]
+    async fn http_rejects_file_url() {
+        let result = HttpRequest.call(json!({"url": "file:///etc/passwd"})).await;
+        assert_eq!(result["isError"], true);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("http://") || text.contains("https://"));
+    }
+
+    #[tokio::test]
+    async fn http_rejects_localhost() {
+        let result = HttpRequest.call(json!({"url": "http://localhost/admin"})).await;
+        assert_eq!(result["isError"], true);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("private/internal"));
+    }
+
+    #[tokio::test]
+    async fn http_rejects_metadata_endpoint() {
+        let result = HttpRequest.call(json!({"url": "http://169.254.169.254/latest/meta-data/"})).await;
+        assert_eq!(result["isError"], true);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn http_rejects_private_ip() {
+        let result = HttpRequest.call(json!({"url": "http://192.168.1.1/"})).await;
+        assert_eq!(result["isError"], true);
+
+        let result = HttpRequest.call(json!({"url": "http://10.0.0.1/"})).await;
+        assert_eq!(result["isError"], true);
+
+        let result = HttpRequest.call(json!({"url": "http://172.16.0.1/"})).await;
+        assert_eq!(result["isError"], true);
     }
 }

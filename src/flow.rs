@@ -226,6 +226,26 @@ mod tests {
     }
 
     #[test]
+    fn flow_sequential_rejects_depends_on() {
+        let a = StepDef::new("a");
+        let b = StepDef::new("b").depends_on(a.id);
+        let mut flow = FlowDef::new("bad", FlowMode::Sequential);
+        flow.add_step(a);
+        flow.add_step(b);
+        assert!(flow.validate().is_err());
+    }
+
+    #[test]
+    fn flow_parallel_rejects_depends_on() {
+        let a = StepDef::new("a");
+        let b = StepDef::new("b").depends_on(a.id);
+        let mut flow = FlowDef::new("bad", FlowMode::Parallel);
+        flow.add_step(a);
+        flow.add_step(b);
+        assert!(flow.validate().is_err());
+    }
+
+    #[test]
     fn flow_serde_roundtrip() {
         let build = StepDef::new("build");
         let test = StepDef::new("test").depends_on(build.id);

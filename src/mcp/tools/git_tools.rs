@@ -1,6 +1,6 @@
 //! Git repository tools.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, tool_def, result_ok, result_ok_json, result_error};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -66,13 +66,13 @@ impl Tool for GitStatus {
             }
 
             let clean = status.is_empty();
-            result_ok(&serde_json::to_string_pretty(&json!({
+            result_ok_json(&json!({
                 "branch": branch,
                 "clean": clean,
                 "modified": modified,
                 "staged": staged,
                 "untracked": untracked,
-            })).unwrap_or_default())
+            }))
         })
     }
 }

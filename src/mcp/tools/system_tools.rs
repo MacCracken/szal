@@ -1,6 +1,7 @@
 //! System information and process tools.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, tool_def, result_ok, result_ok_json, result_error};
+use base64::{Engine as B64Engine, engine::general_purpose::STANDARD};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -34,13 +35,13 @@ impl Tool for SystemInfo {
                 .and_then(|s| s.split_whitespace().next().map(String::from))
                 .and_then(|s| s.parse::<f64>().ok());
 
-            result_ok(&serde_json::to_string_pretty(&json!({
+            result_ok_json(&json!({
                 "hostname": hostname,
                 "os": os,
                 "arch": arch,
                 "cpus": cpus,
                 "uptime_secs": uptime_secs,
-            })).unwrap_or_default())
+            }))
         })
     }
 }
@@ -101,11 +102,11 @@ impl Tool for Timestamp {
     fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
             let now = chrono::Utc::now();
-            result_ok(&serde_json::to_string_pretty(&json!({
+            result_ok_json(&json!({
                 "iso8601": now.to_rfc3339(),
                 "unix_secs": now.timestamp(),
                 "unix_ms": now.timestamp_millis(),
-            })).unwrap_or_default())
+            }))
         })
     }
 }
@@ -258,11 +259,11 @@ impl Tool for Base64Tool {
 
             match op {
                 "encode" => {
-                    let encoded = base64_encode(input.as_bytes());
+                    let encoded = STANDARD.encode(input.as_bytes());
                     result_ok(&encoded)
                 }
                 "decode" => {
-                    match base64_decode(input) {
+                    match STANDARD.decode(input) {
                         Ok(bytes) => match String::from_utf8(bytes) {
                             Ok(s) => result_ok(&s),
                             Err(_) => result_error("decoded bytes are not valid UTF-8"),
@@ -274,57 +275,6 @@ impl Tool for Base64Tool {
             }
         })
     }
-}
-
-const B64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64_encode(input: &[u8]) -> String {
-    let mut result = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        result.push(B64_CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        result.push(B64_CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(B64_CHARS[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(B64_CHARS[(triple & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
-
-fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
-    let input = input.trim_end_matches('=');
-    let mut result = Vec::with_capacity(input.len() * 3 / 4);
-    let mut buf = 0u32;
-    let mut bits = 0;
-
-    for c in input.chars() {
-        let val = match c {
-            'A'..='Z' => c as u32 - 'A' as u32,
-            'a'..='z' => c as u32 - 'a' as u32 + 26,
-            '0'..='9' => c as u32 - '0' as u32 + 52,
-            '+' => 62,
-            '/' => 63,
-            _ => return Err(format!("invalid base64 character: {c}")),
-        };
-        buf = (buf << 6) | val;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            result.push((buf >> bits) as u8);
-            buf &= (1 << bits) - 1;
-        }
-    }
-    Ok(result)
 }
 
 #[cfg(test)]

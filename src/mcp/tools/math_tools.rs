@@ -83,7 +83,8 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     || matches!(tokens.last(), Some(Token::Plus | Token::Minus | Token::Mul | Token::Div | Token::Mod | Token::LParen));
                 chars.next();
                 if is_unary {
-                    let mut num = String::from("-");
+                    let mut num = String::with_capacity(16);
+                    num.push('-');
                     while let Some(&d) = chars.peek() {
                         if d.is_ascii_digit() || d == '.' { num.push(d); chars.next(); } else { break; }
                     }
@@ -98,7 +99,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             '(' => { tokens.push(Token::LParen); chars.next(); }
             ')' => { tokens.push(Token::RParen); chars.next(); }
             _ if c.is_ascii_digit() || c == '.' => {
-                let mut num = String::new();
+                let mut num = String::with_capacity(16);
                 while let Some(&d) = chars.peek() {
                     if d.is_ascii_digit() || d == '.' { num.push(d); chars.next(); } else { break; }
                 }

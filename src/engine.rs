@@ -20,6 +20,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
+pub use tokio_util::sync::CancellationToken;
 
 use crate::flow::{FlowDef, FlowMode};
 use crate::step::{StepDef, StepId, StepResult, StepStatus};
@@ -81,8 +82,11 @@ impl Engine {
     }
 
     /// Execute a flow and return the result.
+    #[tracing::instrument(skip(self, flow), fields(flow = %flow.name, mode = %flow.mode))]
     pub async fn run(&self, flow: &FlowDef) -> crate::Result<FlowResult> {
         flow.validate()?;
+
+        tracing::info!(flow = %flow.name, steps = flow.steps.len(), "starting flow execution");
 
         let timeout = self
             .config
@@ -93,13 +97,11 @@ impl Engine {
         let start = std::time::Instant::now();
 
         let step_results = match flow.mode {
-            FlowMode::Sequential => self.run_sequential(&flow.steps, timeout, start).await,
-            FlowMode::Parallel => self.run_parallel(&flow.steps, timeout, start).await,
-            FlowMode::Dag => self.run_dag(&flow.steps, timeout, start).await,
-            FlowMode::Hierarchical => {
-                // Hierarchical delegates to sub-steps — for now treat as sequential
-                self.run_sequential(&flow.steps, timeout, start).await
+            FlowMode::Sequential | FlowMode::Hierarchical => {
+                self.run_sequential(&flow.steps, timeout, start, None).await
             }
+            FlowMode::Parallel => self.run_parallel(&flow.steps, timeout, start, None).await,
+            FlowMode::Dag => self.run_dag(&flow.steps, timeout, start, None).await,
         };
 
         let total_duration_ms = start.elapsed().as_millis() as u64;
@@ -122,11 +124,30 @@ impl Engine {
                     })
                     .collect();
 
+                tracing::info!(flow = %flow.name, steps = completed_steps.len(), "starting rollback");
+                let mut all_rolled_back = true;
                 for step in completed_steps.into_iter().rev() {
-                    let _ = (rollback_handler)(step.clone()).await;
+                    if (rollback_handler)(step.clone()).await.is_err() {
+                        tracing::warn!(step = %step.name, "rollback step failed");
+                        all_rolled_back = false;
+                    }
                 }
-                rolled_back = true;
+                tracing::info!(flow = %flow.name, success = all_rolled_back, "rollback completed");
+                rolled_back = all_rolled_back;
         }
+
+        let result_status = if has_failures {
+            if rolled_back { "rolled_back" } else { "failed" }
+        } else {
+            "success"
+        };
+        tracing::info!(
+            flow = %flow.name,
+            duration_ms = total_duration_ms,
+            steps = step_results.len(),
+            result = result_status,
+            "flow execution completed"
+        );
 
         Ok(FlowResult {
             flow_name: flow.name.clone(),
@@ -142,9 +163,27 @@ impl Engine {
         steps: &[StepDef],
         timeout_ms: u64,
         start: std::time::Instant,
+        token: Option<&CancellationToken>,
     ) -> Vec<StepResult> {
+        tracing::debug!(steps = steps.len(), "running sequential execution");
         let mut results = Vec::with_capacity(steps.len());
+        let mut failed = false;
         for step in steps {
+            if token.is_some_and(|t| t.is_cancelled()) || failed {
+                results.push(StepResult {
+                    step_id: step.id,
+                    status: StepStatus::Skipped,
+                    output: serde_json::json!(null),
+                    duration_ms: 0,
+                    attempts: 0,
+                    error: Some(if token.is_some_and(|t| t.is_cancelled()) {
+                        "cancelled".into()
+                    } else {
+                        "prior step failed".into()
+                    }),
+                });
+                continue;
+            }
             if start.elapsed().as_millis() as u64 > timeout_ms {
                 results.push(StepResult {
                     step_id: step.id,
@@ -156,7 +195,11 @@ impl Engine {
                 });
                 continue;
             }
-            results.push(self.execute_step(step).await);
+            let result = self.execute_step(step).await;
+            if result.status == StepStatus::Failed {
+                failed = true;
+            }
+            results.push(result);
         }
         results
     }
@@ -166,8 +209,10 @@ impl Engine {
         steps: &[StepDef],
         timeout_ms: u64,
         start: std::time::Instant,
+        token: Option<&CancellationToken>,
     ) -> Vec<StepResult> {
-        let sem = Arc::new(Semaphore::new(self.config.max_concurrency));
+        tracing::debug!(steps = steps.len(), "running parallel execution");
+        let sem = Arc::new(Semaphore::new(self.config.max_concurrency.max(1)));
         let mut handles = Vec::with_capacity(steps.len());
 
         let mut step_ids = Vec::with_capacity(steps.len());
@@ -177,14 +222,24 @@ impl Engine {
             let handler = self.handler.clone();
             let step = step.clone();
             handles.push(tokio::spawn(async move {
-                let _permit = sem.acquire().await.unwrap();
+                let _permit = match sem.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => return StepResult {
+                        step_id: step.id,
+                        status: StepStatus::Failed,
+                        output: serde_json::json!(null),
+                        duration_ms: 0,
+                        attempts: 0,
+                        error: Some("semaphore closed".into()),
+                    },
+                };
                 execute_step_with_handler(&step, &handler).await
             }));
         }
 
         let mut results = Vec::with_capacity(handles.len());
         for (handle, original_id) in handles.into_iter().zip(step_ids) {
-            if start.elapsed().as_millis() as u64 > timeout_ms {
+            if token.is_some_and(|t| t.is_cancelled()) || start.elapsed().as_millis() as u64 > timeout_ms {
                 handle.abort();
                 results.push(StepResult {
                     step_id: original_id,
@@ -192,20 +247,27 @@ impl Engine {
                     output: serde_json::json!(null),
                     duration_ms: 0,
                     attempts: 0,
-                    error: Some("flow timeout exceeded".into()),
+                    error: Some(if token.is_some_and(|t| t.is_cancelled()) {
+                        "cancelled".into()
+                    } else {
+                        "flow timeout exceeded".into()
+                    }),
                 });
                 continue;
             }
             match handle.await {
                 Ok(result) => results.push(result),
-                Err(e) => results.push(StepResult {
-                    step_id: original_id,
-                    status: StepStatus::Failed,
-                    output: serde_json::json!(null),
-                    duration_ms: 0,
-                    attempts: 0,
-                    error: Some(format!("task panicked: {e}")),
-                }),
+                Err(e) => {
+                    tracing::error!(step_id = %original_id, error = %e, "spawned task panicked");
+                    results.push(StepResult {
+                        step_id: original_id,
+                        status: StepStatus::Failed,
+                        output: serde_json::json!(null),
+                        duration_ms: 0,
+                        attempts: 0,
+                        error: Some(format!("task panicked: {e}")),
+                    });
+                }
             }
         }
         results
@@ -216,8 +278,10 @@ impl Engine {
         steps: &[StepDef],
         timeout_ms: u64,
         start: std::time::Instant,
+        token: Option<&CancellationToken>,
     ) -> Vec<StepResult> {
-        let sem = Arc::new(Semaphore::new(self.config.max_concurrency));
+        tracing::debug!(steps = steps.len(), "running DAG execution");
+        let sem = Arc::new(Semaphore::new(self.config.max_concurrency.max(1)));
         let mut results: Vec<StepResult> = Vec::with_capacity(steps.len());
         let mut completed: HashSet<StepId> = HashSet::new();
         let mut failed: HashSet<StepId> = HashSet::new();
@@ -242,8 +306,12 @@ impl Engine {
             .collect();
 
         while !ready.is_empty() {
-            if start.elapsed().as_millis() as u64 > timeout_ms {
-                // Skip remaining
+            if token.is_some_and(|t| t.is_cancelled()) || start.elapsed().as_millis() as u64 > timeout_ms {
+                let reason = if token.is_some_and(|t| t.is_cancelled()) {
+                    "cancelled"
+                } else {
+                    "flow timeout exceeded"
+                };
                 for &id in ready.iter() {
                     if let Some(step) = step_map.get(&id) {
                         results.push(StepResult {
@@ -252,7 +320,7 @@ impl Engine {
                             output: serde_json::json!(null),
                             duration_ms: 0,
                             attempts: 0,
-                            error: Some("flow timeout exceeded".into()),
+                            error: Some(reason.into()),
                         });
                     }
                 }
@@ -262,13 +330,15 @@ impl Engine {
             // Execute all ready steps concurrently
             let mut handles = Vec::new();
             let mut dag_step_ids = Vec::new();
-            let batch: Vec<StepId> = ready.drain(..).collect();
+            let batch_len = ready.len();
 
-            for id in &batch {
-                if let Some(&step) = step_map.get(id) {
+            for _ in 0..batch_len {
+                let id = ready.pop_front().unwrap();
+                if let Some(&step) = step_map.get(&id) {
                     // Skip if a dependency failed
                     let dep_failed = step.depends_on.iter().any(|d| failed.contains(d));
                     if dep_failed {
+                        tracing::debug!(step = %step.name, "skipping step due to dependency failure");
                         results.push(StepResult {
                             step_id: step.id,
                             status: StepStatus::Skipped,
@@ -297,7 +367,17 @@ impl Engine {
                     let step = step.clone();
                     dag_step_ids.push(step.id);
                     handles.push(tokio::spawn(async move {
-                        let _permit = sem.acquire().await.unwrap();
+                        let _permit = match sem.acquire().await {
+                            Ok(p) => p,
+                            Err(_) => return StepResult {
+                                step_id: step.id,
+                                status: StepStatus::Failed,
+                                output: serde_json::json!(null),
+                                duration_ms: 0,
+                                attempts: 0,
+                                error: Some("semaphore closed".into()),
+                            },
+                        };
                         execute_step_with_handler(&step, &handler).await
                     }));
                 }
@@ -325,6 +405,7 @@ impl Engine {
                         results.push(result);
                     }
                     Err(e) => {
+                        tracing::error!(step_id = %original_id, error = %e, "spawned task panicked");
                         failed.insert(original_id);
                         // Unlock dependents even on panic
                         if let Some(deps) = dependents.get(&original_id) {
@@ -356,12 +437,156 @@ impl Engine {
     async fn execute_step(&self, step: &StepDef) -> StepResult {
         execute_step_with_handler(step, &self.handler).await
     }
+
+    /// Execute a flow with cancellation support.
+    ///
+    /// Behaves identically to [`run`](Self::run) but checks the provided
+    /// [`CancellationToken`] between steps. When the token is cancelled,
+    /// remaining steps are marked [`StepStatus::Skipped`].
+    #[tracing::instrument(skip(self, flow, token), fields(flow = %flow.name, mode = %flow.mode))]
+    pub async fn run_with_cancellation(
+        &self,
+        flow: &FlowDef,
+        token: CancellationToken,
+    ) -> crate::Result<FlowResult> {
+        flow.validate()?;
+
+        tracing::info!(flow = %flow.name, steps = flow.steps.len(), "starting flow execution (cancellable)");
+
+        let timeout = self
+            .config
+            .global_timeout_ms
+            .or(flow.timeout_ms)
+            .unwrap_or(u64::MAX);
+
+        let start = std::time::Instant::now();
+
+        let step_results = match flow.mode {
+            FlowMode::Sequential | FlowMode::Hierarchical => {
+                self.run_sequential(&flow.steps, timeout, start, Some(&token))
+                    .await
+            }
+            FlowMode::Parallel => {
+                self.run_parallel(&flow.steps, timeout, start, Some(&token))
+                    .await
+            }
+            FlowMode::Dag => {
+                self.run_dag(&flow.steps, timeout, start, Some(&token))
+                    .await
+            }
+        };
+
+        let total_duration_ms = start.elapsed().as_millis() as u64;
+        let has_failures = step_results.iter().any(|r| r.status == StepStatus::Failed);
+        let was_cancelled = token.is_cancelled()
+            && step_results.iter().any(|r| {
+                r.status == StepStatus::Skipped && r.error.as_deref() == Some("cancelled")
+            });
+        let mut rolled_back = false;
+
+        if has_failures
+            && flow.rollback_on_failure
+            && let Some(ref rollback_handler) = self.rollback_handler
+        {
+                let completed_steps: Vec<&StepDef> = flow
+                    .steps
+                    .iter()
+                    .filter(|s| {
+                        s.rollbackable
+                            && step_results
+                                .iter()
+                                .any(|r| r.step_id == s.id && r.status == StepStatus::Completed)
+                    })
+                    .collect();
+
+                tracing::info!(flow = %flow.name, steps = completed_steps.len(), "starting rollback");
+                let mut all_rolled_back = true;
+                for step in completed_steps.into_iter().rev() {
+                    if (rollback_handler)(step.clone()).await.is_err() {
+                        tracing::warn!(step = %step.name, "rollback step failed");
+                        all_rolled_back = false;
+                    }
+                }
+                tracing::info!(flow = %flow.name, success = all_rolled_back, "rollback completed");
+                rolled_back = all_rolled_back;
+        }
+
+        let success = !has_failures && !was_cancelled;
+        let result_status = if was_cancelled {
+            "cancelled"
+        } else if has_failures {
+            if rolled_back { "rolled_back" } else { "failed" }
+        } else {
+            "success"
+        };
+        tracing::info!(
+            flow = %flow.name,
+            duration_ms = total_duration_ms,
+            steps = step_results.len(),
+            result = result_status,
+            "flow execution completed"
+        );
+
+        Ok(FlowResult {
+            flow_name: flow.name.clone(),
+            steps: step_results,
+            total_duration_ms,
+            success,
+            rolled_back,
+        })
+    }
+
+}
+
+/// Create a [`StepHandler`] from an async function.
+///
+/// This avoids the need to write
+/// `Arc<dyn Fn(StepDef) -> Pin<Box<dyn Future<…> + Send>> + Send + Sync>` by hand.
+///
+/// ```
+/// use szal::engine::{EngineConfig, Engine, handler_fn};
+/// use szal::step::StepDef;
+///
+/// let engine = Engine::new(
+///     EngineConfig::default(),
+///     handler_fn(|step: StepDef| async move {
+///         Ok(serde_json::json!({"step": step.name}))
+///     }),
+/// );
+/// ```
+pub fn handler_fn<F, Fut>(f: F) -> StepHandler
+where
+    F: Fn(StepDef) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<serde_json::Value, String>> + Send + 'static,
+{
+    Arc::new(move |step| Box::pin(f(step)))
+}
+
+/// Create a [`RollbackHandler`] from an async function.
+///
+/// ```
+/// use szal::engine::rollback_fn;
+/// use szal::step::StepDef;
+///
+/// let handler = rollback_fn(|step: StepDef| async move {
+///     println!("rolling back {}", step.name);
+///     Ok(())
+/// });
+/// ```
+pub fn rollback_fn<F, Fut>(f: F) -> RollbackHandler
+where
+    F: Fn(StepDef) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<(), String>> + Send + 'static,
+{
+    Arc::new(move |step| Box::pin(f(step)))
 }
 
 async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> StepResult {
     let max_attempts = step.max_retries + 1;
     let mut last_error = None;
     let total_start = std::time::Instant::now();
+
+    tracing::debug!(step = %step.name, attempt = 1, "starting step execution");
 
     for attempt in 1..=max_attempts {
         let step_start = std::time::Instant::now();
@@ -375,7 +600,10 @@ async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> Ste
             .await
             {
                 Ok(r) => r,
-                Err(_) => Err(format!("timeout after {}ms", step.timeout_ms)),
+                Err(_) => {
+                    tracing::warn!(step = %step.name, timeout_ms = step.timeout_ms, "step timed out");
+                    Err(format!("timeout after {}ms", step.timeout_ms))
+                }
             }
         } else {
             fut.await
@@ -385,6 +613,12 @@ async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> Ste
 
         match result {
             Ok(output) => {
+                tracing::debug!(
+                    step = %step.name,
+                    duration_ms,
+                    attempts = attempt,
+                    "step completed successfully"
+                );
                 return StepResult {
                     step_id: step.id,
                     status: StepStatus::Completed,
@@ -395,6 +629,14 @@ async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> Ste
                 };
             }
             Err(e) => {
+                if attempt < max_attempts {
+                    tracing::warn!(
+                        step = %step.name,
+                        attempt,
+                        error = %e,
+                        "step failed, retrying"
+                    );
+                }
                 last_error = Some(e);
                 if attempt < max_attempts {
                     tokio::time::sleep(std::time::Duration::from_millis(step.retry_delay_ms)).await;
@@ -402,6 +644,12 @@ async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> Ste
             }
         }
     }
+
+    tracing::error!(
+        step = %step.name,
+        attempts = max_attempts,
+        "step failed after all retries exhausted"
+    );
 
     StepResult {
         step_id: step.id,
@@ -438,7 +686,7 @@ async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> Ste
 /// assert_eq!(result.completed_count(), 1);
 /// assert_eq!(result.failed_count(), 0);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FlowResult {
     pub flow_name: String,
     pub steps: Vec<StepResult>,
@@ -721,6 +969,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_sequential_stops_after_failure() {
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = call_count.clone();
+        let handler: StepHandler = Arc::new(move |_step| {
+            let cc = cc.clone();
+            Box::pin(async move {
+                let n = cc.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Err("first fails".into())
+                } else {
+                    Ok(serde_json::json!({}))
+                }
+            })
+        });
+
+        let mut flow = FlowDef::new("fail-fast", FlowMode::Sequential);
+        flow.add_step(StepDef::new("a"));
+        flow.add_step(StepDef::new("b"));
+        flow.add_step(StepDef::new("c"));
+
+        let engine = Engine::new(EngineConfig::default(), handler);
+        let result = engine.run(&flow).await.unwrap();
+        assert!(!result.success);
+        assert_eq!(result.failed_count(), 1);
+        assert_eq!(result.skipped_count(), 2);
+        // Only the first step's handler should have been called
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn run_rollback_failure_reports_not_rolled_back() {
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = call_count.clone();
+        let handler: StepHandler = Arc::new(move |_step| {
+            let cc = cc.clone();
+            Box::pin(async move {
+                let n = cc.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Ok(serde_json::json!({}))
+                } else {
+                    Err("fails".into())
+                }
+            })
+        });
+
+        let rollback_handler: RollbackHandler = Arc::new(|_step| {
+            Box::pin(async move { Err("rollback failed".into()) })
+        });
+
+        let mut flow = FlowDef::new("rb-fail", FlowMode::Sequential).with_rollback();
+        flow.add_step(StepDef::new("setup").with_rollback());
+        flow.add_step(StepDef::new("deploy"));
+
+        let engine = Engine::new(EngineConfig::default(), handler)
+            .with_rollback_handler(rollback_handler);
+        let result = engine.run(&flow).await.unwrap();
+        assert!(!result.success);
+        assert!(!result.rolled_back); // rollback failed, so should be false
+    }
+
+    #[test]
+    fn flow_result_serde_roundtrip() {
+        let result = FlowResult {
+            flow_name: "test".into(),
+            steps: vec![StepResult {
+                step_id: uuid::Uuid::new_v4(),
+                status: StepStatus::Completed,
+                output: serde_json::json!({"key": "value"}),
+                duration_ms: 100,
+                attempts: 1,
+                error: None,
+            }],
+            total_duration_ms: 100,
+            success: true,
+            rolled_back: false,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let back: FlowResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.flow_name, "test");
+        assert!(back.success);
+        assert_eq!(back.steps.len(), 1);
+    }
+
+    #[tokio::test]
     async fn run_rejects_invalid_flow() {
         let mut a = StepDef::new("a");
         let mut b = StepDef::new("b");
@@ -732,5 +1064,97 @@ mod tests {
 
         let engine = Engine::new(EngineConfig::default(), success_handler());
         assert!(engine.run(&flow).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn handler_fn_convenience() {
+        let mut flow = FlowDef::new("test", FlowMode::Sequential);
+        flow.add_step(StepDef::new("a"));
+
+        let engine = Engine::new(
+            EngineConfig::default(),
+            handler_fn(|step| async move {
+                Ok(serde_json::json!({"step": step.name}))
+            }),
+        );
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+    }
+
+    #[tokio::test]
+    async fn run_with_cancellation_stops_sequential() {
+        let token = CancellationToken::new();
+        token.cancel(); // pre-cancel
+
+        let mut flow = FlowDef::new("cancel-test", FlowMode::Sequential);
+        flow.add_step(StepDef::new("a"));
+        flow.add_step(StepDef::new("b"));
+
+        let engine = Engine::new(EngineConfig::default(), success_handler());
+        let result = engine.run_with_cancellation(&flow, token).await.unwrap();
+        assert!(!result.success);
+        assert_eq!(result.skipped_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn run_with_cancellation_stops_dag() {
+        let token = CancellationToken::new();
+        token.cancel();
+
+        // Use independent steps so both are in the initial ready queue
+        let mut flow = FlowDef::new("cancel-dag", FlowMode::Dag);
+        flow.add_step(StepDef::new("a"));
+        flow.add_step(StepDef::new("b"));
+
+        let engine = Engine::new(EngineConfig::default(), success_handler());
+        let result = engine.run_with_cancellation(&flow, token).await.unwrap();
+        assert!(!result.success);
+        assert_eq!(result.skipped_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn run_with_cancellation_partial_execution() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+
+        // Handler that cancels the token after the first step
+        let cc = counter.clone();
+        let handler: StepHandler = Arc::new(move |step| {
+            let cc = cc.clone();
+            let token = token_clone.clone();
+            Box::pin(async move {
+                let n = cc.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    token.cancel();
+                }
+                Ok(serde_json::json!({"step": step.name}))
+            })
+        });
+
+        let mut flow = FlowDef::new("partial-cancel", FlowMode::Sequential);
+        flow.add_step(StepDef::new("a"));
+        flow.add_step(StepDef::new("b"));
+        flow.add_step(StepDef::new("c"));
+
+        let engine = Engine::new(EngineConfig::default(), handler);
+        let result = engine.run_with_cancellation(&flow, token).await.unwrap();
+        assert_eq!(result.completed_count(), 1);
+        assert_eq!(result.skipped_count(), 2);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn run_with_cancellation_uncancelled_succeeds() {
+        let token = CancellationToken::new(); // not cancelled
+
+        let mut flow = FlowDef::new("no-cancel", FlowMode::Sequential);
+        flow.add_step(StepDef::new("a"));
+        flow.add_step(StepDef::new("b"));
+
+        let engine = Engine::new(EngineConfig::default(), success_handler());
+        let result = engine.run_with_cancellation(&flow, token).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.completed_count(), 2);
     }
 }

@@ -18,8 +18,12 @@ thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "io-util", "io-std", "net", "process"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+md-5 = "0.10"
+base64 = "0.22"
 bote = { path = "../bote" }
 majra = { version = "0.21", features = ["pubsub", "queue", "heartbeat"], optional = true }
 

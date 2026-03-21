@@ -1,7 +1,7 @@
 //! MCP tools for engine configuration and flow result inspection.
 
 use crate::engine::EngineConfig;
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, tool_def, result_ok, result_ok_json, result_error};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -32,10 +32,10 @@ impl Tool for EngineCreate {
             if let Some(t) = args.get("global_timeout_ms").and_then(|v| v.as_u64()) {
                 config.global_timeout_ms = Some(t);
             }
-            result_ok(&serde_json::to_string_pretty(&json!({
+            result_ok_json(&json!({
                 "max_concurrency": config.max_concurrency,
                 "global_timeout_ms": config.global_timeout_ms,
-            })).unwrap_or_default())
+            }))
         })
     }
 }
@@ -129,7 +129,7 @@ impl Tool for ServerInfo {
 
     fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
-            result_ok(&serde_json::to_string_pretty(&json!({
+            result_ok_json(&json!({
                 "name": "szal",
                 "version": env!("CARGO_PKG_VERSION"),
                 "description": env!("CARGO_PKG_DESCRIPTION"),
@@ -138,7 +138,7 @@ impl Tool for ServerInfo {
                     "execution_modes": ["sequential", "parallel", "dag", "hierarchical"],
                     "features": ["retry", "rollback", "timeout", "dag_cycle_detection", "state_machine"],
                 },
-            })).unwrap_or_default())
+            }))
         })
     }
 }

@@ -62,6 +62,12 @@ pub fn result_ok(text: &str) -> serde_json::Value {
     serde_json::json!({"content": [{"type": "text", "text": text}], "isError": false})
 }
 
+/// Build a successful MCP tool response from a JSON value (serialized once).
+pub fn result_ok_json(value: &serde_json::Value) -> serde_json::Value {
+    let text = serde_json::to_string_pretty(value).unwrap_or_default();
+    serde_json::json!({"content": [{"type": "text", "text": text}], "isError": false})
+}
+
 /// Build an error MCP tool response.
 pub fn result_error(msg: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
