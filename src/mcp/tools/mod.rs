@@ -3,7 +3,10 @@
 pub mod engine_tools;
 pub mod file_tools;
 pub mod flow_tools;
+pub mod git_tools;
 pub mod hash_tools;
+pub mod math_tools;
+pub mod net_tools;
 pub mod process_tools;
 pub mod state_tools;
 pub mod step_tools;
@@ -64,5 +67,22 @@ pub fn all_tools() -> Vec<Box<dyn Tool>> {
         Box::new(template_tools::TextReplace),
         Box::new(template_tools::TextSplit),
         Box::new(template_tools::TextJoin),
+        // Network tools (4)
+        Box::new(net_tools::HttpRequest),
+        Box::new(net_tools::DnsLookup),
+        Box::new(net_tools::PortCheck),
+        Box::new(net_tools::UrlEncode),
+        // Math/conversion tools (5)
+        Box::new(math_tools::MathEval),
+        Box::new(math_tools::BaseConvert),
+        Box::new(math_tools::ByteFormat),
+        Box::new(math_tools::DurationFormat),
+        Box::new(math_tools::JsonPath),
+        // Git tools (5)
+        Box::new(git_tools::GitStatus),
+        Box::new(git_tools::GitLog),
+        Box::new(git_tools::GitDiff),
+        Box::new(git_tools::GitBranch),
+        Box::new(git_tools::GitBlame),
     ]
 }
