@@ -1,6 +1,6 @@
 //! MCP tools for step creation and inspection.
 
-use crate::mcp::{Tool, tool_def};
+use crate::mcp::{Tool, tool_def, result_ok, result_error};
 use crate::step::StepDef;
 use bote::ToolDef;
 use serde_json::json;
@@ -35,7 +35,7 @@ impl Tool for StepCreate {
         Box::pin(async move {
             let name = match args.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n,
-                None => return json!({"isError": true, "content": [{"type": "text", "text": "missing required field: name"}]}),
+                None => return result_error("missing required field: name"),
             };
 
             let mut step = StepDef::new(name);
@@ -149,14 +149,6 @@ impl Tool for StepInspect {
             }
         })
     }
-}
-
-fn result_ok(text: &str) -> serde_json::Value {
-    json!({"content": [{"type": "text", "text": text}], "isError": false})
-}
-
-fn result_error(msg: impl Into<String>) -> serde_json::Value {
-    json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
 }
 
 #[cfg(test)]

@@ -1,17 +1,11 @@
 //! Template and text transformation tools.
 
-use crate::mcp::{Tool, tool_def};
+use crate::mcp::{Tool, tool_def, result_ok, result_error};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
 
-fn result_ok(text: &str) -> serde_json::Value {
-    json!({"content": [{"type": "text", "text": text}], "isError": false})
-}
 
-fn result_error(msg: impl Into<String>) -> serde_json::Value {
-    json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
-}
 
 /// Simple mustache-style template rendering.
 pub struct TemplateRender;

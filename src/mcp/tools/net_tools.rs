@@ -1,17 +1,11 @@
 //! Network and HTTP tools.
 
-use crate::mcp::{Tool, tool_def};
+use crate::mcp::{Tool, tool_def, result_ok, result_error};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
 
-fn result_ok(text: &str) -> serde_json::Value {
-    json!({"content": [{"type": "text", "text": text}], "isError": false})
-}
 
-fn result_error(msg: impl Into<String>) -> serde_json::Value {
-    json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
-}
 
 /// HTTP request via curl.
 pub struct HttpRequest;
@@ -49,6 +43,10 @@ impl Tool for HttpRequest {
             if let Some(headers) = args.get("headers").and_then(|v| v.as_object()) {
                 for (k, v) in headers {
                     if let Some(val) = v.as_str() {
+                        // Reject header values with newlines to prevent header injection
+                        if k.contains('\n') || k.contains('\r') || val.contains('\n') || val.contains('\r') {
+                            return result_error(format!("header '{k}' contains invalid newline characters"));
+                        }
                         cmd.args(["-H", &format!("{k}: {val}")]);
                     }
                 }

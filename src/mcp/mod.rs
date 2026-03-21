@@ -57,6 +57,16 @@ pub fn register_tools() -> Dispatcher {
     dispatcher
 }
 
+/// Build a successful MCP tool response.
+pub fn result_ok(text: &str) -> serde_json::Value {
+    serde_json::json!({"content": [{"type": "text", "text": text}], "isError": false})
+}
+
+/// Build an error MCP tool response.
+pub fn result_error(msg: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
+}
+
 /// Helper to build a bote ToolDef with common patterns.
 pub fn tool_def(
     name: impl Into<String>,

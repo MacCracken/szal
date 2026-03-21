@@ -1,16 +1,19 @@
 //! Git repository tools.
 
-use crate::mcp::{Tool, tool_def};
+use crate::mcp::{Tool, tool_def, result_ok, result_error};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
 
-fn result_ok(text: &str) -> serde_json::Value {
-    json!({"content": [{"type": "text", "text": text}], "isError": false})
-}
 
-fn result_error(msg: impl Into<String>) -> serde_json::Value {
-    json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
+
+/// Reject values that look like git options to prevent option injection.
+fn validate_git_ref(s: &str) -> Result<(), String> {
+    if s.starts_with('-') {
+        Err(format!("invalid ref: '{s}' — must not start with '-'"))
+    } else {
+        Ok(())
+    }
 }
 
 async fn git_cmd(args: &[&str], cwd: Option<&str>) -> Result<String, String> {
@@ -156,8 +159,10 @@ impl Tool for GitDiff {
             if stat_only { git_args.push("--stat"); }
 
             if let Some(r1) = args.get("ref1").and_then(|v| v.as_str()) {
+                if let Err(e) = validate_git_ref(r1) { return result_error(e); }
                 git_args.push(r1);
                 if let Some(r2) = args.get("ref2").and_then(|v| v.as_str()) {
+                    if let Err(e) = validate_git_ref(r2) { return result_error(e); }
                     git_args.push(r2);
                 }
             }

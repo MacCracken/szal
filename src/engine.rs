@@ -170,7 +170,9 @@ impl Engine {
         let sem = Arc::new(Semaphore::new(self.config.max_concurrency));
         let mut handles = Vec::with_capacity(steps.len());
 
+        let mut step_ids = Vec::with_capacity(steps.len());
         for step in steps {
+            step_ids.push(step.id);
             let sem = sem.clone();
             let handler = self.handler.clone();
             let step = step.clone();
@@ -181,11 +183,11 @@ impl Engine {
         }
 
         let mut results = Vec::with_capacity(handles.len());
-        for handle in handles {
+        for (handle, original_id) in handles.into_iter().zip(step_ids) {
             match handle.await {
                 Ok(result) => results.push(result),
                 Err(e) => results.push(StepResult {
-                    step_id: uuid::Uuid::new_v4(),
+                    step_id: original_id,
                     status: StepStatus::Failed,
                     output: serde_json::json!(null),
                     duration_ms: 0,
@@ -247,6 +249,7 @@ impl Engine {
 
             // Execute all ready steps concurrently
             let mut handles = Vec::new();
+            let mut dag_step_ids = Vec::new();
             let batch: Vec<StepId> = ready.drain(..).collect();
 
             for id in &batch {
@@ -280,6 +283,7 @@ impl Engine {
                     let sem = sem.clone();
                     let handler = self.handler.clone();
                     let step = step.clone();
+                    dag_step_ids.push(step.id);
                     handles.push(tokio::spawn(async move {
                         let _permit = sem.acquire().await.unwrap();
                         execute_step_with_handler(&step, &handler).await
@@ -287,7 +291,7 @@ impl Engine {
                 }
             }
 
-            for handle in handles {
+            for (handle, original_id) in handles.into_iter().zip(dag_step_ids) {
                 match handle.await {
                     Ok(result) => {
                         let id = result.step_id;
@@ -310,8 +314,20 @@ impl Engine {
                         results.push(result);
                     }
                     Err(e) => {
+                        failed.insert(original_id);
+                        // Unlock dependents even on panic
+                        if let Some(deps) = dependents.get(&original_id) {
+                            for &dep_id in deps {
+                                if let Some(deg) = in_degree.get_mut(&dep_id) {
+                                    *deg = deg.saturating_sub(1);
+                                    if *deg == 0 {
+                                        ready.push_back(dep_id);
+                                    }
+                                }
+                            }
+                        }
                         results.push(StepResult {
-                            step_id: uuid::Uuid::new_v4(),
+                            step_id: original_id,
                             status: StepStatus::Failed,
                             output: serde_json::json!(null),
                             duration_ms: 0,

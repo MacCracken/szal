@@ -1,17 +1,11 @@
 //! Process and command execution tools.
 
-use crate::mcp::{Tool, tool_def};
+use crate::mcp::{Tool, tool_def, result_ok, result_error};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
 
-fn result_ok(text: &str) -> serde_json::Value {
-    json!({"content": [{"type": "text", "text": text}], "isError": false})
-}
 
-fn result_error(msg: impl Into<String>) -> serde_json::Value {
-    json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
-}
 
 /// Execute a shell command and return its output.
 pub struct Exec;
@@ -37,6 +31,11 @@ impl Tool for Exec {
                 Some(c) => c,
                 None => return result_error("missing required field: command"),
             };
+
+            // Reject commands containing path traversal or shell metacharacters
+            if command.contains("..") || command.contains(';') || command.contains('|') || command.contains('&') || command.contains('`') || command.contains('$') {
+                return result_error("command contains disallowed characters (.. ; | & ` $)");
+            }
 
             let cmd_args: Vec<String> = args
                 .get("args")
