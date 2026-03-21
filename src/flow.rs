@@ -1,4 +1,19 @@
 //! Flow definitions — how steps are wired together.
+//!
+//! ```
+//! use szal::flow::{FlowDef, FlowMode};
+//! use szal::step::StepDef;
+//!
+//! let build = StepDef::new("build");
+//! let test = StepDef::new("test").depends_on(build.id);
+//! let deploy = StepDef::new("deploy").depends_on(test.id);
+//!
+//! let mut flow = FlowDef::new("pipeline", FlowMode::Dag);
+//! flow.add_step(build);
+//! flow.add_step(test);
+//! flow.add_step(deploy);
+//! flow.validate().unwrap();
+//! ```
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -8,6 +23,12 @@ use crate::step::StepDef;
 pub type FlowId = Uuid;
 
 /// Execution mode for a flow.
+///
+/// ```
+/// use szal::flow::FlowMode;
+///
+/// assert_eq!(FlowMode::Dag.to_string(), "dag");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FlowMode {
     /// Steps run one after another.
@@ -32,6 +53,17 @@ impl std::fmt::Display for FlowMode {
 }
 
 /// A workflow flow — a collection of steps with an execution mode.
+///
+/// ```
+/// use szal::flow::{FlowDef, FlowMode};
+///
+/// let flow = FlowDef::new("deploy", FlowMode::Parallel)
+///     .with_rollback()
+///     .with_timeout(120_000);
+///
+/// assert!(flow.rollback_on_failure);
+/// assert_eq!(flow.timeout_ms, Some(120_000));
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowDef {
     pub id: FlowId,

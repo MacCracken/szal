@@ -1,4 +1,19 @@
 //! Workflow steps — the atomic unit of work.
+//!
+//! ```
+//! use szal::step::StepDef;
+//!
+//! let build = StepDef::new("build").with_timeout(60_000);
+//! let test = StepDef::new("test")
+//!     .depends_on(build.id)
+//!     .with_retries(2, 1_000);
+//! let deploy = StepDef::new("deploy")
+//!     .depends_on(test.id)
+//!     .with_rollback();
+//!
+//! assert_eq!(deploy.depends_on.len(), 1);
+//! assert!(deploy.rollbackable);
+//! ```
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -6,6 +21,13 @@ use uuid::Uuid;
 pub type StepId = Uuid;
 
 /// Step execution status.
+///
+/// ```
+/// use szal::step::StepStatus;
+///
+/// let status = StepStatus::Completed;
+/// assert_eq!(status.to_string(), "completed");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepStatus {
     Pending,
@@ -30,6 +52,22 @@ impl std::fmt::Display for StepStatus {
 }
 
 /// Definition of a workflow step.
+///
+/// Use the builder pattern to configure:
+///
+/// ```
+/// use szal::step::StepDef;
+///
+/// let step = StepDef::new("deploy")
+///     .with_timeout(60_000)
+///     .with_retries(3, 5_000)
+///     .with_rollback();
+///
+/// assert_eq!(step.name, "deploy");
+/// assert_eq!(step.timeout_ms, 60_000);
+/// assert_eq!(step.max_retries, 3);
+/// assert!(step.rollbackable);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepDef {
     pub id: StepId,

@@ -4,15 +4,37 @@
 //! ecosystem. Define steps, wire them into flows with branching, retry, and
 //! rollback — then execute sequentially, in parallel, or as a DAG.
 //!
+//! ## Quick start
+//!
+//! ```
+//! use szal::step::StepDef;
+//! use szal::flow::{FlowDef, FlowMode};
+//!
+//! // Build a DAG pipeline
+//! let build = StepDef::new("build");
+//! let test = StepDef::new("test").depends_on(build.id);
+//! let deploy = StepDef::new("deploy")
+//!     .depends_on(test.id)
+//!     .with_retries(3, 5_000)
+//!     .with_rollback();
+//!
+//! let mut flow = FlowDef::new("ci-cd", FlowMode::Dag);
+//! flow.add_step(build);
+//! flow.add_step(test);
+//! flow.add_step(deploy);
+//! flow.validate().unwrap();
+//! ```
+//!
 //! ## Modules
 //!
-//! - [`step`] — Individual workflow steps with input/output types
-//! - [`flow`] — Flow definitions: sequential, parallel, conditional, DAG
-//! - [`engine`] — Execution runtime with retry, timeout, rollback
-//! - [`state`] — Workflow state machine and persistence
+//! - [`step`] — Individual workflow steps with timeout, retry, rollback, DAG dependencies
+//! - [`flow`] — Flow definitions: sequential, parallel, DAG, hierarchical
+//! - [`engine`] — Execution configuration and flow result aggregation
+//! - [`state`] — Workflow state machine with validated transitions
 
 pub mod engine;
 pub mod flow;
+pub mod mcp;
 pub mod state;
 pub mod step;
 

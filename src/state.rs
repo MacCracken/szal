@@ -1,8 +1,31 @@
 //! Workflow state machine and persistence.
+//!
+//! ```
+//! use szal::state::WorkflowState;
+//!
+//! let state = WorkflowState::Created;
+//! assert!(state.valid_transition(&WorkflowState::Running));
+//! assert!(!state.valid_transition(&WorkflowState::Completed));
+//! assert!(!state.is_terminal());
+//!
+//! assert!(WorkflowState::Completed.is_terminal());
+//! ```
 
 use serde::{Deserialize, Serialize};
 
 /// Workflow execution state.
+///
+/// ```
+/// use szal::state::WorkflowState;
+///
+/// // Valid lifecycle: Created -> Running -> Failed -> RollingBack -> RolledBack
+/// let mut state = WorkflowState::Created;
+/// assert!(state.valid_transition(&WorkflowState::Running));
+/// state = WorkflowState::Running;
+/// assert!(state.valid_transition(&WorkflowState::Failed));
+/// state = WorkflowState::Failed;
+/// assert!(state.valid_transition(&WorkflowState::RollingBack));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkflowState {
     Created,
@@ -81,11 +104,6 @@ mod tests {
     }
 
     #[test]
-    fn display() {
-        assert_eq!(WorkflowState::RollingBack.to_string(), "rolling_back");
-    }
-
-    #[test]
     fn no_transition_from_terminal() {
         let terminals = [
             WorkflowState::Completed,
@@ -118,6 +136,11 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         let back: WorkflowState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, state);
+    }
+
+    #[test]
+    fn display() {
+        assert_eq!(WorkflowState::RollingBack.to_string(), "rolling_back");
     }
 }
 

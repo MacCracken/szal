@@ -1,4 +1,18 @@
 //! Execution engine — runs flows with retry, timeout, and rollback.
+//!
+//! ```
+//! use szal::engine::EngineConfig;
+//!
+//! let config = EngineConfig::default();
+//! assert_eq!(config.max_concurrency, 16);
+//! assert!(config.global_timeout_ms.is_none());
+//!
+//! let config = EngineConfig {
+//!     max_concurrency: 4,
+//!     global_timeout_ms: Some(300_000),
+//! };
+//! assert_eq!(config.max_concurrency, 4);
+//! ```
 
 use crate::step::{StepResult, StepStatus};
 
@@ -21,6 +35,30 @@ impl Default for EngineConfig {
 }
 
 /// Result of executing a complete flow.
+///
+/// ```
+/// use szal::engine::FlowResult;
+/// use szal::step::{StepResult, StepStatus};
+///
+/// let result = FlowResult {
+///     flow_name: "deploy".into(),
+///     steps: vec![
+///         StepResult {
+///             step_id: uuid::Uuid::new_v4(),
+///             status: StepStatus::Completed,
+///             output: serde_json::json!({}),
+///             duration_ms: 100,
+///             attempts: 1,
+///             error: None,
+///         },
+///     ],
+///     total_duration_ms: 100,
+///     success: true,
+///     rolled_back: false,
+/// };
+/// assert_eq!(result.completed_count(), 1);
+/// assert_eq!(result.failed_count(), 0);
+/// ```
 #[derive(Debug, Clone)]
 pub struct FlowResult {
     pub flow_name: String,
