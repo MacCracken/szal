@@ -1,9 +1,9 @@
 //! MCP tools for step creation and inspection.
 
-use crate::mcp::tool::{Tool, ToolDef, ToolResult};
+use crate::mcp::{Tool, tool_def};
 use crate::step::StepDef;
+use bote::ToolDef;
 use serde_json::json;
-use std::future::Future;
 use std::pin::Pin;
 
 /// Create a workflow step with optional configuration.
@@ -11,34 +11,31 @@ pub struct StepCreate;
 
 impl Tool for StepCreate {
     fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_step_create".into(),
-            description: "Create a workflow step definition with timeout, retry, and rollback config".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Step name" },
-                    "description": { "type": "string", "description": "Step description" },
-                    "timeout_ms": { "type": "integer", "description": "Timeout in milliseconds (default: 30000)" },
-                    "max_retries": { "type": "integer", "description": "Max retry attempts (default: 0)" },
-                    "retry_delay_ms": { "type": "integer", "description": "Delay between retries in ms (default: 1000)" },
-                    "rollbackable": { "type": "boolean", "description": "Whether step supports rollback (default: false)" },
-                    "depends_on": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "UUIDs of steps this depends on"
-                    }
-                },
-                "required": ["name"]
+        tool_def(
+            "szal_step_create",
+            "Create a workflow step definition with timeout, retry, and rollback config",
+            json!({
+                "name": { "type": "string", "description": "Step name" },
+                "description": { "type": "string", "description": "Step description" },
+                "timeout_ms": { "type": "integer", "description": "Timeout in milliseconds (default: 30000)" },
+                "max_retries": { "type": "integer", "description": "Max retry attempts (default: 0)" },
+                "retry_delay_ms": { "type": "integer", "description": "Delay between retries in ms (default: 1000)" },
+                "rollbackable": { "type": "boolean", "description": "Whether step supports rollback (default: false)" },
+                "depends_on": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "UUIDs of steps this depends on"
+                }
             }),
-        }
+            vec!["name".into()],
+        )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
+    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let name = match args.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n,
-                None => return ToolResult::error("missing required field: name"),
+                None => return json!({"isError": true, "content": [{"type": "text", "text": "missing required field: name"}]}),
             };
 
             let mut step = StepDef::new(name);
@@ -61,16 +58,13 @@ impl Tool for StepCreate {
                     if let Some(id_str) = dep.as_str() {
                         match uuid::Uuid::parse_str(id_str) {
                             Ok(id) => step = step.depends_on(id),
-                            Err(_) => return ToolResult::error(format!("invalid UUID: {id_str}")),
+                            Err(_) => return result_error(format!("invalid UUID: {id_str}")),
                         }
                     }
                 }
             }
 
-            match serde_json::to_string_pretty(&step) {
-                Ok(json) => ToolResult::success(json),
-                Err(e) => ToolResult::error(e.to_string()),
-            }
+            result_ok(&serde_json::to_string_pretty(&step).unwrap_or_default())
         })
     }
 }
@@ -80,42 +74,35 @@ pub struct StepValidate;
 
 impl Tool for StepValidate {
     fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_step_validate".into(),
-            description: "Validate a step definition JSON, checking all fields are well-formed".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "step_json": { "type": "string", "description": "Step definition as JSON string" }
-                },
-                "required": ["step_json"]
+        tool_def(
+            "szal_step_validate",
+            "Validate a step definition JSON, checking all fields are well-formed",
+            json!({
+                "step_json": { "type": "string", "description": "Step definition as JSON string" }
             }),
-        }
+            vec!["step_json".into()],
+        )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
+    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("step_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return ToolResult::error("missing required field: step_json"),
+                None => return result_error("missing required field: step_json"),
             };
 
             match serde_json::from_str::<StepDef>(json_str) {
                 Ok(step) => {
                     let mut issues = Vec::new();
-                    if step.name.is_empty() {
-                        issues.push("name is empty");
-                    }
-                    if step.timeout_ms == 0 {
-                        issues.push("timeout_ms is zero");
-                    }
+                    if step.name.is_empty() { issues.push("name is empty"); }
+                    if step.timeout_ms == 0 { issues.push("timeout_ms is zero"); }
                     if issues.is_empty() {
-                        ToolResult::success(format!("valid: step '{}' (id={})", step.name, step.id))
+                        result_ok(&format!("valid: step '{}' (id={})", step.name, step.id))
                     } else {
-                        ToolResult::error(format!("issues: {}", issues.join(", ")))
+                        result_error(format!("issues: {}", issues.join(", ")))
                     }
                 }
-                Err(e) => ToolResult::error(format!("invalid JSON: {e}")),
+                Err(e) => result_error(format!("invalid JSON: {e}")),
             }
         })
     }
@@ -126,24 +113,21 @@ pub struct StepInspect;
 
 impl Tool for StepInspect {
     fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_step_inspect".into(),
-            description: "Inspect a step definition, returning its configuration details".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "step_json": { "type": "string", "description": "Step definition as JSON string" }
-                },
-                "required": ["step_json"]
+        tool_def(
+            "szal_step_inspect",
+            "Inspect a step definition, returning its configuration details",
+            json!({
+                "step_json": { "type": "string", "description": "Step definition as JSON string" }
             }),
-        }
+            vec!["step_json".into()],
+        )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
+    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("step_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return ToolResult::error("missing required field: step_json"),
+                None => return result_error("missing required field: step_json"),
             };
 
             match serde_json::from_str::<StepDef>(json_str) {
@@ -159,12 +143,20 @@ impl Tool for StepInspect {
                         "dependency_count": step.depends_on.len(),
                         "depends_on": step.depends_on.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                     });
-                    ToolResult::success(serde_json::to_string_pretty(&info).unwrap_or_default())
+                    result_ok(&serde_json::to_string_pretty(&info).unwrap_or_default())
                 }
-                Err(e) => ToolResult::error(format!("invalid JSON: {e}")),
+                Err(e) => result_error(format!("invalid JSON: {e}")),
             }
         })
     }
+}
+
+fn result_ok(text: &str) -> serde_json::Value {
+    json!({"content": [{"type": "text", "text": text}], "isError": false})
+}
+
+fn result_error(msg: impl Into<String>) -> serde_json::Value {
+    json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
 }
 
 #[cfg(test)]
@@ -175,10 +167,8 @@ mod tests {
     async fn step_create_basic() {
         let tool = StepCreate;
         let result = tool.call(json!({"name": "build"})).await;
-        assert!(!result.is_error);
-        let text = result.content[0].text.as_deref().unwrap();
-        assert!(text.contains("build"));
-        // Verify the output is valid JSON that deserializes back
+        assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
         let step: StepDef = serde_json::from_str(text).unwrap();
         assert_eq!(step.name, "build");
     }
@@ -193,8 +183,8 @@ mod tests {
             "retry_delay_ms": 5000,
             "rollbackable": true
         })).await;
-        assert!(!result.is_error);
-        let step: StepDef = serde_json::from_str(result.content[0].text.as_deref().unwrap()).unwrap();
+        assert_eq!(result["isError"], false);
+        let step: StepDef = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(step.timeout_ms, 60_000);
         assert_eq!(step.max_retries, 3);
         assert!(step.rollbackable);
@@ -204,7 +194,7 @@ mod tests {
     async fn step_create_missing_name() {
         let tool = StepCreate;
         let result = tool.call(json!({})).await;
-        assert!(result.is_error);
+        assert_eq!(result["isError"], true);
     }
 
     #[tokio::test]
@@ -213,14 +203,14 @@ mod tests {
         let json_str = serde_json::to_string(&step).unwrap();
         let tool = StepValidate;
         let result = tool.call(json!({"step_json": json_str})).await;
-        assert!(!result.is_error);
+        assert_eq!(result["isError"], false);
     }
 
     #[tokio::test]
     async fn step_validate_bad_json() {
         let tool = StepValidate;
         let result = tool.call(json!({"step_json": "not json"})).await;
-        assert!(result.is_error);
+        assert_eq!(result["isError"], true);
     }
 
     #[tokio::test]
@@ -229,8 +219,8 @@ mod tests {
         let json_str = serde_json::to_string(&step).unwrap();
         let tool = StepInspect;
         let result = tool.call(json!({"step_json": json_str})).await;
-        assert!(!result.is_error);
-        let text = result.content[0].text.as_deref().unwrap();
+        assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"rollbackable\": true"));
         assert!(text.contains("\"max_retries\": 3"));
     }

@@ -4,32 +4,41 @@ pub mod engine_tools;
 pub mod flow_tools;
 pub mod state_tools;
 pub mod step_tools;
+pub mod system_tools;
 
-use crate::mcp::registry::Registry;
+use crate::mcp::Tool;
 
-/// Register all built-in workflow tools with the registry.
-pub fn register_all(registry: &mut Registry) {
-    // Step tools
-    registry.register_tool(step_tools::StepCreate);
-    registry.register_tool(step_tools::StepValidate);
-    registry.register_tool(step_tools::StepInspect);
-
-    // Flow tools
-    registry.register_tool(flow_tools::FlowCreate);
-    registry.register_tool(flow_tools::FlowValidate);
-    registry.register_tool(flow_tools::FlowFromJson);
-    registry.register_tool(flow_tools::FlowListModes);
-    registry.register_tool(flow_tools::FlowAddStep);
-
-    // State tools
-    registry.register_tool(state_tools::StateCheck);
-    registry.register_tool(state_tools::StateTransition);
-    registry.register_tool(state_tools::StateLifecycle);
-
-    // Engine tools
-    registry.register_tool(engine_tools::EngineCreate);
-    registry.register_tool(engine_tools::ResultInspect);
-    registry.register_tool(engine_tools::StepStatusList);
-    registry.register_tool(engine_tools::ErrorList);
-    registry.register_tool(engine_tools::ServerInfo);
+/// Collect all built-in tools into a vec.
+pub fn all_tools() -> Vec<Box<dyn Tool>> {
+    vec![
+        // Step tools
+        Box::new(step_tools::StepCreate),
+        Box::new(step_tools::StepValidate),
+        Box::new(step_tools::StepInspect),
+        // Flow tools
+        Box::new(flow_tools::FlowCreate),
+        Box::new(flow_tools::FlowValidate),
+        Box::new(flow_tools::FlowFromJson),
+        Box::new(flow_tools::FlowListModes),
+        Box::new(flow_tools::FlowAddStep),
+        // State tools
+        Box::new(state_tools::StateCheck),
+        Box::new(state_tools::StateTransition),
+        Box::new(state_tools::StateLifecycle),
+        // Engine tools
+        Box::new(engine_tools::EngineCreate),
+        Box::new(engine_tools::ResultInspect),
+        Box::new(engine_tools::StepStatusList),
+        Box::new(engine_tools::ErrorList),
+        Box::new(engine_tools::ServerInfo),
+        // System tools
+        Box::new(system_tools::SystemInfo),
+        Box::new(system_tools::Cwd),
+        Box::new(system_tools::EnvGet),
+        Box::new(system_tools::Timestamp),
+        Box::new(system_tools::UuidGen),
+        Box::new(system_tools::JsonDiff),
+        Box::new(system_tools::JsonValidate),
+        Box::new(system_tools::Base64Tool),
+    ]
 }

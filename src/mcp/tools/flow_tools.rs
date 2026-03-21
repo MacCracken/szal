@@ -1,58 +1,60 @@
 //! MCP tools for flow creation, validation, and manipulation.
 
 use crate::flow::{FlowDef, FlowMode};
-use crate::mcp::tool::{Tool, ToolDef, ToolResult};
+use crate::mcp::{Tool, tool_def};
 use crate::step::StepDef;
+use bote::ToolDef as BoteToolDef;
 use serde_json::json;
-use std::future::Future;
 use std::pin::Pin;
 
-/// Create a flow definition.
+fn result_ok(text: &str) -> serde_json::Value {
+    json!({"content": [{"type": "text", "text": text}], "isError": false})
+}
+
+fn result_error(msg: impl Into<String>) -> serde_json::Value {
+    json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
+}
+
+fn parse_flow_mode(s: &str) -> Option<FlowMode> {
+    match s {
+        "sequential" => Some(FlowMode::Sequential),
+        "parallel" => Some(FlowMode::Parallel),
+        "dag" => Some(FlowMode::Dag),
+        "hierarchical" => Some(FlowMode::Hierarchical),
+        _ => None,
+    }
+}
+
 pub struct FlowCreate;
 
 impl Tool for FlowCreate {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_flow_create".into(),
-            description: "Create a workflow flow definition with execution mode and options".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Flow name" },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["sequential", "parallel", "dag", "hierarchical"],
-                        "description": "Execution mode"
-                    },
-                    "rollback_on_failure": { "type": "boolean", "description": "Rollback completed steps on failure (default: false)" },
-                    "timeout_ms": { "type": "integer", "description": "Max flow duration in ms" },
-                    "steps": {
-                        "type": "array",
-                        "items": { "type": "object" },
-                        "description": "Array of step definitions to include"
-                    }
-                },
-                "required": ["name", "mode"]
+    fn definition(&self) -> BoteToolDef {
+        tool_def(
+            "szal_flow_create",
+            "Create a workflow flow definition with execution mode and options",
+            json!({
+                "name": { "type": "string" },
+                "mode": { "type": "string", "enum": ["sequential", "parallel", "dag", "hierarchical"] },
+                "rollback_on_failure": { "type": "boolean" },
+                "timeout_ms": { "type": "integer" },
+                "steps": { "type": "array", "items": { "type": "object" } }
             }),
-        }
+            vec!["name".into(), "mode".into()],
+        )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
+    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let name = match args.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n,
-                None => return ToolResult::error("missing required field: name"),
+                None => return result_error("missing required field: name"),
             };
-            let mode = match args.get("mode").and_then(|v| v.as_str()) {
-                Some(m) => match parse_flow_mode(m) {
-                    Some(mode) => mode,
-                    None => return ToolResult::error(format!("invalid mode: {m}")),
-                },
-                None => return ToolResult::error("missing required field: mode"),
+            let mode = match args.get("mode").and_then(|v| v.as_str()).and_then(parse_flow_mode) {
+                Some(m) => m,
+                None => return result_error("missing or invalid mode"),
             };
 
             let mut flow = FlowDef::new(name, mode);
-
             if args.get("rollback_on_failure").and_then(|v| v.as_bool()).unwrap_or(false) {
                 flow = flow.with_rollback();
             }
@@ -61,95 +63,69 @@ impl Tool for FlowCreate {
             }
             if let Some(steps) = args.get("steps").and_then(|v| v.as_array()) {
                 for step_val in steps {
-                    let step_str = step_val.to_string();
-                    match serde_json::from_str::<StepDef>(&step_str) {
+                    match serde_json::from_value::<StepDef>(step_val.clone()) {
                         Ok(step) => flow.add_step(step),
-                        Err(e) => return ToolResult::error(format!("invalid step: {e}")),
+                        Err(e) => return result_error(format!("invalid step: {e}")),
                     }
                 }
             }
-
-            match serde_json::to_string_pretty(&flow) {
-                Ok(json) => ToolResult::success(json),
-                Err(e) => ToolResult::error(e.to_string()),
-            }
+            result_ok(&serde_json::to_string_pretty(&flow).unwrap_or_default())
         })
     }
 }
 
-/// Validate a flow definition (cycle detection, dependency checks).
 pub struct FlowValidate;
 
 impl Tool for FlowValidate {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_flow_validate".into(),
-            description: "Validate a flow definition — checks for DAG cycles and missing dependencies".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "flow_json": { "type": "string", "description": "Flow definition as JSON string" }
-                },
-                "required": ["flow_json"]
-            }),
-        }
+    fn definition(&self) -> BoteToolDef {
+        tool_def(
+            "szal_flow_validate",
+            "Validate a flow definition — checks for DAG cycles and missing dependencies",
+            json!({ "flow_json": { "type": "string" } }),
+            vec!["flow_json".into()],
+        )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
+    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("flow_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return ToolResult::error("missing required field: flow_json"),
+                None => return result_error("missing required field: flow_json"),
             };
-
             let flow: FlowDef = match serde_json::from_str(json_str) {
                 Ok(f) => f,
-                Err(e) => return ToolResult::error(format!("invalid JSON: {e}")),
+                Err(e) => return result_error(format!("invalid JSON: {e}")),
             };
-
             match flow.validate() {
-                Ok(()) => ToolResult::success(format!(
-                    "valid: flow '{}' ({} steps, mode={})",
-                    flow.name,
-                    flow.steps.len(),
-                    flow.mode
-                )),
-                Err(e) => ToolResult::error(format!("validation failed: {e}")),
+                Ok(()) => result_ok(&format!("valid: flow '{}' ({} steps, mode={})", flow.name, flow.steps.len(), flow.mode)),
+                Err(e) => result_error(format!("validation failed: {e}")),
             }
         })
     }
 }
 
-/// Parse a flow from JSON.
 pub struct FlowFromJson;
 
 impl Tool for FlowFromJson {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_flow_from_json".into(),
-            description: "Parse and inspect a flow definition from JSON".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "flow_json": { "type": "string", "description": "Flow definition as JSON string" }
-                },
-                "required": ["flow_json"]
-            }),
-        }
+    fn definition(&self) -> BoteToolDef {
+        tool_def(
+            "szal_flow_from_json",
+            "Parse and inspect a flow definition from JSON",
+            json!({ "flow_json": { "type": "string" } }),
+            vec!["flow_json".into()],
+        )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
+    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("flow_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return ToolResult::error("missing required field: flow_json"),
+                None => return result_error("missing required field: flow_json"),
             };
-
             let flow: FlowDef = match serde_json::from_str(json_str) {
                 Ok(f) => f,
-                Err(e) => return ToolResult::error(format!("invalid JSON: {e}")),
+                Err(e) => return result_error(format!("invalid JSON: {e}")),
             };
-
             let info = json!({
                 "id": flow.id.to_string(),
                 "name": flow.name,
@@ -163,25 +139,19 @@ impl Tool for FlowFromJson {
                     "depends_on": s.depends_on.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
             });
-
-            ToolResult::success(serde_json::to_string_pretty(&info).unwrap_or_default())
+            result_ok(&serde_json::to_string_pretty(&info).unwrap_or_default())
         })
     }
 }
 
-/// List available flow execution modes.
 pub struct FlowListModes;
 
 impl Tool for FlowListModes {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_flow_list_modes".into(),
-            description: "List available workflow execution modes with descriptions".into(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-        }
+    fn definition(&self) -> BoteToolDef {
+        tool_def("szal_flow_list_modes", "List available workflow execution modes with descriptions", json!({}), vec![])
     }
 
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
+    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
             let modes = json!([
                 { "mode": "sequential", "description": "Steps run one after another" },
@@ -189,67 +159,47 @@ impl Tool for FlowListModes {
                 { "mode": "dag", "description": "Steps run based on dependency graph (Kahn's algorithm), with cycle detection" },
                 { "mode": "hierarchical", "description": "Manager step delegates to sub-steps dynamically" },
             ]);
-            ToolResult::success(serde_json::to_string_pretty(&modes).unwrap_or_default())
+            result_ok(&serde_json::to_string_pretty(&modes).unwrap_or_default())
         })
     }
 }
 
-/// Add a step to an existing flow.
 pub struct FlowAddStep;
 
 impl Tool for FlowAddStep {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_flow_add_step".into(),
-            description: "Add a step to an existing flow definition, returning the updated flow".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "flow_json": { "type": "string", "description": "Existing flow definition JSON" },
-                    "step_json": { "type": "string", "description": "Step definition JSON to add" }
-                },
-                "required": ["flow_json", "step_json"]
+    fn definition(&self) -> BoteToolDef {
+        tool_def(
+            "szal_flow_add_step",
+            "Add a step to an existing flow definition, returning the updated flow",
+            json!({
+                "flow_json": { "type": "string" },
+                "step_json": { "type": "string" }
             }),
-        }
+            vec!["flow_json".into(), "step_json".into()],
+        )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
+    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let flow_str = match args.get("flow_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return ToolResult::error("missing required field: flow_json"),
+                None => return result_error("missing required field: flow_json"),
             };
             let step_str = match args.get("step_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return ToolResult::error("missing required field: step_json"),
+                None => return result_error("missing required field: step_json"),
             };
-
             let mut flow: FlowDef = match serde_json::from_str(flow_str) {
                 Ok(f) => f,
-                Err(e) => return ToolResult::error(format!("invalid flow JSON: {e}")),
+                Err(e) => return result_error(format!("invalid flow JSON: {e}")),
             };
             let step: StepDef = match serde_json::from_str(step_str) {
                 Ok(s) => s,
-                Err(e) => return ToolResult::error(format!("invalid step JSON: {e}")),
+                Err(e) => return result_error(format!("invalid step JSON: {e}")),
             };
-
             flow.add_step(step);
-
-            match serde_json::to_string_pretty(&flow) {
-                Ok(json) => ToolResult::success(json),
-                Err(e) => ToolResult::error(e.to_string()),
-            }
+            result_ok(&serde_json::to_string_pretty(&flow).unwrap_or_default())
         })
-    }
-}
-
-fn parse_flow_mode(s: &str) -> Option<FlowMode> {
-    match s {
-        "sequential" => Some(FlowMode::Sequential),
-        "parallel" => Some(FlowMode::Parallel),
-        "dag" => Some(FlowMode::Dag),
-        "hierarchical" => Some(FlowMode::Hierarchical),
-        _ => None,
     }
 }
 
@@ -259,34 +209,26 @@ mod tests {
 
     #[tokio::test]
     async fn flow_create_basic() {
-        let tool = FlowCreate;
-        let result = tool.call(json!({"name": "ci-cd", "mode": "dag"})).await;
-        assert!(!result.is_error);
-        let flow: FlowDef = serde_json::from_str(result.content[0].text.as_deref().unwrap()).unwrap();
+        let result = FlowCreate.call(json!({"name": "ci-cd", "mode": "dag"})).await;
+        assert_eq!(result["isError"], false);
+        let flow: FlowDef = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(flow.name, "ci-cd");
         assert_eq!(flow.mode, FlowMode::Dag);
     }
 
     #[tokio::test]
     async fn flow_create_with_options() {
-        let tool = FlowCreate;
-        let result = tool.call(json!({
-            "name": "deploy",
-            "mode": "sequential",
-            "rollback_on_failure": true,
-            "timeout_ms": 300000
-        })).await;
-        assert!(!result.is_error);
-        let flow: FlowDef = serde_json::from_str(result.content[0].text.as_deref().unwrap()).unwrap();
+        let result = FlowCreate.call(json!({"name": "deploy", "mode": "sequential", "rollback_on_failure": true, "timeout_ms": 300000})).await;
+        assert_eq!(result["isError"], false);
+        let flow: FlowDef = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert!(flow.rollback_on_failure);
         assert_eq!(flow.timeout_ms, Some(300_000));
     }
 
     #[tokio::test]
     async fn flow_create_invalid_mode() {
-        let tool = FlowCreate;
-        let result = tool.call(json!({"name": "x", "mode": "nope"})).await;
-        assert!(result.is_error);
+        let result = FlowCreate.call(json!({"name": "x", "mode": "nope"})).await;
+        assert_eq!(result["isError"], true);
     }
 
     #[tokio::test]
@@ -297,11 +239,8 @@ mod tests {
         flow.add_step(build);
         flow.add_step(test);
         let flow_json = serde_json::to_string(&flow).unwrap();
-
-        let tool = FlowValidate;
-        let result = tool.call(json!({"flow_json": flow_json})).await;
-        assert!(!result.is_error);
-        assert!(result.content[0].text.as_deref().unwrap().contains("valid"));
+        let result = FlowValidate.call(json!({"flow_json": flow_json})).await;
+        assert_eq!(result["isError"], false);
     }
 
     #[tokio::test]
@@ -313,19 +252,15 @@ mod tests {
         let mut flow = FlowDef::new("broken", FlowMode::Dag);
         flow.add_step(a);
         flow.add_step(b);
-        let flow_json = serde_json::to_string(&flow).unwrap();
-
-        let tool = FlowValidate;
-        let result = tool.call(json!({"flow_json": flow_json})).await;
-        assert!(result.is_error);
+        let result = FlowValidate.call(json!({"flow_json": serde_json::to_string(&flow).unwrap()})).await;
+        assert_eq!(result["isError"], true);
     }
 
     #[tokio::test]
     async fn flow_list_modes() {
-        let tool = FlowListModes;
-        let result = tool.call(json!({})).await;
-        assert!(!result.is_error);
-        let text = result.content[0].text.as_deref().unwrap();
+        let result = FlowListModes.call(json!({})).await;
+        assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("sequential"));
         assert!(text.contains("dag"));
     }
@@ -334,16 +269,12 @@ mod tests {
     async fn flow_add_step() {
         let flow = FlowDef::new("test", FlowMode::Sequential);
         let step = StepDef::new("build");
-        let flow_json = serde_json::to_string(&flow).unwrap();
-        let step_json = serde_json::to_string(&step).unwrap();
-
-        let tool = FlowAddStep;
-        let result = tool.call(json!({
-            "flow_json": flow_json,
-            "step_json": step_json
+        let result = FlowAddStep.call(json!({
+            "flow_json": serde_json::to_string(&flow).unwrap(),
+            "step_json": serde_json::to_string(&step).unwrap()
         })).await;
-        assert!(!result.is_error);
-        let updated: FlowDef = serde_json::from_str(result.content[0].text.as_deref().unwrap()).unwrap();
+        assert_eq!(result["isError"], false);
+        let updated: FlowDef = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(updated.steps.len(), 1);
     }
 
@@ -352,12 +283,9 @@ mod tests {
         let mut flow = FlowDef::new("pipeline", FlowMode::Dag);
         flow.add_step(StepDef::new("build"));
         flow.add_step(StepDef::new("test"));
-        let flow_json = serde_json::to_string(&flow).unwrap();
-
-        let tool = FlowFromJson;
-        let result = tool.call(json!({"flow_json": flow_json})).await;
-        assert!(!result.is_error);
-        let text = result.content[0].text.as_deref().unwrap();
+        let result = FlowFromJson.call(json!({"flow_json": serde_json::to_string(&flow).unwrap()})).await;
+        assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"step_count\": 2"));
     }
 }

@@ -32,6 +32,7 @@
 //! - [`engine`] — Execution configuration and flow result aggregation
 //! - [`state`] — Workflow state machine with validated transitions
 
+pub mod bus;
 pub mod engine;
 pub mod flow;
 pub mod mcp;

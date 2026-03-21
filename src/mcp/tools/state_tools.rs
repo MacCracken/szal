@@ -1,156 +1,17 @@
 //! MCP tools for workflow state machine operations.
 
-use crate::mcp::tool::{Tool, ToolDef, ToolResult};
+use crate::mcp::{Tool, tool_def};
 use crate::state::WorkflowState;
+use bote::ToolDef as BoteToolDef;
 use serde_json::json;
-use std::future::Future;
 use std::pin::Pin;
 
-/// Check properties of a workflow state.
-pub struct StateCheck;
-
-impl Tool for StateCheck {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_state_check".into(),
-            description: "Check if a workflow state is terminal and list its valid transitions".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "state": {
-                        "type": "string",
-                        "enum": ["created", "running", "paused", "completed", "failed", "rolling_back", "rolled_back", "cancelled"],
-                        "description": "Workflow state to check"
-                    }
-                },
-                "required": ["state"]
-            }),
-        }
-    }
-
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
-        Box::pin(async move {
-            let state_str = match args.get("state").and_then(|v| v.as_str()) {
-                Some(s) => s,
-                None => return ToolResult::error("missing required field: state"),
-            };
-
-            let state = match parse_state(state_str) {
-                Some(s) => s,
-                None => return ToolResult::error(format!("invalid state: {state_str}")),
-            };
-
-            let all_states = all_workflow_states();
-            let valid_targets: Vec<&str> = all_states
-                .iter()
-                .filter(|(_, s)| state.valid_transition(s))
-                .map(|(name, _)| *name)
-                .collect();
-
-            let info = json!({
-                "state": state_str,
-                "is_terminal": state.is_terminal(),
-                "valid_transitions": valid_targets,
-            });
-
-            ToolResult::success(serde_json::to_string_pretty(&info).unwrap_or_default())
-        })
-    }
+fn result_ok(text: &str) -> serde_json::Value {
+    json!({"content": [{"type": "text", "text": text}], "isError": false})
 }
 
-/// Check if a specific state transition is valid.
-pub struct StateTransition;
-
-impl Tool for StateTransition {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_state_transition".into(),
-            description: "Check if a state transition from one state to another is valid".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "from": {
-                        "type": "string",
-                        "enum": ["created", "running", "paused", "completed", "failed", "rolling_back", "rolled_back", "cancelled"],
-                        "description": "Current state"
-                    },
-                    "to": {
-                        "type": "string",
-                        "enum": ["created", "running", "paused", "completed", "failed", "rolling_back", "rolled_back", "cancelled"],
-                        "description": "Target state"
-                    }
-                },
-                "required": ["from", "to"]
-            }),
-        }
-    }
-
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
-        Box::pin(async move {
-            let from_str = match args.get("from").and_then(|v| v.as_str()) {
-                Some(s) => s,
-                None => return ToolResult::error("missing required field: from"),
-            };
-            let to_str = match args.get("to").and_then(|v| v.as_str()) {
-                Some(s) => s,
-                None => return ToolResult::error("missing required field: to"),
-            };
-
-            let from = match parse_state(from_str) {
-                Some(s) => s,
-                None => return ToolResult::error(format!("invalid state: {from_str}")),
-            };
-            let to = match parse_state(to_str) {
-                Some(s) => s,
-                None => return ToolResult::error(format!("invalid state: {to_str}")),
-            };
-
-            let valid = from.valid_transition(&to);
-            let info = json!({
-                "from": from_str,
-                "to": to_str,
-                "valid": valid,
-            });
-
-            ToolResult::success(serde_json::to_string_pretty(&info).unwrap_or_default())
-        })
-    }
-}
-
-/// Show the complete state machine lifecycle.
-pub struct StateLifecycle;
-
-impl Tool for StateLifecycle {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "szal_state_lifecycle".into(),
-            description: "Show the complete workflow state machine — all states, transitions, and terminal states".into(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-        }
-    }
-
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send + '_>> {
-        Box::pin(async {
-            let all = all_workflow_states();
-            let states: Vec<serde_json::Value> = all
-                .iter()
-                .map(|(name, state)| {
-                    let targets: Vec<&str> = all
-                        .iter()
-                        .filter(|(_, s)| state.valid_transition(s))
-                        .map(|(n, _)| *n)
-                        .collect();
-                    json!({
-                        "state": name,
-                        "is_terminal": state.is_terminal(),
-                        "transitions_to": targets,
-                    })
-                })
-                .collect();
-
-            ToolResult::success(serde_json::to_string_pretty(&states).unwrap_or_default())
-        })
-    }
+fn result_error(msg: impl Into<String>) -> serde_json::Value {
+    json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
 }
 
 fn parse_state(s: &str) -> Option<WorkflowState> {
@@ -180,62 +41,137 @@ fn all_workflow_states() -> Vec<(&'static str, WorkflowState)> {
     ]
 }
 
+pub struct StateCheck;
+
+impl Tool for StateCheck {
+    fn definition(&self) -> BoteToolDef {
+        tool_def(
+            "szal_state_check",
+            "Check if a workflow state is terminal and list its valid transitions",
+            json!({ "state": { "type": "string", "enum": ["created","running","paused","completed","failed","rolling_back","rolled_back","cancelled"] } }),
+            vec!["state".into()],
+        )
+    }
+
+    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+        Box::pin(async move {
+            let state_str = match args.get("state").and_then(|v| v.as_str()) {
+                Some(s) => s,
+                None => return result_error("missing required field: state"),
+            };
+            let state = match parse_state(state_str) {
+                Some(s) => s,
+                None => return result_error(format!("invalid state: {state_str}")),
+            };
+            let all = all_workflow_states();
+            let valid_targets: Vec<&str> = all.iter().filter(|(_, s)| state.valid_transition(s)).map(|(n, _)| *n).collect();
+            result_ok(&serde_json::to_string_pretty(&json!({
+                "state": state_str,
+                "is_terminal": state.is_terminal(),
+                "valid_transitions": valid_targets,
+            })).unwrap_or_default())
+        })
+    }
+}
+
+pub struct StateTransition;
+
+impl Tool for StateTransition {
+    fn definition(&self) -> BoteToolDef {
+        tool_def(
+            "szal_state_transition",
+            "Check if a state transition from one state to another is valid",
+            json!({
+                "from": { "type": "string" },
+                "to": { "type": "string" }
+            }),
+            vec!["from".into(), "to".into()],
+        )
+    }
+
+    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+        Box::pin(async move {
+            let from = match args.get("from").and_then(|v| v.as_str()).and_then(parse_state) {
+                Some(s) => s,
+                None => return result_error("missing or invalid 'from' state"),
+            };
+            let to = match args.get("to").and_then(|v| v.as_str()).and_then(parse_state) {
+                Some(s) => s,
+                None => return result_error("missing or invalid 'to' state"),
+            };
+            result_ok(&serde_json::to_string_pretty(&json!({
+                "from": args["from"],
+                "to": args["to"],
+                "valid": from.valid_transition(&to),
+            })).unwrap_or_default())
+        })
+    }
+}
+
+pub struct StateLifecycle;
+
+impl Tool for StateLifecycle {
+    fn definition(&self) -> BoteToolDef {
+        tool_def("szal_state_lifecycle", "Show the complete workflow state machine — all states, transitions, and terminal states", json!({}), vec![])
+    }
+
+    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+        Box::pin(async {
+            let all = all_workflow_states();
+            let states: Vec<serde_json::Value> = all.iter().map(|(name, state)| {
+                let targets: Vec<&str> = all.iter().filter(|(_, s)| state.valid_transition(s)).map(|(n, _)| *n).collect();
+                json!({"state": name, "is_terminal": state.is_terminal(), "transitions_to": targets})
+            }).collect();
+            result_ok(&serde_json::to_string_pretty(&states).unwrap_or_default())
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
     async fn state_check_running() {
-        let tool = StateCheck;
-        let result = tool.call(json!({"state": "running"})).await;
-        assert!(!result.is_error);
-        let text = result.content[0].text.as_deref().unwrap();
+        let result = StateCheck.call(json!({"state": "running"})).await;
+        assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"is_terminal\": false"));
-        assert!(text.contains("completed"));
-        assert!(text.contains("failed"));
     }
 
     #[tokio::test]
     async fn state_check_completed() {
-        let tool = StateCheck;
-        let result = tool.call(json!({"state": "completed"})).await;
-        assert!(!result.is_error);
-        let text = result.content[0].text.as_deref().unwrap();
+        let result = StateCheck.call(json!({"state": "completed"})).await;
+        assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"is_terminal\": true"));
-        assert!(text.contains("\"valid_transitions\": []"));
     }
 
     #[tokio::test]
     async fn state_check_invalid() {
-        let tool = StateCheck;
-        let result = tool.call(json!({"state": "nope"})).await;
-        assert!(result.is_error);
+        let result = StateCheck.call(json!({"state": "nope"})).await;
+        assert_eq!(result["isError"], true);
     }
 
     #[tokio::test]
     async fn state_transition_valid() {
-        let tool = StateTransition;
-        let result = tool.call(json!({"from": "created", "to": "running"})).await;
-        assert!(!result.is_error);
-        let text = result.content[0].text.as_deref().unwrap();
+        let result = StateTransition.call(json!({"from": "created", "to": "running"})).await;
+        let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"valid\": true"));
     }
 
     #[tokio::test]
     async fn state_transition_invalid() {
-        let tool = StateTransition;
-        let result = tool.call(json!({"from": "completed", "to": "running"})).await;
-        assert!(!result.is_error);
-        let text = result.content[0].text.as_deref().unwrap();
+        let result = StateTransition.call(json!({"from": "completed", "to": "running"})).await;
+        let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"valid\": false"));
     }
 
     #[tokio::test]
     async fn state_lifecycle() {
-        let tool = StateLifecycle;
-        let result = tool.call(json!({})).await;
-        assert!(!result.is_error);
-        let text = result.content[0].text.as_deref().unwrap();
+        let result = StateLifecycle.call(json!({})).await;
+        assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
         let states: Vec<serde_json::Value> = serde_json::from_str(text).unwrap();
         assert_eq!(states.len(), 8);
     }

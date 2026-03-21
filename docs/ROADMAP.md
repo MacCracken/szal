@@ -19,12 +19,15 @@
 - [x] **Fuzz targets** — fuzz step deserialization, flow deserialization, flow validation (random DAG wiring), state transition sequences
 - [x] **Fuzz CI job** — 30s per target in CI (match dhvani pattern)
 - [x] **Property-based tests (proptest)** — terminal state invariants, DAG acyclicity (linear + fanout), serde roundtrip for arbitrary step configs, builder identity preservation
-- [ ] **MCP protocol layer** — streamable HTTP, SSE, stdio transports
-- [ ] **Tool/Resource/Prompt traits** and dynamic registry
-- [ ] **Majra integration** — pub/sub for event dispatch, ManagedQueue for job scheduling, heartbeat for health
+- [x] **MCP tool layer** — uses bote as MCP backend (protocol, dispatch, transport)
+- [x] **Tool trait + 16 built-in tools** — step, flow, state, engine tools with bote ToolDef
+- [x] **Majra integration** — event bus via pub/sub (WorkflowEvent types, topic hierarchy, subscribe with wildcards)
+- [x] **Execution engine** — sequential, parallel, DAG execution with retry, timeout, rollback
+- [x] **Feature gates** — `majra` feature for event bus
+- [x] **Doc tests** — runnable examples in rustdoc for all public API
 - [ ] **ai-hwaccel integration** — hardware-aware step scheduling via optional `hardware` feature
-- [ ] **Feature gates** — modular features as crate grows (e.g. `mcp`, `hardware`, `majra`)
-- [ ] **Doc tests** — runnable examples in rustdoc for all public API
+- [ ] **Majra ManagedQueue** — queue-backed step execution for distributed workloads
+- [ ] **Majra heartbeat** — engine health reporting
 
 ## v0.23 — Agent Orchestration + LLM Gateway
 

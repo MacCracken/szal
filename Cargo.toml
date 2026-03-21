@@ -11,10 +11,6 @@ readme = "README.md"
 keywords = ["workflow", "pipeline", "orchestration", "dag", "automation"]
 categories = ["asynchronous", "concurrency"]
 
-[features]
-default = []
-mcp = ["dep:axum", "dep:tokio-stream", "dep:tower", "dep:hyper"]
-
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,12 +20,12 @@ tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "io-util", "io-std", "net"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+bote = { path = "../bote" }
+majra = { version = "0.21", features = ["pubsub", "queue", "heartbeat"], optional = true }
 
-# MCP transport
-axum = { version = "0.8", optional = true }
-tokio-stream = { version = "0.1", optional = true }
-tower = { version = "0.5", optional = true }
-hyper = { version = "1", optional = true }
+[features]
+default = []
+majra = ["dep:majra"]
 
 [dev-dependencies]
 tempfile = "3"
