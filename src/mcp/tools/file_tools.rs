@@ -1,12 +1,10 @@
 //! File system tools — read, write, list, stat, search.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error, validate_path};
+use crate::mcp::{Tool, result_error, result_ok, tool_def, validate_path};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::path::Path;
 use std::pin::Pin;
-
-
 
 /// Read a file's contents.
 pub struct FileRead;
@@ -24,7 +22,10 @@ impl Tool for FileRead {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let path = match args.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p,
@@ -35,7 +36,10 @@ impl Tool for FileRead {
                 Err(e) => return result_error(e),
             };
             let path = path.as_str();
-            let max_bytes = args.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(1_048_576) as usize;
+            let max_bytes = args
+                .get("max_bytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1_048_576) as usize;
 
             match std::fs::read_to_string(path) {
                 Ok(content) => {
@@ -73,7 +77,10 @@ impl Tool for FileWrite {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let path = match args.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p,
@@ -88,7 +95,10 @@ impl Tool for FileWrite {
                 Some(c) => c,
                 None => return result_error("missing required field: content"),
             };
-            let append = args.get("append").and_then(|v| v.as_bool()).unwrap_or(false);
+            let append = args
+                .get("append")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             let result = if append {
                 use std::io::Write;
@@ -126,7 +136,10 @@ impl Tool for DirList {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
             let path = match validate_path(path) {
@@ -134,8 +147,15 @@ impl Tool for DirList {
                 Err(e) => return result_error(e),
             };
             let path = path.as_str();
-            let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
-            let max = args.get("max_entries").and_then(|v| v.as_u64()).unwrap_or(500).min(10_000) as usize;
+            let recursive = args
+                .get("recursive")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let max = args
+                .get("max_entries")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(500)
+                .min(10_000) as usize;
 
             let mut entries = Vec::new();
             if let Err(e) = collect_dir(Path::new(path), recursive, max, &mut entries, 0) {
@@ -206,7 +226,10 @@ impl Tool for FileStat {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let path = match args.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p,
@@ -233,13 +256,16 @@ impl Tool for FileStat {
                         dt.to_rfc3339()
                     });
 
-                    result_ok(&serde_json::to_string_pretty(&json!({
-                        "path": path,
-                        "type": kind,
-                        "size": meta.len(),
-                        "readonly": meta.permissions().readonly(),
-                        "modified": modified,
-                    })).unwrap_or_default())
+                    result_ok(
+                        &serde_json::to_string_pretty(&json!({
+                            "path": path,
+                            "type": kind,
+                            "size": meta.len(),
+                            "readonly": meta.permissions().readonly(),
+                            "modified": modified,
+                        }))
+                        .unwrap_or_default(),
+                    )
                 }
                 Err(e) => result_error(format!("failed to stat {path}: {e}")),
             }
@@ -260,7 +286,10 @@ impl Tool for PathExists {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let path = match args.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p,
@@ -270,12 +299,15 @@ impl Tool for PathExists {
                 Ok(p) => p,
                 Err(e) => return result_error(e),
             };
-            result_ok(&serde_json::to_string_pretty(&json!({
-                "path": validated.display().to_string(),
-                "exists": validated.exists(),
-                "is_file": validated.is_file(),
-                "is_dir": validated.is_dir(),
-            })).unwrap_or_default())
+            result_ok(
+                &serde_json::to_string_pretty(&json!({
+                    "path": validated.display().to_string(),
+                    "exists": validated.exists(),
+                    "is_file": validated.is_file(),
+                    "is_dir": validated.is_dir(),
+                }))
+                .unwrap_or_default(),
+            )
         })
     }
 }
@@ -297,7 +329,9 @@ mod tests {
         let path = tmp.path().join("test.txt");
         let path_str = path.display().to_string();
 
-        let result = FileWrite.call(json!({"path": path_str, "content": "hello"})).await;
+        let result = FileWrite
+            .call(json!({"path": path_str, "content": "hello"}))
+            .await;
         assert_eq!(result["isError"], false);
 
         let result = FileRead.call(json!({"path": path_str})).await;
@@ -311,8 +345,12 @@ mod tests {
         let path = tmp.path().join("append.txt");
         let path_str = path.display().to_string();
 
-        FileWrite.call(json!({"path": path_str, "content": "a"})).await;
-        FileWrite.call(json!({"path": path_str, "content": "b", "append": true})).await;
+        FileWrite
+            .call(json!({"path": path_str, "content": "a"}))
+            .await;
+        FileWrite
+            .call(json!({"path": path_str, "content": "b", "append": true}))
+            .await;
 
         let result = FileRead.call(json!({"path": path_str})).await;
         assert_eq!(result["content"][0]["text"].as_str().unwrap(), "ab");
@@ -321,7 +359,9 @@ mod tests {
     #[tokio::test]
     async fn file_read_missing() {
         // Path outside cwd should be rejected
-        let result = FileRead.call(json!({"path": "/nonexistent/file/xyz"})).await;
+        let result = FileRead
+            .call(json!({"path": "/nonexistent/file/xyz"}))
+            .await;
         assert_eq!(result["isError"], true);
     }
 
@@ -339,7 +379,9 @@ mod tests {
         std::fs::write(tmp.path().join("a.txt"), "").unwrap();
         std::fs::write(tmp.path().join("b.txt"), "").unwrap();
 
-        let result = DirList.call(json!({"path": tmp.path().display().to_string()})).await;
+        let result = DirList
+            .call(json!({"path": tmp.path().display().to_string()}))
+            .await;
         assert_eq!(result["isError"], false);
         let text = result["content"][0]["text"].as_str().unwrap();
         let entries: Vec<serde_json::Value> = serde_json::from_str(text).unwrap();
@@ -352,7 +394,9 @@ mod tests {
         let path = tmp.path().join("stat.txt");
         std::fs::write(&path, "12345").unwrap();
 
-        let result = FileStat.call(json!({"path": path.display().to_string()})).await;
+        let result = FileStat
+            .call(json!({"path": path.display().to_string()}))
+            .await;
         assert_eq!(result["isError"], false);
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"size\": 5"));

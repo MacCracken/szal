@@ -1,7 +1,7 @@
 //! MCP tools for flow creation, validation, and manipulation.
 
 use crate::flow::{FlowDef, FlowMode};
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, result_error, result_ok, tool_def};
 use crate::step::StepDef;
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
@@ -35,19 +35,30 @@ impl Tool for FlowCreate {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let name = match args.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n,
                 None => return result_error("missing required field: name"),
             };
-            let mode = match args.get("mode").and_then(|v| v.as_str()).and_then(parse_flow_mode) {
+            let mode = match args
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .and_then(parse_flow_mode)
+            {
                 Some(m) => m,
                 None => return result_error("missing or invalid mode"),
             };
 
             let mut flow = FlowDef::new(name, mode);
-            if args.get("rollback_on_failure").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if args
+                .get("rollback_on_failure")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 flow = flow.with_rollback();
             }
             if let Some(t) = args.get("timeout_ms").and_then(|v| v.as_u64()) {
@@ -78,7 +89,10 @@ impl Tool for FlowValidate {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("flow_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -89,7 +103,12 @@ impl Tool for FlowValidate {
                 Err(e) => return result_error(format!("invalid JSON: {e}")),
             };
             match flow.validate() {
-                Ok(()) => result_ok(&format!("valid: flow '{}' ({} steps, mode={})", flow.name, flow.steps.len(), flow.mode)),
+                Ok(()) => result_ok(&format!(
+                    "valid: flow '{}' ({} steps, mode={})",
+                    flow.name,
+                    flow.steps.len(),
+                    flow.mode
+                )),
                 Err(e) => result_error(format!("validation failed: {e}")),
             }
         })
@@ -108,7 +127,10 @@ impl Tool for FlowFromJson {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("flow_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -140,10 +162,18 @@ pub struct FlowListModes;
 
 impl Tool for FlowListModes {
     fn definition(&self) -> BoteToolDef {
-        tool_def("szal_flow_list_modes", "List available workflow execution modes with descriptions", json!({}), vec![])
+        tool_def(
+            "szal_flow_list_modes",
+            "List available workflow execution modes with descriptions",
+            json!({}),
+            vec![],
+        )
     }
 
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        _args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
             let modes = json!([
                 { "mode": "sequential", "description": "Steps run one after another" },
@@ -171,7 +201,10 @@ impl Tool for FlowAddStep {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let flow_str = match args.get("flow_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -201,9 +234,12 @@ mod tests {
 
     #[tokio::test]
     async fn flow_create_basic() {
-        let result = FlowCreate.call(json!({"name": "ci-cd", "mode": "dag"})).await;
+        let result = FlowCreate
+            .call(json!({"name": "ci-cd", "mode": "dag"}))
+            .await;
         assert_eq!(result["isError"], false);
-        let flow: FlowDef = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let flow: FlowDef =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(flow.name, "ci-cd");
         assert_eq!(flow.mode, FlowMode::Dag);
     }
@@ -212,7 +248,8 @@ mod tests {
     async fn flow_create_with_options() {
         let result = FlowCreate.call(json!({"name": "deploy", "mode": "sequential", "rollback_on_failure": true, "timeout_ms": 300000})).await;
         assert_eq!(result["isError"], false);
-        let flow: FlowDef = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let flow: FlowDef =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert!(flow.rollback_on_failure);
         assert_eq!(flow.timeout_ms, Some(300_000));
     }
@@ -244,7 +281,9 @@ mod tests {
         let mut flow = FlowDef::new("broken", FlowMode::Dag);
         flow.add_step(a);
         flow.add_step(b);
-        let result = FlowValidate.call(json!({"flow_json": serde_json::to_string(&flow).unwrap()})).await;
+        let result = FlowValidate
+            .call(json!({"flow_json": serde_json::to_string(&flow).unwrap()}))
+            .await;
         assert_eq!(result["isError"], true);
     }
 
@@ -261,12 +300,15 @@ mod tests {
     async fn flow_add_step() {
         let flow = FlowDef::new("test", FlowMode::Sequential);
         let step = StepDef::new("build");
-        let result = FlowAddStep.call(json!({
-            "flow_json": serde_json::to_string(&flow).unwrap(),
-            "step_json": serde_json::to_string(&step).unwrap()
-        })).await;
+        let result = FlowAddStep
+            .call(json!({
+                "flow_json": serde_json::to_string(&flow).unwrap(),
+                "step_json": serde_json::to_string(&step).unwrap()
+            }))
+            .await;
         assert_eq!(result["isError"], false);
-        let updated: FlowDef = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let updated: FlowDef =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(updated.steps.len(), 1);
     }
 
@@ -275,7 +317,9 @@ mod tests {
         let mut flow = FlowDef::new("pipeline", FlowMode::Dag);
         flow.add_step(StepDef::new("build"));
         flow.add_step(StepDef::new("test"));
-        let result = FlowFromJson.call(json!({"flow_json": serde_json::to_string(&flow).unwrap()})).await;
+        let result = FlowFromJson
+            .call(json!({"flow_json": serde_json::to_string(&flow).unwrap()}))
+            .await;
         assert_eq!(result["isError"], false);
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"step_count\": 2"));

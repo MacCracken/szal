@@ -93,13 +93,16 @@ pub fn validate_path(path: &str) -> Result<std::path::PathBuf, String> {
     // Canonicalize to resolve symlinks and ..
     // For new files (FileWrite), parent must exist
     let canonical = if resolved.exists() {
-        resolved.canonicalize()
+        resolved
+            .canonicalize()
             .map_err(|e| format!("failed to resolve path: {e}"))?
     } else {
         // For non-existent paths, canonicalize the parent
-        let parent = resolved.parent()
+        let parent = resolved
+            .parent()
             .ok_or_else(|| "invalid path".to_string())?;
-        let canonical_parent = parent.canonicalize()
+        let canonical_parent = parent
+            .canonicalize()
             .map_err(|e| format!("failed to resolve parent path: {e}"))?;
         canonical_parent.join(resolved.file_name().unwrap_or_default())
     };

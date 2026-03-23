@@ -36,9 +36,8 @@ pub type StepHandler = Arc<
 >;
 
 /// A rollback handler — called when a completed step needs to be undone.
-pub type RollbackHandler = Arc<
-    dyn Fn(StepDef) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
->;
+pub type RollbackHandler =
+    Arc<dyn Fn(StepDef) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
 /// Execution engine configuration.
 #[derive(Debug, Clone)]
@@ -202,14 +201,16 @@ impl Engine {
             handles.push(tokio::spawn(async move {
                 let _permit = match sem.acquire().await {
                     Ok(p) => p,
-                    Err(_) => return StepResult {
-                        step_id: step.id,
-                        status: StepStatus::Failed,
-                        output: serde_json::json!(null),
-                        duration_ms: 0,
-                        attempts: 0,
-                        error: Some("semaphore closed".into()),
-                    },
+                    Err(_) => {
+                        return StepResult {
+                            step_id: step.id,
+                            status: StepStatus::Failed,
+                            output: serde_json::json!(null),
+                            duration_ms: 0,
+                            attempts: 0,
+                            error: Some("semaphore closed".into()),
+                        };
+                    }
                 };
                 execute_step_with_handler(&step, &handler).await
             }));
@@ -348,14 +349,16 @@ impl Engine {
                     handles.push(tokio::spawn(async move {
                         let _permit = match sem.acquire().await {
                             Ok(p) => p,
-                            Err(_) => return StepResult {
-                                step_id: step.id,
-                                status: StepStatus::Failed,
-                                output: serde_json::json!(null),
-                                duration_ms: 0,
-                                attempts: 0,
-                                error: Some("semaphore closed".into()),
-                            },
+                            Err(_) => {
+                                return StepResult {
+                                    step_id: step.id,
+                                    status: StepStatus::Failed,
+                                    output: serde_json::json!(null),
+                                    duration_ms: 0,
+                                    attempts: 0,
+                                    error: Some("semaphore closed".into()),
+                                };
+                            }
                         };
                         execute_step_with_handler(&step, &handler).await
                     }));
@@ -415,11 +418,7 @@ impl Engine {
         execute_step_with_handler(step, &self.handler).await
     }
 
-    async fn rollback_completed_steps(
-        &self,
-        flow: &FlowDef,
-        step_results: &[StepResult],
-    ) -> bool {
+    async fn rollback_completed_steps(&self, flow: &FlowDef, step_results: &[StepResult]) -> bool {
         let Some(ref rollback_handler) = self.rollback_handler else {
             return false;
         };
@@ -521,7 +520,6 @@ impl Engine {
             rolled_back,
         })
     }
-
 }
 
 /// Create a [`StepHandler`] from an async function.
@@ -579,11 +577,7 @@ async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> Ste
 
         let fut = (handler)(step.clone());
         let result = if step.timeout_ms < u64::MAX {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(step.timeout_ms),
-                fut,
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_millis(step.timeout_ms), fut).await
             {
                 Ok(r) => r,
                 Err(_) => {
@@ -946,8 +940,8 @@ mod tests {
         flow.add_step(StepDef::new("setup").with_rollback());
         flow.add_step(StepDef::new("deploy"));
 
-        let engine = Engine::new(EngineConfig::default(), handler)
-            .with_rollback_handler(rollback_handler);
+        let engine =
+            Engine::new(EngineConfig::default(), handler).with_rollback_handler(rollback_handler);
         let result = engine.run(&flow).await.unwrap();
         assert!(!result.success);
         assert!(result.rolled_back);
@@ -1000,16 +994,15 @@ mod tests {
             })
         });
 
-        let rollback_handler: RollbackHandler = Arc::new(|_step| {
-            Box::pin(async move { Err("rollback failed".into()) })
-        });
+        let rollback_handler: RollbackHandler =
+            Arc::new(|_step| Box::pin(async move { Err("rollback failed".into()) }));
 
         let mut flow = FlowDef::new("rb-fail", FlowMode::Sequential).with_rollback();
         flow.add_step(StepDef::new("setup").with_rollback());
         flow.add_step(StepDef::new("deploy"));
 
-        let engine = Engine::new(EngineConfig::default(), handler)
-            .with_rollback_handler(rollback_handler);
+        let engine =
+            Engine::new(EngineConfig::default(), handler).with_rollback_handler(rollback_handler);
         let result = engine.run(&flow).await.unwrap();
         assert!(!result.success);
         assert!(!result.rolled_back); // rollback failed, so should be false
@@ -1059,9 +1052,7 @@ mod tests {
 
         let engine = Engine::new(
             EngineConfig::default(),
-            handler_fn(|step| async move {
-                Ok(serde_json::json!({"step": step.name}))
-            }),
+            handler_fn(|step| async move { Ok(serde_json::json!({"step": step.name})) }),
         );
         let result = engine.run(&flow).await.unwrap();
         assert!(result.success);

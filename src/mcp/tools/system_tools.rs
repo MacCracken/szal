@@ -1,22 +1,28 @@
 //! System information and process tools.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_ok_json, result_error};
+use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
 use base64::{Engine as B64Engine, engine::general_purpose::STANDARD};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
-
-
 
 /// Get system information (hostname, OS, arch, CPUs, memory).
 pub struct SystemInfo;
 
 impl Tool for SystemInfo {
     fn definition(&self) -> BoteToolDef {
-        tool_def("szal_system_info", "Get system hostname, OS, architecture, CPU count, and uptime", json!({}), vec![])
+        tool_def(
+            "szal_system_info",
+            "Get system hostname, OS, architecture, CPU count, and uptime",
+            json!({}),
+            vec![],
+        )
     }
 
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        _args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
             let hostname = std::fs::read_to_string("/etc/hostname")
                 .unwrap_or_else(|_| "unknown".into())
@@ -51,10 +57,18 @@ pub struct Cwd;
 
 impl Tool for Cwd {
     fn definition(&self) -> BoteToolDef {
-        tool_def("szal_cwd", "Get the current working directory", json!({}), vec![])
+        tool_def(
+            "szal_cwd",
+            "Get the current working directory",
+            json!({}),
+            vec![],
+        )
     }
 
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        _args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
             match std::env::current_dir() {
                 Ok(p) => result_ok(&p.display().to_string()),
@@ -77,7 +91,10 @@ impl Tool for EnvGet {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let name = match args.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n,
@@ -96,10 +113,18 @@ pub struct Timestamp;
 
 impl Tool for Timestamp {
     fn definition(&self) -> BoteToolDef {
-        tool_def("szal_timestamp", "Get the current timestamp in ISO 8601 and Unix epoch formats", json!({}), vec![])
+        tool_def(
+            "szal_timestamp",
+            "Get the current timestamp in ISO 8601 and Unix epoch formats",
+            json!({}),
+            vec![],
+        )
     }
 
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        _args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
             let now = chrono::Utc::now();
             result_ok_json(&json!({
@@ -124,10 +149,19 @@ impl Tool for UuidGen {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
-            let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(1).min(100) as usize;
-            let uuids: Vec<String> = (0..count).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+            let count = args
+                .get("count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1)
+                .min(100) as usize;
+            let uuids: Vec<String> = (0..count)
+                .map(|_| uuid::Uuid::new_v4().to_string())
+                .collect();
             if count == 1 {
                 result_ok(&uuids[0])
             } else {
@@ -153,7 +187,10 @@ impl Tool for JsonDiff {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let a_str = match args.get("a").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -174,11 +211,14 @@ impl Tool for JsonDiff {
             };
 
             let equal = a == b;
-            result_ok(&serde_json::to_string_pretty(&json!({
-                "equal": equal,
-                "a_type": type_name(&a),
-                "b_type": type_name(&b),
-            })).unwrap_or_default())
+            result_ok(
+                &serde_json::to_string_pretty(&json!({
+                    "equal": equal,
+                    "a_type": type_name(&a),
+                    "b_type": type_name(&b),
+                }))
+                .unwrap_or_default(),
+            )
         })
     }
 }
@@ -207,7 +247,10 @@ impl Tool for JsonValidate {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("json").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -222,12 +265,15 @@ impl Tool for JsonValidate {
                     });
                     result_ok(&serde_json::to_string_pretty(&info).unwrap_or_default())
                 }
-                Err(e) => result_ok(&serde_json::to_string_pretty(&json!({
-                    "valid": false,
-                    "error": e.to_string(),
-                    "line": e.line(),
-                    "column": e.column(),
-                })).unwrap_or_default()),
+                Err(e) => result_ok(
+                    &serde_json::to_string_pretty(&json!({
+                        "valid": false,
+                        "error": e.to_string(),
+                        "line": e.line(),
+                        "column": e.column(),
+                    }))
+                    .unwrap_or_default(),
+                ),
             }
         })
     }
@@ -249,28 +295,32 @@ impl Tool for Base64Tool {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let input = match args.get("input").and_then(|v| v.as_str()) {
                 Some(s) => s,
                 None => return result_error("missing required field: input"),
             };
-            let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("encode");
+            let op = args
+                .get("operation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("encode");
 
             match op {
                 "encode" => {
                     let encoded = STANDARD.encode(input.as_bytes());
                     result_ok(&encoded)
                 }
-                "decode" => {
-                    match STANDARD.decode(input) {
-                        Ok(bytes) => match String::from_utf8(bytes) {
-                            Ok(s) => result_ok(&s),
-                            Err(_) => result_error("decoded bytes are not valid UTF-8"),
-                        },
-                        Err(e) => result_error(format!("base64 decode error: {e}")),
-                    }
-                }
+                "decode" => match STANDARD.decode(input) {
+                    Ok(bytes) => match String::from_utf8(bytes) {
+                        Ok(s) => result_ok(&s),
+                        Err(_) => result_error("decoded bytes are not valid UTF-8"),
+                    },
+                    Err(e) => result_error(format!("base64 decode error: {e}")),
+                },
                 _ => result_error(format!("invalid operation: {op}")),
             }
         })
@@ -304,7 +354,9 @@ mod tests {
 
     #[tokio::test]
     async fn env_get_missing() {
-        let result = EnvGet.call(json!({"name": "SZAL_NONEXISTENT_VAR_12345"})).await;
+        let result = EnvGet
+            .call(json!({"name": "SZAL_NONEXISTENT_VAR_12345"}))
+            .await;
         assert_eq!(result["isError"], true);
     }
 
@@ -335,14 +387,18 @@ mod tests {
 
     #[tokio::test]
     async fn json_diff_equal() {
-        let result = JsonDiff.call(json!({"a": "{\"x\":1}", "b": "{\"x\":1}"})).await;
+        let result = JsonDiff
+            .call(json!({"a": "{\"x\":1}", "b": "{\"x\":1}"}))
+            .await;
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"equal\": true"));
     }
 
     #[tokio::test]
     async fn json_diff_not_equal() {
-        let result = JsonDiff.call(json!({"a": "{\"x\":1}", "b": "{\"x\":2}"})).await;
+        let result = JsonDiff
+            .call(json!({"a": "{\"x\":1}", "b": "{\"x\":2}"}))
+            .await;
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"equal\": false"));
     }
@@ -369,8 +425,13 @@ mod tests {
         let encoded = result["content"][0]["text"].as_str().unwrap();
         assert_eq!(encoded, "aGVsbG8gd29ybGQ=");
 
-        let result = Base64Tool.call(json!({"input": encoded, "operation": "decode"})).await;
+        let result = Base64Tool
+            .call(json!({"input": encoded, "operation": "decode"}))
+            .await;
         assert_eq!(result["isError"], false);
-        assert_eq!(result["content"][0]["text"].as_str().unwrap(), "hello world");
+        assert_eq!(
+            result["content"][0]["text"].as_str().unwrap(),
+            "hello world"
+        );
     }
 }

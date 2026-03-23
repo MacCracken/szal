@@ -1,12 +1,10 @@
 //! Hashing and checksum tools.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, result_error, result_ok, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use sha2::Digest;
 use std::pin::Pin;
-
-
 
 /// Compute SHA-256 hash of a string or file.
 pub struct Sha256;
@@ -24,7 +22,10 @@ impl Tool for Sha256 {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let data = if let Some(input) = args.get("input").and_then(|v| v.as_str()) {
                 input.as_bytes().to_vec()
@@ -35,7 +36,12 @@ impl Tool for Sha256 {
                 };
                 match std::fs::read(&validated) {
                     Ok(d) => d,
-                    Err(e) => return result_error(format!("failed to read {}: {e}", validated.display())),
+                    Err(e) => {
+                        return result_error(format!(
+                            "failed to read {}: {e}",
+                            validated.display()
+                        ));
+                    }
                 }
             } else {
                 return result_error("provide either 'input' or 'file'");
@@ -43,11 +49,14 @@ impl Tool for Sha256 {
 
             let hash = sha2::Sha256::digest(&data);
             let hex = format!("{hash:x}");
-            result_ok(&serde_json::to_string_pretty(&json!({
-                "algorithm": "sha256",
-                "hash": hex,
-                "input_bytes": data.len(),
-            })).unwrap_or_default())
+            result_ok(
+                &serde_json::to_string_pretty(&json!({
+                    "algorithm": "sha256",
+                    "hash": hex,
+                    "input_bytes": data.len(),
+                }))
+                .unwrap_or_default(),
+            )
         })
     }
 }
@@ -67,7 +76,10 @@ impl Tool for Md5 {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let input = match args.get("input").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -94,9 +106,16 @@ impl Tool for RandomToken {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
-            let bytes = args.get("bytes").and_then(|v| v.as_u64()).unwrap_or(32).min(256) as usize;
+            let bytes = args
+                .get("bytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(32)
+                .min(256) as usize;
 
             let mut buf = vec![0u8; bytes];
             use std::io::Read;
@@ -136,7 +155,9 @@ mod tests {
         let tmp = tempfile::TempDir::new_in(cwd).unwrap();
         let path = tmp.path().join("test.bin");
         std::fs::write(&path, "test content").unwrap();
-        let result = Sha256.call(json!({"file": path.display().to_string()})).await;
+        let result = Sha256
+            .call(json!({"file": path.display().to_string()}))
+            .await;
         assert_eq!(result["isError"], false);
     }
 

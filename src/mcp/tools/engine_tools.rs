@@ -1,12 +1,10 @@
 //! MCP tools for engine configuration and flow result inspection.
 
 use crate::engine::EngineConfig;
-use crate::mcp::{Tool, tool_def, result_ok, result_ok_json, result_error};
+use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
-
-
 
 pub struct EngineCreate;
 
@@ -23,7 +21,10 @@ impl Tool for EngineCreate {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let mut config = EngineConfig::default();
             if let Some(c) = args.get("max_concurrency").and_then(|v| v.as_u64()) {
@@ -52,7 +53,10 @@ impl Tool for ResultInspect {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("result_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -62,14 +66,38 @@ impl Tool for ResultInspect {
                 Ok(v) => v,
                 Err(e) => return result_error(format!("invalid JSON: {e}")),
             };
-            let flow_name = val.get("flow_name").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-            let rolled_back = val.get("rolled_back").and_then(|v| v.as_bool()).unwrap_or(false);
-            let total_ms = val.get("total_duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let flow_name = val
+                .get("flow_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let success = val
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let rolled_back = val
+                .get("rolled_back")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let total_ms = val
+                .get("total_duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             let steps = val.get("steps").and_then(|v| v.as_array());
             let step_count = steps.map(|s| s.len()).unwrap_or(0);
-            let completed = steps.map(|s| s.iter().filter(|st| st.get("status").and_then(|v| v.as_str()) == Some("Completed")).count()).unwrap_or(0);
-            let failed = steps.map(|s| s.iter().filter(|st| st.get("status").and_then(|v| v.as_str()) == Some("Failed")).count()).unwrap_or(0);
+            let completed = steps
+                .map(|s| {
+                    s.iter()
+                        .filter(|st| st.get("status").and_then(|v| v.as_str()) == Some("Completed"))
+                        .count()
+                })
+                .unwrap_or(0);
+            let failed = steps
+                .map(|s| {
+                    s.iter()
+                        .filter(|st| st.get("status").and_then(|v| v.as_str()) == Some("Failed"))
+                        .count()
+                })
+                .unwrap_or(0);
             result_ok(&serde_json::to_string_pretty(&json!({
                 "flow_name": flow_name, "success": success, "rolled_back": rolled_back,
                 "total_duration_ms": total_ms, "step_count": step_count, "completed": completed, "failed": failed,
@@ -82,10 +110,18 @@ pub struct StepStatusList;
 
 impl Tool for StepStatusList {
     fn definition(&self) -> BoteToolDef {
-        tool_def("szal_step_status_list", "List all possible step execution statuses", json!({}), vec![])
+        tool_def(
+            "szal_step_status_list",
+            "List all possible step execution statuses",
+            json!({}),
+            vec![],
+        )
     }
 
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        _args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
             result_ok(&serde_json::to_string_pretty(&json!([
                 { "status": "pending", "description": "Step has not started" },
@@ -103,10 +139,18 @@ pub struct ErrorList;
 
 impl Tool for ErrorList {
     fn definition(&self) -> BoteToolDef {
-        tool_def("szal_error_list", "List all workflow error types with descriptions", json!({}), vec![])
+        tool_def(
+            "szal_error_list",
+            "List all workflow error types with descriptions",
+            json!({}),
+            vec![],
+        )
     }
 
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        _args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
             result_ok(&serde_json::to_string_pretty(&json!([
                 { "error": "StepFailed", "description": "A step failed with a specific reason" },
@@ -124,10 +168,18 @@ pub struct ServerInfo;
 
 impl Tool for ServerInfo {
     fn definition(&self) -> BoteToolDef {
-        tool_def("szal_server_info", "Show szal server info — version, capabilities", json!({}), vec![])
+        tool_def(
+            "szal_server_info",
+            "Show szal server info — version, capabilities",
+            json!({}),
+            vec![],
+        )
     }
 
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        _args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
             result_ok_json(&json!({
                 "name": "szal",
@@ -157,7 +209,9 @@ mod tests {
 
     #[tokio::test]
     async fn engine_create_custom() {
-        let result = EngineCreate.call(json!({"max_concurrency": 4, "global_timeout_ms": 60000})).await;
+        let result = EngineCreate
+            .call(json!({"max_concurrency": 4, "global_timeout_ms": 60000}))
+            .await;
         assert_eq!(result["isError"], false);
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"max_concurrency\": 4"));

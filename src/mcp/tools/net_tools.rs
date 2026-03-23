@@ -1,6 +1,6 @@
 //! Network and HTTP tools.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, result_error, result_ok, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -39,18 +39,20 @@ fn is_safe_url(url: &str) -> Result<(), String> {
         || host_part.starts_with("10.")
         || host_part.starts_with("192.168.")
         || (host_part.starts_with("172.") && {
-            host_part.split('.').nth(1)
+            host_part
+                .split('.')
+                .nth(1)
                 .and_then(|s| s.parse::<u8>().ok())
                 .is_some_and(|n| (16..=31).contains(&n))
         })
     {
-        return Err(format!("requests to private/internal addresses are blocked: {host_part}"));
+        return Err(format!(
+            "requests to private/internal addresses are blocked: {host_part}"
+        ));
     }
 
     Ok(())
 }
-
-
 
 /// HTTP request via curl.
 pub struct HttpRequest;
@@ -71,7 +73,10 @@ impl Tool for HttpRequest {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let url = match args.get("url").and_then(|v| v.as_str()) {
                 Some(u) => u,
@@ -84,7 +89,10 @@ impl Tool for HttpRequest {
                 return result_error(e);
             }
             let method = args.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
-            let timeout = args.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(30);
+            let timeout = args
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(30);
 
             let mut cmd = tokio::process::Command::new("curl");
             cmd.args(["-s", "-S", "-w", "\n%{http_code}", "-X", method]);
@@ -95,8 +103,14 @@ impl Tool for HttpRequest {
                 for (k, v) in headers {
                     if let Some(val) = v.as_str() {
                         // Reject header values with newlines to prevent header injection
-                        if k.contains('\n') || k.contains('\r') || val.contains('\n') || val.contains('\r') {
-                            return result_error(format!("header '{k}' contains invalid newline characters"));
+                        if k.contains('\n')
+                            || k.contains('\r')
+                            || val.contains('\n')
+                            || val.contains('\r')
+                        {
+                            return result_error(format!(
+                                "header '{k}' contains invalid newline characters"
+                            ));
                         }
                         cmd.args(["-H", &format!("{k}: {val}")]);
                     }
@@ -120,7 +134,10 @@ impl Tool for HttpRequest {
 
                     // Last line is status code from -w
                     let lines: Vec<&str> = raw.lines().collect();
-                    let status_code = lines.last().and_then(|l| l.parse::<u16>().ok()).unwrap_or(0);
+                    let status_code = lines
+                        .last()
+                        .and_then(|l| l.parse::<u16>().ok())
+                        .unwrap_or(0);
 
                     // Split headers from body (headers end at empty line)
                     let mut header_section = true;
@@ -142,11 +159,14 @@ impl Tool for HttpRequest {
                         }
                     }
 
-                    result_ok(&serde_json::to_string_pretty(&json!({
-                        "status_code": status_code,
-                        "headers": headers,
-                        "body": body_lines.join("\n"),
-                    })).unwrap_or_default())
+                    result_ok(
+                        &serde_json::to_string_pretty(&json!({
+                            "status_code": status_code,
+                            "headers": headers,
+                            "body": body_lines.join("\n"),
+                        }))
+                        .unwrap_or_default(),
+                    )
                 }
                 Err(e) => result_error(format!("failed to execute curl: {e}")),
             }
@@ -167,7 +187,10 @@ impl Tool for DnsLookup {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let hostname = match args.get("hostname").and_then(|v| v.as_str()) {
                 Some(h) => h,
@@ -178,10 +201,13 @@ impl Tool for DnsLookup {
             match tokio::net::lookup_host(&addr).await {
                 Ok(addrs) => {
                     let ips: Vec<String> = addrs.map(|a| a.ip().to_string()).collect();
-                    result_ok(&serde_json::to_string_pretty(&json!({
-                        "hostname": hostname,
-                        "addresses": ips,
-                    })).unwrap_or_default())
+                    result_ok(
+                        &serde_json::to_string_pretty(&json!({
+                            "hostname": hostname,
+                            "addresses": ips,
+                        }))
+                        .unwrap_or_default(),
+                    )
                 }
                 Err(e) => result_error(format!("DNS lookup failed for {hostname}: {e}")),
             }
@@ -206,15 +232,24 @@ impl Tool for PortCheck {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
-            let host = args.get("host").and_then(|v| v.as_str()).unwrap_or("127.0.0.1");
+            let host = args
+                .get("host")
+                .and_then(|v| v.as_str())
+                .unwrap_or("127.0.0.1");
             let port = match args.get("port").and_then(|v| v.as_u64()) {
                 Some(p) if p <= 65535 => p as u16,
                 Some(p) => return result_error(format!("port {p} out of range (0-65535)")),
                 None => return result_error("missing required field: port"),
             };
-            let timeout_ms = args.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(3000);
+            let timeout_ms = args
+                .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3000);
 
             let addr = format!("{host}:{port}");
             let open = tokio::time::timeout(
@@ -224,11 +259,14 @@ impl Tool for PortCheck {
             .await
             .is_ok_and(|r| r.is_ok());
 
-            result_ok(&serde_json::to_string_pretty(&json!({
-                "host": host,
-                "port": port,
-                "open": open,
-            })).unwrap_or_default())
+            result_ok(
+                &serde_json::to_string_pretty(&json!({
+                    "host": host,
+                    "port": port,
+                    "open": open,
+                }))
+                .unwrap_or_default(),
+            )
         })
     }
 }
@@ -249,13 +287,19 @@ impl Tool for UrlEncode {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let input = match args.get("input").and_then(|v| v.as_str()) {
                 Some(s) => s,
                 None => return result_error("missing required field: input"),
             };
-            let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("encode");
+            let op = args
+                .get("operation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("encode");
 
             match op {
                 "encode" => {
@@ -313,7 +357,9 @@ mod tests {
 
     #[tokio::test]
     async fn dns_lookup_invalid() {
-        let result = DnsLookup.call(json!({"hostname": "this.host.does.not.exist.invalid"})).await;
+        let result = DnsLookup
+            .call(json!({"hostname": "this.host.does.not.exist.invalid"}))
+            .await;
         assert_eq!(result["isError"], true);
     }
 
@@ -328,14 +374,24 @@ mod tests {
 
     #[tokio::test]
     async fn url_encode() {
-        let result = UrlEncode.call(json!({"input": "hello world & foo=bar"})).await;
-        assert_eq!(result["content"][0]["text"].as_str().unwrap(), "hello%20world%20%26%20foo%3Dbar");
+        let result = UrlEncode
+            .call(json!({"input": "hello world & foo=bar"}))
+            .await;
+        assert_eq!(
+            result["content"][0]["text"].as_str().unwrap(),
+            "hello%20world%20%26%20foo%3Dbar"
+        );
     }
 
     #[tokio::test]
     async fn url_decode() {
-        let result = UrlEncode.call(json!({"input": "hello%20world", "operation": "decode"})).await;
-        assert_eq!(result["content"][0]["text"].as_str().unwrap(), "hello world");
+        let result = UrlEncode
+            .call(json!({"input": "hello%20world", "operation": "decode"}))
+            .await;
+        assert_eq!(
+            result["content"][0]["text"].as_str().unwrap(),
+            "hello world"
+        );
     }
 
     #[tokio::test]
@@ -343,7 +399,9 @@ mod tests {
         let original = "spaces & symbols/here?yes=true";
         let encoded = UrlEncode.call(json!({"input": original})).await;
         let enc_text = encoded["content"][0]["text"].as_str().unwrap();
-        let decoded = UrlEncode.call(json!({"input": enc_text, "operation": "decode"})).await;
+        let decoded = UrlEncode
+            .call(json!({"input": enc_text, "operation": "decode"}))
+            .await;
         assert_eq!(decoded["content"][0]["text"].as_str().unwrap(), original);
     }
 
@@ -355,7 +413,9 @@ mod tests {
         // Should not contain raw multi-byte chars
         assert!(!enc_text.contains("中"));
         // Roundtrip
-        let decoded = UrlEncode.call(json!({"input": enc_text, "operation": "decode"})).await;
+        let decoded = UrlEncode
+            .call(json!({"input": enc_text, "operation": "decode"}))
+            .await;
         assert_eq!(decoded["content"][0]["text"].as_str().unwrap(), original);
     }
 
@@ -377,7 +437,9 @@ mod tests {
 
     #[tokio::test]
     async fn http_rejects_localhost() {
-        let result = HttpRequest.call(json!({"url": "http://localhost/admin"})).await;
+        let result = HttpRequest
+            .call(json!({"url": "http://localhost/admin"}))
+            .await;
         assert_eq!(result["isError"], true);
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("private/internal"));
@@ -385,7 +447,9 @@ mod tests {
 
     #[tokio::test]
     async fn http_rejects_metadata_endpoint() {
-        let result = HttpRequest.call(json!({"url": "http://169.254.169.254/latest/meta-data/"})).await;
+        let result = HttpRequest
+            .call(json!({"url": "http://169.254.169.254/latest/meta-data/"}))
+            .await;
         assert_eq!(result["isError"], true);
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("blocked"));
@@ -393,7 +457,9 @@ mod tests {
 
     #[tokio::test]
     async fn http_rejects_private_ip() {
-        let result = HttpRequest.call(json!({"url": "http://192.168.1.1/"})).await;
+        let result = HttpRequest
+            .call(json!({"url": "http://192.168.1.1/"}))
+            .await;
         assert_eq!(result["isError"], true);
 
         let result = HttpRequest.call(json!({"url": "http://10.0.0.1/"})).await;

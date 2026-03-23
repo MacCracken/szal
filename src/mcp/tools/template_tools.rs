@@ -1,11 +1,9 @@
 //! Template and text transformation tools.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, result_error, result_ok, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
-
-
 
 /// Simple mustache-style template rendering.
 pub struct TemplateRender;
@@ -23,7 +21,10 @@ impl Tool for TemplateRender {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let template = match args.get("template").and_then(|v| v.as_str()) {
                 Some(t) => t.to_string(),
@@ -65,7 +66,10 @@ impl Tool for WordCount {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let text = if let Some(t) = args.get("text").and_then(|v| v.as_str()) {
                 t.to_string()
@@ -76,7 +80,12 @@ impl Tool for WordCount {
                 };
                 match std::fs::read_to_string(&validated) {
                     Ok(c) => c,
-                    Err(e) => return result_error(format!("failed to read {}: {e}", validated.display())),
+                    Err(e) => {
+                        return result_error(format!(
+                            "failed to read {}: {e}",
+                            validated.display()
+                        ));
+                    }
                 }
             } else {
                 return result_error("provide either 'text' or 'file'");
@@ -87,12 +96,15 @@ impl Tool for WordCount {
             let chars = text.chars().count();
             let bytes = text.len();
 
-            result_ok(&serde_json::to_string_pretty(&json!({
-                "lines": lines,
-                "words": words,
-                "chars": chars,
-                "bytes": bytes,
-            })).unwrap_or_default())
+            result_ok(
+                &serde_json::to_string_pretty(&json!({
+                    "lines": lines,
+                    "words": words,
+                    "chars": chars,
+                    "bytes": bytes,
+                }))
+                .unwrap_or_default(),
+            )
         })
     }
 }
@@ -115,7 +127,10 @@ impl Tool for TextReplace {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let text = match args.get("text").and_then(|v| v.as_str()) {
                 Some(t) => t,
@@ -158,13 +173,19 @@ impl Tool for TextSplit {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let text = match args.get("text").and_then(|v| v.as_str()) {
                 Some(t) => t,
                 None => return result_error("missing required field: text"),
             };
-            let delim = args.get("delimiter").and_then(|v| v.as_str()).unwrap_or("\n");
+            let delim = args
+                .get("delimiter")
+                .and_then(|v| v.as_str())
+                .unwrap_or("\n");
 
             let parts: Vec<&str> = text.split(delim).collect();
             result_ok(&serde_json::to_string_pretty(&parts).unwrap_or_default())
@@ -188,13 +209,19 @@ impl Tool for TextJoin {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let parts = match args.get("parts").and_then(|v| v.as_array()) {
                 Some(arr) => arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
                 None => return result_error("missing required field: parts"),
             };
-            let sep = args.get("separator").and_then(|v| v.as_str()).unwrap_or("\n");
+            let sep = args
+                .get("separator")
+                .and_then(|v| v.as_str())
+                .unwrap_or("\n");
             result_ok(&parts.join(sep))
         })
     }
@@ -206,16 +233,23 @@ mod tests {
 
     #[tokio::test]
     async fn template_render() {
-        let result = TemplateRender.call(json!({
-            "template": "Hello {{name}}, you are {{age}} years old",
-            "variables": {"name": "Alice", "age": 30}
-        })).await;
-        assert_eq!(result["content"][0]["text"].as_str().unwrap(), "Hello Alice, you are 30 years old");
+        let result = TemplateRender
+            .call(json!({
+                "template": "Hello {{name}}, you are {{age}} years old",
+                "variables": {"name": "Alice", "age": 30}
+            }))
+            .await;
+        assert_eq!(
+            result["content"][0]["text"].as_str().unwrap(),
+            "Hello Alice, you are 30 years old"
+        );
     }
 
     #[tokio::test]
     async fn word_count() {
-        let result = WordCount.call(json!({"text": "hello world\nfoo bar baz"})).await;
+        let result = WordCount
+            .call(json!({"text": "hello world\nfoo bar baz"}))
+            .await;
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"lines\": 2"));
         assert!(text.contains("\"words\": 5"));
@@ -223,19 +257,25 @@ mod tests {
 
     #[tokio::test]
     async fn text_replace_all() {
-        let result = TextReplace.call(json!({"text": "aaa", "search": "a", "replace": "b"})).await;
+        let result = TextReplace
+            .call(json!({"text": "aaa", "search": "a", "replace": "b"}))
+            .await;
         assert_eq!(result["content"][0]["text"].as_str().unwrap(), "bbb");
     }
 
     #[tokio::test]
     async fn text_replace_first() {
-        let result = TextReplace.call(json!({"text": "aaa", "search": "a", "replace": "b", "all": false})).await;
+        let result = TextReplace
+            .call(json!({"text": "aaa", "search": "a", "replace": "b", "all": false}))
+            .await;
         assert_eq!(result["content"][0]["text"].as_str().unwrap(), "baa");
     }
 
     #[tokio::test]
     async fn text_split() {
-        let result = TextSplit.call(json!({"text": "a,b,c", "delimiter": ","})).await;
+        let result = TextSplit
+            .call(json!({"text": "a,b,c", "delimiter": ","}))
+            .await;
         let text = result["content"][0]["text"].as_str().unwrap();
         let parts: Vec<String> = serde_json::from_str(text).unwrap();
         assert_eq!(parts, vec!["a", "b", "c"]);
@@ -243,7 +283,9 @@ mod tests {
 
     #[tokio::test]
     async fn text_join() {
-        let result = TextJoin.call(json!({"parts": ["x", "y", "z"], "separator": "-"})).await;
+        let result = TextJoin
+            .call(json!({"parts": ["x", "y", "z"], "separator": "-"}))
+            .await;
         assert_eq!(result["content"][0]["text"].as_str().unwrap(), "x-y-z");
     }
 }

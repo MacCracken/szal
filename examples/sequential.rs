@@ -14,7 +14,12 @@ fn main() {
     flow.add_step(StepDef::new("deploy").with_rollback());
 
     flow.validate().unwrap();
-    println!("Flow '{}' validated: {} steps, mode={}", flow.name, flow.steps.len(), flow.mode);
+    println!(
+        "Flow '{}' validated: {} steps, mode={}",
+        flow.name,
+        flow.steps.len(),
+        flow.mode
+    );
     for step in &flow.steps {
         println!(
             "  - {} (timeout={}ms, retries={}, rollback={})",

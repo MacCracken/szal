@@ -5,15 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.23.3] — 2026-03-23
 
-### Planned — v0.22
-
-- MCP protocol layer (streamable HTTP, SSE, stdio transports)
-- Tool/Resource/Prompt traits and dynamic registry
-- Majra integration (pub/sub, queue, heartbeat)
-- ai-hwaccel integration (hardware-aware step scheduling)
-- Examples, fuzz targets, property-based tests
+### Changed
+- Bump bote dependency to 0.22.3 (crates.io, was local path)
+- Bump majra dependency to 0.22.3
+- Version alignment with hoosh ecosystem (0.23.3)
 
 ## [0.21.3] — 2026-03-21
 

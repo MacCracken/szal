@@ -1,11 +1,9 @@
 //! Math, conversion, and data tools.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, result_error, result_ok, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
-
-
 
 /// Evaluate a basic math expression.
 pub struct MathEval;
@@ -20,16 +18,23 @@ impl Tool for MathEval {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let expr = match args.get("expression").and_then(|v| v.as_str()) {
                 Some(e) => e,
                 None => return result_error("missing required field: expression"),
             };
 
-            let valid = expr.chars().all(|c| c.is_ascii_digit() || " +-*/.%()".contains(c));
+            let valid = expr
+                .chars()
+                .all(|c| c.is_ascii_digit() || " +-*/.%()".contains(c));
             if !valid {
-                return result_error("expression contains invalid characters — only digits, +, -, *, /, %, (, ), . allowed");
+                return result_error(
+                    "expression contains invalid characters — only digits, +, -, *, /, %, (, ), . allowed",
+                );
             }
 
             match eval_expr(expr) {
@@ -75,33 +80,73 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
     let mut chars = input.chars().peekable();
     while let Some(&c) = chars.peek() {
         match c {
-            ' ' => { chars.next(); }
-            '+' => { tokens.push(Token::Plus); chars.next(); }
+            ' ' => {
+                chars.next();
+            }
+            '+' => {
+                tokens.push(Token::Plus);
+                chars.next();
+            }
             '-' => {
                 // Unary minus: after operator, open paren, or at start
                 let is_unary = tokens.is_empty()
-                    || matches!(tokens.last(), Some(Token::Plus | Token::Minus | Token::Mul | Token::Div | Token::Mod | Token::LParen));
+                    || matches!(
+                        tokens.last(),
+                        Some(
+                            Token::Plus
+                                | Token::Minus
+                                | Token::Mul
+                                | Token::Div
+                                | Token::Mod
+                                | Token::LParen
+                        )
+                    );
                 chars.next();
                 if is_unary {
                     let mut num = String::with_capacity(16);
                     num.push('-');
                     while let Some(&d) = chars.peek() {
-                        if d.is_ascii_digit() || d == '.' { num.push(d); chars.next(); } else { break; }
+                        if d.is_ascii_digit() || d == '.' {
+                            num.push(d);
+                            chars.next();
+                        } else {
+                            break;
+                        }
                     }
                     tokens.push(Token::Num(num.parse::<f64>().map_err(|e| e.to_string())?));
                 } else {
                     tokens.push(Token::Minus);
                 }
             }
-            '*' => { tokens.push(Token::Mul); chars.next(); }
-            '/' => { tokens.push(Token::Div); chars.next(); }
-            '%' => { tokens.push(Token::Mod); chars.next(); }
-            '(' => { tokens.push(Token::LParen); chars.next(); }
-            ')' => { tokens.push(Token::RParen); chars.next(); }
+            '*' => {
+                tokens.push(Token::Mul);
+                chars.next();
+            }
+            '/' => {
+                tokens.push(Token::Div);
+                chars.next();
+            }
+            '%' => {
+                tokens.push(Token::Mod);
+                chars.next();
+            }
+            '(' => {
+                tokens.push(Token::LParen);
+                chars.next();
+            }
+            ')' => {
+                tokens.push(Token::RParen);
+                chars.next();
+            }
             _ if c.is_ascii_digit() || c == '.' => {
                 let mut num = String::with_capacity(16);
                 while let Some(&d) = chars.peek() {
-                    if d.is_ascii_digit() || d == '.' { num.push(d); chars.next(); } else { break; }
+                    if d.is_ascii_digit() || d == '.' {
+                        num.push(d);
+                        chars.next();
+                    } else {
+                        break;
+                    }
                 }
                 tokens.push(Token::Num(num.parse::<f64>().map_err(|e| e.to_string())?));
             }
@@ -115,8 +160,14 @@ fn parse_add_sub(tokens: &[Token], pos: &mut usize) -> Result<f64, String> {
     let mut left = parse_mul_div(tokens, pos)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
-            Token::Plus => { *pos += 1; left += parse_mul_div(tokens, pos)?; }
-            Token::Minus => { *pos += 1; left -= parse_mul_div(tokens, pos)?; }
+            Token::Plus => {
+                *pos += 1;
+                left += parse_mul_div(tokens, pos)?;
+            }
+            Token::Minus => {
+                *pos += 1;
+                left -= parse_mul_div(tokens, pos)?;
+            }
             _ => break,
         }
     }
@@ -127,17 +178,24 @@ fn parse_mul_div(tokens: &[Token], pos: &mut usize) -> Result<f64, String> {
     let mut left = parse_atom(tokens, pos)?;
     while *pos < tokens.len() {
         match tokens[*pos] {
-            Token::Mul => { *pos += 1; left *= parse_atom(tokens, pos)?; }
+            Token::Mul => {
+                *pos += 1;
+                left *= parse_atom(tokens, pos)?;
+            }
             Token::Div => {
                 *pos += 1;
                 let right = parse_atom(tokens, pos)?;
-                if right == 0.0 { return Err("division by zero".into()); }
+                if right == 0.0 {
+                    return Err("division by zero".into());
+                }
                 left /= right;
             }
             Token::Mod => {
                 *pos += 1;
                 let right = parse_atom(tokens, pos)?;
-                if right == 0.0 { return Err("modulo by zero".into()); }
+                if right == 0.0 {
+                    return Err("modulo by zero".into());
+                }
                 left %= right;
             }
             _ => break,
@@ -151,7 +209,11 @@ fn parse_atom(tokens: &[Token], pos: &mut usize) -> Result<f64, String> {
         return Err("unexpected end of expression".into());
     }
     match &tokens[*pos] {
-        Token::Num(n) => { let v = *n; *pos += 1; Ok(v) }
+        Token::Num(n) => {
+            let v = *n;
+            *pos += 1;
+            Ok(v)
+        }
         Token::LParen => {
             *pos += 1;
             let val = parse_add_sub(tokens, pos)?;
@@ -182,7 +244,10 @@ impl Tool for BaseConvert {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let value = match args.get("value").and_then(|v| v.as_str()) {
                 Some(v) => v,
@@ -219,12 +284,15 @@ impl Tool for BaseConvert {
                         16 => format!("0x{n:x}"),
                         _ => unreachable!(),
                     };
-                    result_ok(&serde_json::to_string_pretty(&json!({
-                        "input": value,
-                        "from_base": from,
-                        "to_base": to,
-                        "result": result,
-                    })).unwrap_or_default())
+                    result_ok(
+                        &serde_json::to_string_pretty(&json!({
+                            "input": value,
+                            "from_base": from,
+                            "to_base": to,
+                            "result": result,
+                        }))
+                        .unwrap_or_default(),
+                    )
                 }
                 Err(e) => result_error(format!("invalid number '{value}' for base {from}: {e}")),
             }
@@ -245,7 +313,10 @@ impl Tool for ByteFormat {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let bytes = match args.get("bytes").and_then(|v| v.as_u64()) {
                 Some(b) => b,
@@ -264,13 +335,16 @@ impl Tool for ByteFormat {
                 (bytes as f64, "B")
             };
 
-            result_ok(&serde_json::to_string_pretty(&json!({
-                "bytes": bytes,
-                "formatted": format!("{value:.2} {unit}"),
-                "kb": bytes as f64 / 1_024.0,
-                "mb": bytes as f64 / 1_048_576.0,
-                "gb": bytes as f64 / 1_073_741_824.0,
-            })).unwrap_or_default())
+            result_ok(
+                &serde_json::to_string_pretty(&json!({
+                    "bytes": bytes,
+                    "formatted": format!("{value:.2} {unit}"),
+                    "kb": bytes as f64 / 1_024.0,
+                    "mb": bytes as f64 / 1_048_576.0,
+                    "gb": bytes as f64 / 1_073_741_824.0,
+                }))
+                .unwrap_or_default(),
+            )
         })
     }
 }
@@ -290,7 +364,10 @@ impl Tool for DurationFormat {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let secs = match args.get("seconds").and_then(|v| v.as_f64()) {
                 Some(s) => s,
@@ -304,18 +381,29 @@ impl Tool for DurationFormat {
             let remaining = total % 60;
 
             let mut parts = Vec::new();
-            if days > 0 { parts.push(format!("{days}d")); }
-            if hours > 0 { parts.push(format!("{hours}h")); }
-            if minutes > 0 { parts.push(format!("{minutes}m")); }
-            if remaining > 0 || parts.is_empty() { parts.push(format!("{remaining}s")); }
+            if days > 0 {
+                parts.push(format!("{days}d"));
+            }
+            if hours > 0 {
+                parts.push(format!("{hours}h"));
+            }
+            if minutes > 0 {
+                parts.push(format!("{minutes}m"));
+            }
+            if remaining > 0 || parts.is_empty() {
+                parts.push(format!("{remaining}s"));
+            }
 
-            result_ok(&serde_json::to_string_pretty(&json!({
-                "seconds": secs,
-                "formatted": parts.join(" "),
-                "days": days,
-                "hours": total / 3600,
-                "minutes": total / 60,
-            })).unwrap_or_default())
+            result_ok(
+                &serde_json::to_string_pretty(&json!({
+                    "seconds": secs,
+                    "formatted": parts.join(" "),
+                    "days": days,
+                    "hours": total / 3600,
+                    "minutes": total / 60,
+                }))
+                .unwrap_or_default(),
+            )
         })
     }
 }
@@ -336,7 +424,10 @@ impl Tool for JsonPath {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("json").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -357,7 +448,9 @@ impl Tool for JsonPath {
                 if let Ok(idx) = segment.parse::<usize>() {
                     match current.get(idx) {
                         Some(v) => current = v,
-                        None => return result_error(format!("index {idx} not found at '{segment}'")),
+                        None => {
+                            return result_error(format!("index {idx} not found at '{segment}'"));
+                        }
                     }
                 } else {
                     match current.get(segment) {
@@ -400,21 +493,27 @@ mod tests {
 
     #[tokio::test]
     async fn base_convert_dec_to_hex() {
-        let result = BaseConvert.call(json!({"value": "255", "from_base": 10, "to_base": 16})).await;
+        let result = BaseConvert
+            .call(json!({"value": "255", "from_base": 10, "to_base": 16}))
+            .await;
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("0xff"));
     }
 
     #[tokio::test]
     async fn base_convert_hex_to_bin() {
-        let result = BaseConvert.call(json!({"value": "0xFF", "from_base": 16, "to_base": 2})).await;
+        let result = BaseConvert
+            .call(json!({"value": "0xFF", "from_base": 16, "to_base": 2}))
+            .await;
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("0b11111111"));
     }
 
     #[tokio::test]
     async fn base_convert_bin_to_dec() {
-        let result = BaseConvert.call(json!({"value": "1010", "from_base": 2, "to_base": 10})).await;
+        let result = BaseConvert
+            .call(json!({"value": "1010", "from_base": 2, "to_base": 10}))
+            .await;
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"result\": \"10\""));
     }
@@ -435,16 +534,26 @@ mod tests {
 
     #[tokio::test]
     async fn json_path_nested() {
-        let result = JsonPath.call(json!({
-            "json": r#"{"data": {"items": [{"name": "first"}, {"name": "second"}]}}"#,
-            "path": "data.items.1.name"
-        })).await;
-        assert_eq!(result["content"][0]["text"].as_str().unwrap().trim_matches('"'), "second");
+        let result = JsonPath
+            .call(json!({
+                "json": r#"{"data": {"items": [{"name": "first"}, {"name": "second"}]}}"#,
+                "path": "data.items.1.name"
+            }))
+            .await;
+        assert_eq!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .trim_matches('"'),
+            "second"
+        );
     }
 
     #[tokio::test]
     async fn json_path_missing() {
-        let result = JsonPath.call(json!({"json": "{\"a\": 1}", "path": "b"})).await;
+        let result = JsonPath
+            .call(json!({"json": "{\"a\": 1}", "path": "b"}))
+            .await;
         assert_eq!(result["isError"], true);
     }
 }

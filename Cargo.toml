@@ -1,6 +1,6 @@
 [package]
 name = "szal"
-version = "0.21.3"
+version = "0.23.3"
 edition = "2024"
 rust-version = "1.89"
 license = "AGPL-3.0-only"
@@ -24,8 +24,8 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 md-5 = "0.10"
 base64 = "0.22"
-bote = { path = "../bote" }
-majra = { version = "0.21", features = ["pubsub", "queue", "heartbeat"], optional = true }
+bote = "0.22.3"
+majra = { version = "0.22.3", features = ["pubsub", "queue", "heartbeat"], optional = true }
 
 [features]
 default = []

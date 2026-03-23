@@ -24,12 +24,12 @@ fn main() {
     flow.add_step(deploy);
 
     flow.validate().unwrap();
-    println!("DAG flow '{}' validated: {} steps", flow.name, flow.steps.len());
+    println!(
+        "DAG flow '{}' validated: {} steps",
+        flow.name,
+        flow.steps.len()
+    );
     for step in &flow.steps {
-        println!(
-            "  - {} (deps={})",
-            step.name,
-            step.depends_on.len()
-        );
+        println!("  - {} (deps={})", step.name, step.depends_on.len());
     }
 }

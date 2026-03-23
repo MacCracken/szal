@@ -1,6 +1,6 @@
 //! MCP tools for step creation and inspection.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, result_error, result_ok, tool_def};
 use crate::step::StepDef;
 use bote::ToolDef;
 use serde_json::json;
@@ -31,7 +31,10 @@ impl Tool for StepCreate {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let name = match args.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n,
@@ -47,10 +50,17 @@ impl Tool for StepCreate {
                 step = step.with_timeout(t);
             }
             if let Some(r) = args.get("max_retries").and_then(|v| v.as_u64()) {
-                let delay = args.get("retry_delay_ms").and_then(|v| v.as_u64()).unwrap_or(1_000);
+                let delay = args
+                    .get("retry_delay_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1_000);
                 step = step.with_retries(r as u32, delay);
             }
-            if args.get("rollbackable").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if args
+                .get("rollbackable")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 step = step.with_rollback();
             }
             if let Some(deps) = args.get("depends_on").and_then(|v| v.as_array()) {
@@ -84,7 +94,10 @@ impl Tool for StepValidate {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("step_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -94,8 +107,12 @@ impl Tool for StepValidate {
             match serde_json::from_str::<StepDef>(json_str) {
                 Ok(step) => {
                     let mut issues = Vec::new();
-                    if step.name.is_empty() { issues.push("name is empty"); }
-                    if step.timeout_ms == 0 { issues.push("timeout_ms is zero"); }
+                    if step.name.is_empty() {
+                        issues.push("name is empty");
+                    }
+                    if step.timeout_ms == 0 {
+                        issues.push("timeout_ms is zero");
+                    }
                     if issues.is_empty() {
                         result_ok(&format!("valid: step '{}' (id={})", step.name, step.id))
                     } else {
@@ -123,7 +140,10 @@ impl Tool for StepInspect {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let json_str = match args.get("step_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -168,15 +188,18 @@ mod tests {
     #[tokio::test]
     async fn step_create_full() {
         let tool = StepCreate;
-        let result = tool.call(json!({
-            "name": "deploy",
-            "timeout_ms": 60000,
-            "max_retries": 3,
-            "retry_delay_ms": 5000,
-            "rollbackable": true
-        })).await;
+        let result = tool
+            .call(json!({
+                "name": "deploy",
+                "timeout_ms": 60000,
+                "max_retries": 3,
+                "retry_delay_ms": 5000,
+                "rollbackable": true
+            }))
+            .await;
         assert_eq!(result["isError"], false);
-        let step: StepDef = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let step: StepDef =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(step.timeout_ms, 60_000);
         assert_eq!(step.max_retries, 3);
         assert!(step.rollbackable);

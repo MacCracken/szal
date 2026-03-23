@@ -1,11 +1,9 @@
 //! Process and command execution tools.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, result_error, result_ok, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
-
-
 
 /// Execute a shell command and return its output.
 pub struct Exec;
@@ -25,7 +23,10 @@ impl Tool for Exec {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let command = match args.get("command").and_then(|v| v.as_str()) {
                 Some(c) => c,
@@ -33,17 +34,30 @@ impl Tool for Exec {
             };
 
             // Reject commands containing path traversal or shell metacharacters
-            if command.contains("..") || command.contains(';') || command.contains('|') || command.contains('&') || command.contains('`') || command.contains('$') {
+            if command.contains("..")
+                || command.contains(';')
+                || command.contains('|')
+                || command.contains('&')
+                || command.contains('`')
+                || command.contains('$')
+            {
                 return result_error("command contains disallowed characters (.. ; | & ` $)");
             }
 
             let cmd_args: Vec<String> = args
                 .get("args")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
 
-            let timeout_ms = args.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(30_000);
+            let timeout_ms = args
+                .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(30_000);
 
             let mut cmd = tokio::process::Command::new(command);
             cmd.args(&cmd_args);
@@ -56,11 +70,9 @@ impl Tool for Exec {
                 cmd.current_dir(validated);
             }
 
-            let result = tokio::time::timeout(
-                std::time::Duration::from_millis(timeout_ms),
-                cmd.output(),
-            )
-            .await;
+            let result =
+                tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+                    .await;
 
             match result {
                 Ok(Ok(output)) => {
@@ -68,12 +80,15 @@ impl Tool for Exec {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                     let code = output.status.code().unwrap_or(-1);
 
-                    result_ok(&serde_json::to_string_pretty(&json!({
-                        "exit_code": code,
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "success": output.status.success(),
-                    })).unwrap_or_default())
+                    result_ok(
+                        &serde_json::to_string_pretty(&json!({
+                            "exit_code": code,
+                            "stdout": stdout,
+                            "stderr": stderr,
+                            "success": output.status.success(),
+                        }))
+                        .unwrap_or_default(),
+                    )
                 }
                 Ok(Err(e)) => result_error(format!("command failed: {e}")),
                 Err(_) => result_error(format!("command timed out after {timeout_ms}ms")),
@@ -90,10 +105,11 @@ impl Tool for Pid {
         tool_def("szal_pid", "Get the current process ID", json!({}), vec![])
     }
 
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
-        Box::pin(async {
-            result_ok(&std::process::id().to_string())
-        })
+    fn call(
+        &self,
+        _args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+        Box::pin(async { result_ok(&std::process::id().to_string()) })
     }
 }
 
@@ -110,7 +126,10 @@ impl Tool for Which {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let command = match args.get("command").and_then(|v| v.as_str()) {
                 Some(c) => c,
@@ -125,16 +144,22 @@ impl Tool for Which {
             match output {
                 Ok(out) if out.status.success() => {
                     let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    result_ok(&serde_json::to_string_pretty(&json!({
-                        "command": command,
-                        "found": true,
-                        "path": path,
-                    })).unwrap_or_default())
+                    result_ok(
+                        &serde_json::to_string_pretty(&json!({
+                            "command": command,
+                            "found": true,
+                            "path": path,
+                        }))
+                        .unwrap_or_default(),
+                    )
                 }
-                _ => result_ok(&serde_json::to_string_pretty(&json!({
-                    "command": command,
-                    "found": false,
-                })).unwrap_or_default()),
+                _ => result_ok(
+                    &serde_json::to_string_pretty(&json!({
+                        "command": command,
+                        "found": false,
+                    }))
+                    .unwrap_or_default(),
+                ),
             }
         })
     }
@@ -146,7 +171,9 @@ mod tests {
 
     #[tokio::test]
     async fn exec_echo() {
-        let result = Exec.call(json!({"command": "echo", "args": ["hello"]})).await;
+        let result = Exec
+            .call(json!({"command": "echo", "args": ["hello"]}))
+            .await;
         assert_eq!(result["isError"], false);
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"success\": true"));
@@ -163,7 +190,9 @@ mod tests {
 
     #[tokio::test]
     async fn exec_nonexistent() {
-        let result = Exec.call(json!({"command": "nonexistent_command_xyz_123"})).await;
+        let result = Exec
+            .call(json!({"command": "nonexistent_command_xyz_123"}))
+            .await;
         assert_eq!(result["isError"], true);
     }
 

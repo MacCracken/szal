@@ -1,12 +1,10 @@
 //! MCP tools for workflow state machine operations.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, result_error, result_ok, tool_def};
 use crate::state::WorkflowState;
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
-
-
 
 fn parse_state(s: &str) -> Option<WorkflowState> {
     match s {
@@ -47,7 +45,10 @@ impl Tool for StateCheck {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let state_str = match args.get("state").and_then(|v| v.as_str()) {
                 Some(s) => s,
@@ -58,12 +59,19 @@ impl Tool for StateCheck {
                 None => return result_error(format!("invalid state: {state_str}")),
             };
             let all = all_workflow_states();
-            let valid_targets: Vec<&str> = all.iter().filter(|(_, s)| state.valid_transition(s)).map(|(n, _)| *n).collect();
-            result_ok(&serde_json::to_string_pretty(&json!({
-                "state": state_str,
-                "is_terminal": state.is_terminal(),
-                "valid_transitions": valid_targets,
-            })).unwrap_or_default())
+            let valid_targets: Vec<&str> = all
+                .iter()
+                .filter(|(_, s)| state.valid_transition(s))
+                .map(|(n, _)| *n)
+                .collect();
+            result_ok(
+                &serde_json::to_string_pretty(&json!({
+                    "state": state_str,
+                    "is_terminal": state.is_terminal(),
+                    "valid_transitions": valid_targets,
+                }))
+                .unwrap_or_default(),
+            )
         })
     }
 }
@@ -83,21 +91,35 @@ impl Tool for StateTransition {
         )
     }
 
-    fn call(&self, args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
-            let from = match args.get("from").and_then(|v| v.as_str()).and_then(parse_state) {
+            let from = match args
+                .get("from")
+                .and_then(|v| v.as_str())
+                .and_then(parse_state)
+            {
                 Some(s) => s,
                 None => return result_error("missing or invalid 'from' state"),
             };
-            let to = match args.get("to").and_then(|v| v.as_str()).and_then(parse_state) {
+            let to = match args
+                .get("to")
+                .and_then(|v| v.as_str())
+                .and_then(parse_state)
+            {
                 Some(s) => s,
                 None => return result_error("missing or invalid 'to' state"),
             };
-            result_ok(&serde_json::to_string_pretty(&json!({
-                "from": args["from"],
-                "to": args["to"],
-                "valid": from.valid_transition(&to),
-            })).unwrap_or_default())
+            result_ok(
+                &serde_json::to_string_pretty(&json!({
+                    "from": args["from"],
+                    "to": args["to"],
+                    "valid": from.valid_transition(&to),
+                }))
+                .unwrap_or_default(),
+            )
         })
     }
 }
@@ -106,10 +128,18 @@ pub struct StateLifecycle;
 
 impl Tool for StateLifecycle {
     fn definition(&self) -> BoteToolDef {
-        tool_def("szal_state_lifecycle", "Show the complete workflow state machine — all states, transitions, and terminal states", json!({}), vec![])
+        tool_def(
+            "szal_state_lifecycle",
+            "Show the complete workflow state machine — all states, transitions, and terminal states",
+            json!({}),
+            vec![],
+        )
     }
 
-    fn call(&self, _args: serde_json::Value) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
+    fn call(
+        &self,
+        _args: serde_json::Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
             let all = all_workflow_states();
             let states: Vec<serde_json::Value> = all.iter().map(|(name, state)| {
@@ -149,14 +179,18 @@ mod tests {
 
     #[tokio::test]
     async fn state_transition_valid() {
-        let result = StateTransition.call(json!({"from": "created", "to": "running"})).await;
+        let result = StateTransition
+            .call(json!({"from": "created", "to": "running"}))
+            .await;
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"valid\": true"));
     }
 
     #[tokio::test]
     async fn state_transition_invalid() {
-        let result = StateTransition.call(json!({"from": "completed", "to": "running"})).await;
+        let result = StateTransition
+            .call(json!({"from": "completed", "to": "running"}))
+            .await;
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"valid\": false"));
     }
