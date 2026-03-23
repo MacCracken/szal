@@ -6,22 +6,8 @@ use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
 
-fn parse_state(s: &str) -> Option<WorkflowState> {
-    match s {
-        "created" => Some(WorkflowState::Created),
-        "running" => Some(WorkflowState::Running),
-        "paused" => Some(WorkflowState::Paused),
-        "completed" => Some(WorkflowState::Completed),
-        "failed" => Some(WorkflowState::Failed),
-        "rolling_back" => Some(WorkflowState::RollingBack),
-        "rolled_back" => Some(WorkflowState::RolledBack),
-        "cancelled" => Some(WorkflowState::Cancelled),
-        _ => None,
-    }
-}
-
-fn all_workflow_states() -> Vec<(&'static str, WorkflowState)> {
-    vec![
+fn all_workflow_states() -> &'static [(&'static str, WorkflowState)] {
+    &[
         ("created", WorkflowState::Created),
         ("running", WorkflowState::Running),
         ("paused", WorkflowState::Paused),
@@ -31,6 +17,13 @@ fn all_workflow_states() -> Vec<(&'static str, WorkflowState)> {
         ("rolled_back", WorkflowState::RolledBack),
         ("cancelled", WorkflowState::Cancelled),
     ]
+}
+
+fn parse_state(s: &str) -> Option<WorkflowState> {
+    all_workflow_states()
+        .iter()
+        .find(|(name, _)| *name == s)
+        .map(|(_, state)| *state)
 }
 
 pub struct StateCheck;

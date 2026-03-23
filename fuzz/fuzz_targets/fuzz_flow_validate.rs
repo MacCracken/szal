@@ -21,9 +21,9 @@ fuzz_target!(|data: &[u8]| {
 
     for i in 0..step_count {
         let mut step = StepDef::new(format!("s{i}"));
-        // Wire dependencies from fuzz data
+        // Only wire dependencies for DAG mode — non-DAG flows with deps always fail validation
         let data_idx = 2 + i;
-        if data_idx < data.len() && !step_ids.is_empty() {
+        if mode == FlowMode::Dag && data_idx < data.len() && !step_ids.is_empty() {
             let dep_idx = data[data_idx] as usize % step_ids.len();
             step = step.depends_on(step_ids[dep_idx]);
         }

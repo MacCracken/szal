@@ -88,7 +88,14 @@ impl Tool for Md5 {
 
             let hash = md5::Md5::digest(input.as_bytes());
             let hex = format!("{hash:x}");
-            result_ok(&hex)
+            result_ok(
+                &serde_json::to_string_pretty(&json!({
+                    "algorithm": "md5",
+                    "hash": hex,
+                    "input_bytes": input.len(),
+                }))
+                .unwrap_or_default(),
+            )
         })
     }
 }
@@ -171,6 +178,9 @@ mod tests {
     async fn md5_string() {
         let result = Md5.call(json!({"input": "hello"})).await;
         assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"algorithm\": \"md5\""));
+        assert!(text.contains("\"hash\":"));
     }
 
     #[tokio::test]
