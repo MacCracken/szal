@@ -70,9 +70,13 @@ impl Tool for WordCount {
             let text = if let Some(t) = args.get("text").and_then(|v| v.as_str()) {
                 t.to_string()
             } else if let Some(path) = args.get("file").and_then(|v| v.as_str()) {
-                match std::fs::read_to_string(path) {
+                let validated = match crate::mcp::validate_path(path) {
+                    Ok(p) => p,
+                    Err(e) => return result_error(e),
+                };
+                match std::fs::read_to_string(&validated) {
                     Ok(c) => c,
-                    Err(e) => return result_error(format!("failed to read {path}: {e}")),
+                    Err(e) => return result_error(format!("failed to read {}: {e}", validated.display())),
                 }
             } else {
                 return result_error("provide either 'text' or 'file'");

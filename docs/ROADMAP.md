@@ -47,6 +47,9 @@
 - [ ] Tracing calls missing flow context in concurrent scenarios — add flow_id to all spans
 - [ ] MCP error responses lack structured error codes (transient vs permanent)
 - [ ] Remaining `unwrap_or_default()` on serde serialization in MCP tools — propagate errors
+- [ ] `ready.pop_front().unwrap()` in DAG loop — safe but is unwrap in production code
+- [ ] Convert remaining blocking `std::fs` calls to `tokio::fs` (DirList read_dir, FileWrite append, validate_path canonicalize/exists, system_tools /etc/hostname + /proc/uptime, template_tools file read)
+- [ ] `git blame` file parameter has no path validation (low risk — git rejects non-tracked files)
 
 ## v0.23 — Agent Orchestration + LLM Gateway
 

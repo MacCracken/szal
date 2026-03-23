@@ -1,50 +1,10 @@
 //! File system tools — read, write, list, stat, search.
 
-use crate::mcp::{Tool, tool_def, result_ok, result_error};
+use crate::mcp::{Tool, tool_def, result_ok, result_error, validate_path};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::path::Path;
 use std::pin::Pin;
-
-/// Validate that a path resolves to a location under the current working directory.
-/// For paths that don't exist yet (e.g. FileWrite to a new file), the parent must exist.
-fn validate_path(path: &str) -> Result<std::path::PathBuf, String> {
-    let p = std::path::Path::new(path);
-
-    // Resolve to absolute path
-    let resolved = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| format!("failed to get cwd: {e}"))?
-            .join(p)
-    };
-
-    // Canonicalize to resolve symlinks and ..
-    // For new files (FileWrite), parent must exist
-    let canonical = if resolved.exists() {
-        resolved.canonicalize()
-            .map_err(|e| format!("failed to resolve path: {e}"))?
-    } else {
-        // For non-existent paths, canonicalize the parent
-        let parent = resolved.parent()
-            .ok_or_else(|| "invalid path".to_string())?;
-        let canonical_parent = parent.canonicalize()
-            .map_err(|e| format!("failed to resolve parent path: {e}"))?;
-        canonical_parent.join(resolved.file_name().unwrap_or_default())
-    };
-
-    let cwd = std::env::current_dir()
-        .map_err(|e| format!("failed to get cwd: {e}"))?
-        .canonicalize()
-        .map_err(|e| format!("failed to resolve cwd: {e}"))?;
-
-    if !canonical.starts_with(&cwd) {
-        return Err(format!("path '{}' is outside working directory", path));
-    }
-
-    Ok(canonical)
-}
 
 
 

@@ -73,6 +73,44 @@ pub fn result_error(msg: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
 }
 
+/// Validate that a path resolves to a location under the current working directory.
+/// For paths that don't exist yet (e.g. FileWrite to a new file), the parent must exist.
+pub fn validate_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("failed to get cwd: {e}"))?
+        .canonicalize()
+        .map_err(|e| format!("failed to resolve cwd: {e}"))?;
+
+    let p = std::path::Path::new(path);
+
+    // Resolve to absolute path
+    let resolved = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    };
+
+    // Canonicalize to resolve symlinks and ..
+    // For new files (FileWrite), parent must exist
+    let canonical = if resolved.exists() {
+        resolved.canonicalize()
+            .map_err(|e| format!("failed to resolve path: {e}"))?
+    } else {
+        // For non-existent paths, canonicalize the parent
+        let parent = resolved.parent()
+            .ok_or_else(|| "invalid path".to_string())?;
+        let canonical_parent = parent.canonicalize()
+            .map_err(|e| format!("failed to resolve parent path: {e}"))?;
+        canonical_parent.join(resolved.file_name().unwrap_or_default())
+    };
+
+    if !canonical.starts_with(&cwd) {
+        return Err(format!("path '{}' is outside working directory", path));
+    }
+
+    Ok(canonical)
+}
+
 /// Helper to build a bote ToolDef with common patterns.
 pub fn tool_def(
     name: impl Into<String>,

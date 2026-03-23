@@ -109,31 +109,8 @@ impl Engine {
         let mut rolled_back = false;
 
         // Rollback on failure if configured
-        if has_failures
-            && flow.rollback_on_failure
-            && let Some(ref rollback_handler) = self.rollback_handler
-        {
-                let completed_steps: Vec<&StepDef> = flow
-                    .steps
-                    .iter()
-                    .filter(|s| {
-                        s.rollbackable
-                            && step_results
-                                .iter()
-                                .any(|r| r.step_id == s.id && r.status == StepStatus::Completed)
-                    })
-                    .collect();
-
-                tracing::info!(flow = %flow.name, steps = completed_steps.len(), "starting rollback");
-                let mut all_rolled_back = true;
-                for step in completed_steps.into_iter().rev() {
-                    if (rollback_handler)(step.clone()).await.is_err() {
-                        tracing::warn!(step = %step.name, "rollback step failed");
-                        all_rolled_back = false;
-                    }
-                }
-                tracing::info!(flow = %flow.name, success = all_rolled_back, "rollback completed");
-                rolled_back = all_rolled_back;
+        if has_failures && flow.rollback_on_failure {
+            rolled_back = self.rollback_completed_steps(flow, &step_results).await;
         }
 
         let result_status = if has_failures {
@@ -169,14 +146,15 @@ impl Engine {
         let mut results = Vec::with_capacity(steps.len());
         let mut failed = false;
         for step in steps {
-            if token.is_some_and(|t| t.is_cancelled()) || failed {
+            let cancelled = token.is_some_and(|t| t.is_cancelled());
+            if cancelled || failed {
                 results.push(StepResult {
                     step_id: step.id,
                     status: StepStatus::Skipped,
                     output: serde_json::json!(null),
                     duration_ms: 0,
                     attempts: 0,
-                    error: Some(if token.is_some_and(|t| t.is_cancelled()) {
+                    error: Some(if cancelled {
                         "cancelled".into()
                     } else {
                         "prior step failed".into()
@@ -239,7 +217,8 @@ impl Engine {
 
         let mut results = Vec::with_capacity(handles.len());
         for (handle, original_id) in handles.into_iter().zip(step_ids) {
-            if token.is_some_and(|t| t.is_cancelled()) || start.elapsed().as_millis() as u64 > timeout_ms {
+            let cancelled = token.is_some_and(|t| t.is_cancelled());
+            if cancelled || start.elapsed().as_millis() as u64 > timeout_ms {
                 handle.abort();
                 results.push(StepResult {
                     step_id: original_id,
@@ -247,7 +226,7 @@ impl Engine {
                     output: serde_json::json!(null),
                     duration_ms: 0,
                     attempts: 0,
-                    error: Some(if token.is_some_and(|t| t.is_cancelled()) {
+                    error: Some(if cancelled {
                         "cancelled".into()
                     } else {
                         "flow timeout exceeded".into()
@@ -283,7 +262,6 @@ impl Engine {
         tracing::debug!(steps = steps.len(), "running DAG execution");
         let sem = Arc::new(Semaphore::new(self.config.max_concurrency.max(1)));
         let mut results: Vec<StepResult> = Vec::with_capacity(steps.len());
-        let mut completed: HashSet<StepId> = HashSet::new();
         let mut failed: HashSet<StepId> = HashSet::new();
 
         // Build in-degree map
@@ -306,8 +284,9 @@ impl Engine {
             .collect();
 
         while !ready.is_empty() {
-            if token.is_some_and(|t| t.is_cancelled()) || start.elapsed().as_millis() as u64 > timeout_ms {
-                let reason = if token.is_some_and(|t| t.is_cancelled()) {
+            let cancelled = token.is_some_and(|t| t.is_cancelled());
+            if cancelled || start.elapsed().as_millis() as u64 > timeout_ms {
+                let reason = if cancelled {
                     "cancelled"
                 } else {
                     "flow timeout exceeded"
@@ -386,9 +365,7 @@ impl Engine {
             for (handle, original_id) in handles.into_iter().zip(dag_step_ids) {
                 match handle.await {
                     Ok(result) => {
-                        if result.status == StepStatus::Completed {
-                            completed.insert(original_id);
-                        } else {
+                        if result.status != StepStatus::Completed {
                             failed.insert(original_id);
                         }
                         // Unlock dependents
@@ -438,6 +415,38 @@ impl Engine {
         execute_step_with_handler(step, &self.handler).await
     }
 
+    async fn rollback_completed_steps(
+        &self,
+        flow: &FlowDef,
+        step_results: &[StepResult],
+    ) -> bool {
+        let Some(ref rollback_handler) = self.rollback_handler else {
+            return false;
+        };
+
+        let completed_steps: Vec<&StepDef> = flow
+            .steps
+            .iter()
+            .filter(|s| {
+                s.rollbackable
+                    && step_results
+                        .iter()
+                        .any(|r| r.step_id == s.id && r.status == StepStatus::Completed)
+            })
+            .collect();
+
+        tracing::info!(flow = %flow.name, steps = completed_steps.len(), "starting rollback");
+        let mut all_rolled_back = true;
+        for step in completed_steps.into_iter().rev() {
+            if (rollback_handler)(step.clone()).await.is_err() {
+                tracing::warn!(step = %step.name, "rollback step failed");
+                all_rolled_back = false;
+            }
+        }
+        tracing::info!(flow = %flow.name, success = all_rolled_back, "rollback completed");
+        all_rolled_back
+    }
+
     /// Execute a flow with cancellation support.
     ///
     /// Behaves identically to [`run`](Self::run) but checks the provided
@@ -484,31 +493,8 @@ impl Engine {
             });
         let mut rolled_back = false;
 
-        if has_failures
-            && flow.rollback_on_failure
-            && let Some(ref rollback_handler) = self.rollback_handler
-        {
-                let completed_steps: Vec<&StepDef> = flow
-                    .steps
-                    .iter()
-                    .filter(|s| {
-                        s.rollbackable
-                            && step_results
-                                .iter()
-                                .any(|r| r.step_id == s.id && r.status == StepStatus::Completed)
-                    })
-                    .collect();
-
-                tracing::info!(flow = %flow.name, steps = completed_steps.len(), "starting rollback");
-                let mut all_rolled_back = true;
-                for step in completed_steps.into_iter().rev() {
-                    if (rollback_handler)(step.clone()).await.is_err() {
-                        tracing::warn!(step = %step.name, "rollback step failed");
-                        all_rolled_back = false;
-                    }
-                }
-                tracing::info!(flow = %flow.name, success = all_rolled_back, "rollback completed");
-                rolled_back = all_rolled_back;
+        if has_failures && flow.rollback_on_failure {
+            rolled_back = self.rollback_completed_steps(flow, &step_results).await;
         }
 
         let success = !has_failures && !was_cancelled;

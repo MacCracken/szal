@@ -29,9 +29,13 @@ impl Tool for Sha256 {
             let data = if let Some(input) = args.get("input").and_then(|v| v.as_str()) {
                 input.as_bytes().to_vec()
             } else if let Some(path) = args.get("file").and_then(|v| v.as_str()) {
-                match std::fs::read(path) {
+                let validated = match crate::mcp::validate_path(path) {
+                    Ok(p) => p,
+                    Err(e) => return result_error(e),
+                };
+                match std::fs::read(&validated) {
                     Ok(d) => d,
-                    Err(e) => return result_error(format!("failed to read {path}: {e}")),
+                    Err(e) => return result_error(format!("failed to read {}: {e}", validated.display())),
                 }
             } else {
                 return result_error("provide either 'input' or 'file'");
@@ -103,7 +107,11 @@ impl Tool for RandomToken {
             if let Err(e) = f.read_exact(&mut buf) {
                 return result_error(format!("failed to read random bytes: {e}"));
             }
-            let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+            use std::fmt::Write;
+            let mut hex = String::with_capacity(bytes * 2);
+            for b in &buf {
+                write!(hex, "{b:02x}").unwrap();
+            }
             result_ok(&hex)
         })
     }
@@ -124,9 +132,11 @@ mod tests {
 
     #[tokio::test]
     async fn sha256_file() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), "test content").unwrap();
-        let result = Sha256.call(json!({"file": tmp.path().display().to_string()})).await;
+        let cwd = std::env::current_dir().unwrap();
+        let tmp = tempfile::TempDir::new_in(cwd).unwrap();
+        let path = tmp.path().join("test.bin");
+        std::fs::write(&path, "test content").unwrap();
+        let result = Sha256.call(json!({"file": path.display().to_string()})).await;
         assert_eq!(result["isError"], false);
     }
 

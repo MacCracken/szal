@@ -49,7 +49,11 @@ impl Tool for Exec {
             cmd.args(&cmd_args);
 
             if let Some(cwd) = args.get("cwd").and_then(|v| v.as_str()) {
-                cmd.current_dir(cwd);
+                let validated = match crate::mcp::validate_path(cwd) {
+                    Ok(p) => p,
+                    Err(e) => return result_error(e),
+                };
+                cmd.current_dir(validated);
             }
 
             let result = tokio::time::timeout(
