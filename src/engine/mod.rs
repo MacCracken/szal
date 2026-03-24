@@ -15,7 +15,7 @@
 //! assert_eq!(config.max_concurrency, 4);
 //! ```
 
-mod core;
+mod runner;
 mod dag;
 #[cfg(feature = "hardware")]
 pub mod hardware;
@@ -33,7 +33,7 @@ pub use tokio_util::sync::CancellationToken;
 use crate::step::StepDef;
 
 // Re-export public types
-pub use self::core::Engine;
+pub use self::runner::Engine;
 #[cfg(feature = "hardware")]
 pub use self::hardware::HardwareContext;
 pub use self::result::FlowResult;
