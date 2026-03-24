@@ -135,3 +135,36 @@ pub fn tool_def(
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_path_current_dir() {
+        assert!(validate_path(".").is_ok());
+    }
+
+    #[test]
+    fn validate_path_rejects_outside_cwd() {
+        let err = validate_path("/etc/passwd").unwrap_err();
+        assert!(
+            err.contains("outside working directory"),
+            "expected 'outside working directory', got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_path_rejects_traversal() {
+        assert!(validate_path("../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn validate_path_new_file_in_valid_dir() {
+        let cwd = std::env::current_dir().unwrap();
+        let tmp = tempfile::TempDir::new_in(&cwd).unwrap();
+        let new_file = tmp.path().join("newfile.txt");
+        let result = validate_path(new_file.to_str().unwrap());
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    }
+}

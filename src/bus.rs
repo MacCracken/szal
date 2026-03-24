@@ -253,6 +253,53 @@ mod tests {
         assert_eq!(EventType::StepRetry.to_string(), "step_retry");
     }
 
+    #[test]
+    fn builder_with_flow() {
+        let e = WorkflowEvent::flow_started("deploy");
+        assert_eq!(e.flow_name, Some("deploy".into()));
+    }
+
+    #[test]
+    fn builder_with_step() {
+        let e = WorkflowEvent::step_started("build", "id-1");
+        assert_eq!(e.step_name, Some("build".into()));
+        assert_eq!(e.step_id, Some("id-1".into()));
+    }
+
+    #[test]
+    fn builder_with_duration() {
+        let e = WorkflowEvent::step_completed("s", "id", 500, 1);
+        assert_eq!(e.duration_ms, Some(500));
+    }
+
+    #[test]
+    fn builder_with_attempt() {
+        let e = WorkflowEvent::step_retry("s", "id", 3);
+        assert_eq!(e.attempt, Some(3));
+    }
+
+    #[test]
+    fn builder_with_error() {
+        let e = WorkflowEvent::flow_failed("f", "oops");
+        assert_eq!(e.error, Some("oops".into()));
+    }
+
+    #[test]
+    fn builder_chaining() {
+        let e = WorkflowEvent::step_failed("s", "id", "e", 2);
+        assert_eq!(e.event_type, EventType::StepFailed);
+        assert_eq!(e.step_name, Some("s".into()));
+        assert_eq!(e.step_id, Some("id".into()));
+        assert_eq!(e.error, Some("e".into()));
+        assert_eq!(e.attempt, Some(2));
+    }
+
+    #[test]
+    fn flow_rolled_back_topic() {
+        let e = WorkflowEvent::flow_rolled_back("deploy");
+        assert_eq!(e.topic(), "szal/flow/deploy/flow_rolled_back");
+    }
+
     #[cfg(feature = "majra")]
     #[tokio::test]
     async fn event_bus_publish_subscribe() {

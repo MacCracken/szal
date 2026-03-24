@@ -1,10 +1,13 @@
 //! Built-in MCP tools for workflow orchestration.
 
+pub mod conversion_tools;
+pub mod encoding_tools;
 pub mod engine_tools;
 pub mod file_tools;
 pub mod flow_tools;
 pub mod git_tools;
 pub mod hash_tools;
+pub mod json_tools;
 pub mod math_tools;
 pub mod net_tools;
 pub mod process_tools;
@@ -38,15 +41,18 @@ pub fn all_tools() -> Vec<Box<dyn Tool>> {
         Box::new(engine_tools::StepStatusList),
         Box::new(engine_tools::ErrorList),
         Box::new(engine_tools::ServerInfo),
-        // System tools (8)
+        // System tools (4)
         Box::new(system_tools::SystemInfo),
         Box::new(system_tools::Cwd),
         Box::new(system_tools::EnvGet),
         Box::new(system_tools::Timestamp),
-        Box::new(system_tools::UuidGen),
-        Box::new(system_tools::JsonDiff),
-        Box::new(system_tools::JsonValidate),
-        Box::new(system_tools::Base64Tool),
+        // Encoding tools (2)
+        Box::new(encoding_tools::UuidGen),
+        Box::new(encoding_tools::Base64Tool),
+        // JSON tools (3)
+        Box::new(json_tools::JsonPath),
+        Box::new(json_tools::JsonDiff),
+        Box::new(json_tools::JsonValidate),
         // File tools (5)
         Box::new(file_tools::FileRead),
         Box::new(file_tools::FileWrite),
@@ -72,12 +78,12 @@ pub fn all_tools() -> Vec<Box<dyn Tool>> {
         Box::new(net_tools::DnsLookup),
         Box::new(net_tools::PortCheck),
         Box::new(net_tools::UrlEncode),
-        // Math/conversion tools (5)
+        // Math tools (1)
         Box::new(math_tools::MathEval),
-        Box::new(math_tools::BaseConvert),
-        Box::new(math_tools::ByteFormat),
-        Box::new(math_tools::DurationFormat),
-        Box::new(math_tools::JsonPath),
+        // Conversion tools (3)
+        Box::new(conversion_tools::BaseConvert),
+        Box::new(conversion_tools::ByteFormat),
+        Box::new(conversion_tools::DurationFormat),
         // Git tools (5)
         Box::new(git_tools::GitStatus),
         Box::new(git_tools::GitLog),

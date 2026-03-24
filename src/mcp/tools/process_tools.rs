@@ -211,4 +211,16 @@ mod tests {
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"found\": false"));
     }
+
+    #[tokio::test]
+    async fn exec_rejects_path_traversal() {
+        let result = Exec.call(json!({"command": "../bin/sh"})).await;
+        assert_eq!(result["isError"], true);
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_absolute_path() {
+        let result = Exec.call(json!({"command": "/bin/sh"})).await;
+        assert_eq!(result["isError"], true);
+    }
 }
