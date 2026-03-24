@@ -1,6 +1,6 @@
 //! MCP tools for workflow state machine operations.
 
-use crate::mcp::{Tool, result_error, result_ok, tool_def};
+use crate::mcp::{Tool, result_error, result_ok_json, tool_def};
 use crate::state::WorkflowState;
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
@@ -57,14 +57,11 @@ impl Tool for StateCheck {
                 .filter(|(_, s)| state.valid_transition(s))
                 .map(|(n, _)| *n)
                 .collect();
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "state": state_str,
-                    "is_terminal": state.is_terminal(),
-                    "valid_transitions": valid_targets,
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "state": state_str,
+                "is_terminal": state.is_terminal(),
+                "valid_transitions": valid_targets,
+            }))
         })
     }
 }
@@ -105,14 +102,11 @@ impl Tool for StateTransition {
                 Some(s) => s,
                 None => return result_error("missing or invalid 'to' state"),
             };
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "from": args["from"],
-                    "to": args["to"],
-                    "valid": from.valid_transition(&to),
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "from": args["from"],
+                "to": args["to"],
+                "valid": from.valid_transition(&to),
+            }))
         })
     }
 }
@@ -139,7 +133,7 @@ impl Tool for StateLifecycle {
                 let targets: Vec<&str> = all.iter().filter(|(_, s)| state.valid_transition(s)).map(|(n, _)| *n).collect();
                 json!({"state": name, "is_terminal": state.is_terminal(), "transitions_to": targets})
             }).collect();
-            result_ok(&serde_json::to_string_pretty(&states).unwrap_or_default())
+            result_ok_json(&json!(states))
         })
     }
 }

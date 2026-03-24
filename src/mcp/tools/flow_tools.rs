@@ -1,7 +1,7 @@
 //! MCP tools for flow creation, validation, and manipulation.
 
 use crate::flow::{FlowDef, FlowMode};
-use crate::mcp::{Tool, result_error, result_ok, tool_def};
+use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
 use crate::step::StepDef;
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
@@ -72,7 +72,7 @@ impl Tool for FlowCreate {
                     }
                 }
             }
-            result_ok(&serde_json::to_string_pretty(&flow).unwrap_or_default())
+            result_ok_json(&serde_json::to_value(&flow).unwrap_or_default())
         })
     }
 }
@@ -153,7 +153,7 @@ impl Tool for FlowFromJson {
                     "depends_on": s.depends_on.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
             });
-            result_ok(&serde_json::to_string_pretty(&info).unwrap_or_default())
+            result_ok_json(&info)
         })
     }
 }
@@ -181,7 +181,7 @@ impl Tool for FlowListModes {
                 { "mode": "dag", "description": "Steps run based on dependency graph (Kahn's algorithm), with cycle detection" },
                 { "mode": "hierarchical", "description": "Manager step delegates to sub-steps dynamically" },
             ]);
-            result_ok(&serde_json::to_string_pretty(&modes).unwrap_or_default())
+            result_ok_json(&modes)
         })
     }
 }
@@ -223,7 +223,7 @@ impl Tool for FlowAddStep {
                 Err(e) => return result_error(format!("invalid step JSON: {e}")),
             };
             flow.add_step(step);
-            result_ok(&serde_json::to_string_pretty(&flow).unwrap_or_default())
+            result_ok_json(&serde_json::to_value(&flow).unwrap_or_default())
         })
     }
 }

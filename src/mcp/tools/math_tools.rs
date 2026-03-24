@@ -1,9 +1,17 @@
 //! Math, conversion, and data tools.
 
-use crate::mcp::{Tool, result_error, result_ok, tool_def};
+use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
+
+const BYTES_PER_KB: f64 = 1_024.0;
+const BYTES_PER_MB: f64 = 1_048_576.0;
+const BYTES_PER_GB: f64 = 1_073_741_824.0;
+const BYTES_PER_TB: f64 = 1_099_511_627_776.0;
+const SECS_PER_MINUTE: u64 = 60;
+const SECS_PER_HOUR: u64 = 3_600;
+const SECS_PER_DAY: u64 = 86_400;
 
 /// Evaluate a basic math expression.
 pub struct MathEval;
@@ -284,15 +292,12 @@ impl Tool for BaseConvert {
                         16 => format!("0x{n:x}"),
                         _ => unreachable!(),
                     };
-                    result_ok(
-                        &serde_json::to_string_pretty(&json!({
-                            "input": value,
-                            "from_base": from,
-                            "to_base": to,
-                            "result": result,
-                        }))
-                        .unwrap_or_default(),
-                    )
+                    result_ok_json(&json!({
+                        "input": value,
+                        "from_base": from,
+                        "to_base": to,
+                        "result": result,
+                    }))
                 }
                 Err(e) => result_error(format!("invalid number '{value}' for base {from}: {e}")),
             }
@@ -323,28 +328,25 @@ impl Tool for ByteFormat {
                 None => return result_error("missing required field: bytes"),
             };
 
-            let (value, unit) = if bytes >= 1_099_511_627_776 {
-                (bytes as f64 / 1_099_511_627_776.0, "TB")
-            } else if bytes >= 1_073_741_824 {
-                (bytes as f64 / 1_073_741_824.0, "GB")
-            } else if bytes >= 1_048_576 {
-                (bytes as f64 / 1_048_576.0, "MB")
-            } else if bytes >= 1_024 {
-                (bytes as f64 / 1_024.0, "KB")
+            let (value, unit) = if bytes >= BYTES_PER_TB as u64 {
+                (bytes as f64 / BYTES_PER_TB, "TB")
+            } else if bytes >= BYTES_PER_GB as u64 {
+                (bytes as f64 / BYTES_PER_GB, "GB")
+            } else if bytes >= BYTES_PER_MB as u64 {
+                (bytes as f64 / BYTES_PER_MB, "MB")
+            } else if bytes >= BYTES_PER_KB as u64 {
+                (bytes as f64 / BYTES_PER_KB, "KB")
             } else {
                 (bytes as f64, "B")
             };
 
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "bytes": bytes,
-                    "formatted": format!("{value:.2} {unit}"),
-                    "kb": bytes as f64 / 1_024.0,
-                    "mb": bytes as f64 / 1_048_576.0,
-                    "gb": bytes as f64 / 1_073_741_824.0,
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "bytes": bytes,
+                "formatted": format!("{value:.2} {unit}"),
+                "kb": bytes as f64 / BYTES_PER_KB,
+                "mb": bytes as f64 / BYTES_PER_MB,
+                "gb": bytes as f64 / BYTES_PER_GB,
+            }))
         })
     }
 }
@@ -375,10 +377,10 @@ impl Tool for DurationFormat {
             };
 
             let total = secs as u64;
-            let days = total / 86400;
-            let hours = (total % 86400) / 3600;
-            let minutes = (total % 3600) / 60;
-            let remaining = total % 60;
+            let days = total / SECS_PER_DAY;
+            let hours = (total % SECS_PER_DAY) / SECS_PER_HOUR;
+            let minutes = (total % SECS_PER_HOUR) / SECS_PER_MINUTE;
+            let remaining = total % SECS_PER_MINUTE;
 
             let mut parts = Vec::new();
             if days > 0 {
@@ -394,16 +396,13 @@ impl Tool for DurationFormat {
                 parts.push(format!("{remaining}s"));
             }
 
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "seconds": secs,
-                    "formatted": parts.join(" "),
-                    "days": days,
-                    "hours": total / 3600,
-                    "minutes": total / 60,
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "seconds": secs,
+                "formatted": parts.join(" "),
+                "days": days,
+                "hours": total / SECS_PER_HOUR,
+                "minutes": total / SECS_PER_MINUTE,
+            }))
         })
     }
 }
@@ -460,7 +459,7 @@ impl Tool for JsonPath {
                 }
             }
 
-            result_ok(&serde_json::to_string_pretty(current).unwrap_or_default())
+            result_ok_json(current)
         })
     }
 }

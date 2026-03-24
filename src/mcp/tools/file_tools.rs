@@ -1,10 +1,19 @@
 //! File system tools — read, write, list, stat, search.
 
-use crate::mcp::{Tool, result_error, result_ok, tool_def, validate_path};
+use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def, validate_path};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::path::Path;
 use std::pin::Pin;
+
+/// Maximum bytes to read from a file by default (1 MB).
+const DEFAULT_MAX_READ_BYTES: usize = 1_048_576;
+/// Maximum entries returned by directory listing.
+const MAX_DIR_ENTRIES: u64 = 10_000;
+/// Default entries returned by directory listing.
+const DEFAULT_DIR_ENTRIES: u64 = 500;
+/// Maximum recursion depth for directory traversal.
+const MAX_DIR_DEPTH: usize = 20;
 
 /// Read a file's contents.
 pub struct FileRead;
@@ -39,7 +48,7 @@ impl Tool for FileRead {
             let max_bytes = args
                 .get("max_bytes")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(1_048_576) as usize;
+                .unwrap_or(DEFAULT_MAX_READ_BYTES as u64) as usize;
 
             match std::fs::read_to_string(path) {
                 Ok(content) => {
@@ -154,15 +163,15 @@ impl Tool for DirList {
             let max = args
                 .get("max_entries")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(500)
-                .min(10_000) as usize;
+                .unwrap_or(DEFAULT_DIR_ENTRIES)
+                .min(MAX_DIR_ENTRIES) as usize;
 
             let mut entries = Vec::new();
             if let Err(e) = collect_dir(Path::new(path), recursive, max, &mut entries, 0) {
                 return result_error(format!("failed to list {path}: {e}"));
             }
 
-            result_ok(&serde_json::to_string_pretty(&entries).unwrap_or_default())
+            result_ok_json(&json!(entries))
         })
     }
 }
@@ -174,7 +183,7 @@ fn collect_dir(
     entries: &mut Vec<serde_json::Value>,
     depth: usize,
 ) -> std::io::Result<()> {
-    if depth > 20 {
+    if depth > MAX_DIR_DEPTH {
         return Ok(());
     }
     for entry in std::fs::read_dir(path)? {
@@ -206,8 +215,12 @@ fn collect_dir(
 
         entries.push(info);
 
-        if recursive && ft.is_dir() && entries.len() < max {
-            let _ = collect_dir(&entry.path(), true, max, entries, depth + 1);
+        if recursive
+            && ft.is_dir()
+            && entries.len() < max
+            && let Err(e) = collect_dir(&entry.path(), true, max, entries, depth + 1)
+        {
+            tracing::debug!(path = %entry.path().display(), error = %e, "skipping unreadable subdirectory");
         }
     }
     Ok(())
@@ -256,16 +269,13 @@ impl Tool for FileStat {
                         dt.to_rfc3339()
                     });
 
-                    result_ok(
-                        &serde_json::to_string_pretty(&json!({
-                            "path": path,
-                            "type": kind,
-                            "size": meta.len(),
-                            "readonly": meta.permissions().readonly(),
-                            "modified": modified,
-                        }))
-                        .unwrap_or_default(),
-                    )
+                    result_ok_json(&json!({
+                        "path": path,
+                        "type": kind,
+                        "size": meta.len(),
+                        "readonly": meta.permissions().readonly(),
+                        "modified": modified,
+                    }))
                 }
                 Err(e) => result_error(format!("failed to stat {path}: {e}")),
             }
@@ -299,15 +309,12 @@ impl Tool for PathExists {
                 Ok(p) => p,
                 Err(e) => return result_error(e),
             };
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "path": validated.display().to_string(),
-                    "exists": validated.exists(),
-                    "is_file": validated.is_file(),
-                    "is_dir": validated.is_dir(),
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "path": validated.display().to_string(),
+                "exists": validated.exists(),
+                "is_file": validated.is_file(),
+                "is_dir": validated.is_dir(),
+            }))
         })
     }
 }

@@ -1,6 +1,6 @@
 //! Template and text transformation tools.
 
-use crate::mcp::{Tool, result_error, result_ok, tool_def};
+use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -96,15 +96,12 @@ impl Tool for WordCount {
             let chars = text.chars().count();
             let bytes = text.len();
 
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "lines": lines,
-                    "words": words,
-                    "chars": chars,
-                    "bytes": bytes,
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "lines": lines,
+                "words": words,
+                "chars": chars,
+                "bytes": bytes,
+            }))
         })
     }
 }

@@ -1,9 +1,14 @@
 //! Network and HTTP tools.
 
-use crate::mcp::{Tool, result_error, result_ok, tool_def};
+use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
+
+/// Default timeout for HTTP requests (30 seconds).
+const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 30;
+/// Default timeout for TCP port checks (3 seconds).
+const DEFAULT_PORT_CHECK_TIMEOUT_MS: u64 = 3_000;
 
 /// Check that a URL does not target private/internal addresses or cloud metadata endpoints.
 fn is_safe_url(url: &str) -> Result<(), String> {
@@ -92,7 +97,7 @@ impl Tool for HttpRequest {
             let timeout = args
                 .get("timeout_secs")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(30);
+                .unwrap_or(DEFAULT_HTTP_TIMEOUT_SECS);
 
             let mut cmd = tokio::process::Command::new("curl");
             cmd.args(["-s", "-S", "-w", "\n%{http_code}", "-X", method]);
@@ -159,14 +164,11 @@ impl Tool for HttpRequest {
                         }
                     }
 
-                    result_ok(
-                        &serde_json::to_string_pretty(&json!({
-                            "status_code": status_code,
-                            "headers": headers,
-                            "body": body_lines.join("\n"),
-                        }))
-                        .unwrap_or_default(),
-                    )
+                    result_ok_json(&json!({
+                        "status_code": status_code,
+                        "headers": headers,
+                        "body": body_lines.join("\n"),
+                    }))
                 }
                 Err(e) => result_error(format!("failed to execute curl: {e}")),
             }
@@ -201,13 +203,10 @@ impl Tool for DnsLookup {
             match tokio::net::lookup_host(&addr).await {
                 Ok(addrs) => {
                     let ips: Vec<String> = addrs.map(|a| a.ip().to_string()).collect();
-                    result_ok(
-                        &serde_json::to_string_pretty(&json!({
-                            "hostname": hostname,
-                            "addresses": ips,
-                        }))
-                        .unwrap_or_default(),
-                    )
+                    result_ok_json(&json!({
+                        "hostname": hostname,
+                        "addresses": ips,
+                    }))
                 }
                 Err(e) => result_error(format!("DNS lookup failed for {hostname}: {e}")),
             }
@@ -249,7 +248,7 @@ impl Tool for PortCheck {
             let timeout_ms = args
                 .get("timeout_ms")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(3000);
+                .unwrap_or(DEFAULT_PORT_CHECK_TIMEOUT_MS);
 
             let addr = format!("{host}:{port}");
             let open = tokio::time::timeout(
@@ -259,14 +258,11 @@ impl Tool for PortCheck {
             .await
             .is_ok_and(|r| r.is_ok());
 
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "host": host,
-                    "port": port,
-                    "open": open,
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "host": host,
+                "port": port,
+                "open": open,
+            }))
         })
     }
 }

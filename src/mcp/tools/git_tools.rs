@@ -5,6 +5,11 @@ use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
 
+/// Default number of commits shown in git log.
+const DEFAULT_LOG_COUNT: u64 = 10;
+/// Maximum number of commits shown in git log.
+const MAX_LOG_COUNT: u64 = 100;
+
 /// Reject values that look like git options to prevent option injection.
 fn validate_git_ref(s: &str) -> Result<(), String> {
     if s.starts_with('-') {
@@ -112,8 +117,8 @@ impl Tool for GitLog {
             let count = args
                 .get("count")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(10)
-                .min(100);
+                .unwrap_or(DEFAULT_LOG_COUNT)
+                .min(MAX_LOG_COUNT);
 
             let format = "--format=%H|%h|%an|%ae|%aI|%s";
             let log = git_cmd(&["log", &format!("-{count}"), format], cwd).await;
@@ -138,7 +143,7 @@ impl Tool for GitLog {
                             }
                         })
                         .collect();
-                    result_ok(&serde_json::to_string_pretty(&commits).unwrap_or_default())
+                    result_ok_json(&json!(commits))
                 }
                 Err(e) => result_error(e),
             }
@@ -255,14 +260,11 @@ impl Tool for GitBranch {
 
             let branch_list: Vec<&str> = branches.lines().collect();
 
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "current": current,
-                    "branches": branch_list,
-                    "count": branch_list.len(),
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "current": current,
+                "branches": branch_list,
+                "count": branch_list.len(),
+            }))
         })
     }
 }
@@ -292,6 +294,13 @@ impl Tool for GitBlame {
                 Some(f) => f,
                 None => return result_error("missing required field: file"),
             };
+            // Reject option injection and path traversal
+            if file.starts_with('-') {
+                return result_error("file must not start with '-'");
+            }
+            if file.contains("..") {
+                return result_error("file must not contain '..'");
+            }
             let cwd = args.get("path").and_then(|v| v.as_str());
 
             match git_cmd(&["blame", "--porcelain", file], cwd).await {
@@ -308,17 +317,14 @@ impl Tool for GitBlame {
                     let mut author_list: Vec<_> = authors.into_iter().collect();
                     author_list.sort_by(|a, b| b.1.cmp(&a.1));
 
-                    result_ok(
-                        &serde_json::to_string_pretty(&json!({
-                            "file": file,
-                            "total_lines": total_lines,
-                            "authors": author_list.iter().map(|(name, count)| json!({
-                                "name": name,
-                                "lines": count,
-                            })).collect::<Vec<_>>(),
-                        }))
-                        .unwrap_or_default(),
-                    )
+                    result_ok_json(&json!({
+                        "file": file,
+                        "total_lines": total_lines,
+                        "authors": author_list.iter().map(|(name, count)| json!({
+                            "name": name,
+                            "lines": count,
+                        })).collect::<Vec<_>>(),
+                    }))
                 }
                 Err(e) => result_error(e),
             }

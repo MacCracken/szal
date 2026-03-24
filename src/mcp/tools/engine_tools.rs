@@ -1,7 +1,7 @@
 //! MCP tools for engine configuration and flow result inspection.
 
 use crate::engine::EngineConfig;
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
+use crate::mcp::{Tool, result_error, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -98,10 +98,10 @@ impl Tool for ResultInspect {
                         .count()
                 })
                 .unwrap_or(0);
-            result_ok(&serde_json::to_string_pretty(&json!({
+            result_ok_json(&json!({
                 "flow_name": flow_name, "success": success, "rolled_back": rolled_back,
                 "total_duration_ms": total_ms, "step_count": step_count, "completed": completed, "failed": failed,
-            })).unwrap_or_default())
+            }))
         })
     }
 }
@@ -123,14 +123,14 @@ impl Tool for StepStatusList {
         _args: serde_json::Value,
     ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
-            result_ok(&serde_json::to_string_pretty(&json!([
+            result_ok_json(&json!([
                 { "status": "pending", "description": "Step has not started" },
                 { "status": "running", "description": "Step is currently executing" },
                 { "status": "completed", "description": "Step finished successfully" },
                 { "status": "failed", "description": "Step execution failed" },
                 { "status": "skipped", "description": "Step was skipped" },
                 { "status": "rolled_back", "description": "Step was rolled back after failure" },
-            ])).unwrap_or_default())
+            ]))
         })
     }
 }
@@ -152,14 +152,14 @@ impl Tool for ErrorList {
         _args: serde_json::Value,
     ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
-            result_ok(&serde_json::to_string_pretty(&json!([
+            result_ok_json(&json!([
                 { "error": "StepFailed", "description": "A step failed with a specific reason" },
                 { "error": "StepTimeout", "description": "A step exceeded its timeout" },
                 { "error": "InvalidFlow", "description": "Flow configuration is invalid" },
                 { "error": "RetryExhausted", "description": "All retry attempts failed" },
                 { "error": "RollbackFailed", "description": "Rollback operation failed" },
                 { "error": "CycleDetected", "description": "DAG contains a cycle" },
-            ])).unwrap_or_default())
+            ]))
         })
     }
 }

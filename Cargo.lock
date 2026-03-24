@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "szal"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "anyhow",
  "base64",

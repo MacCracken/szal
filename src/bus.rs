@@ -85,63 +85,74 @@ impl WorkflowEvent {
         }
     }
 
+    pub fn with_flow(mut self, name: &str) -> Self {
+        self.flow_name = Some(name.into());
+        self
+    }
+
+    pub fn with_step(mut self, name: &str, id: &str) -> Self {
+        self.step_name = Some(name.into());
+        self.step_id = Some(id.into());
+        self
+    }
+
+    pub fn with_duration(mut self, ms: u64) -> Self {
+        self.duration_ms = Some(ms);
+        self
+    }
+
+    pub fn with_attempt(mut self, attempt: u32) -> Self {
+        self.attempt = Some(attempt);
+        self
+    }
+
+    pub fn with_error(mut self, error: &str) -> Self {
+        self.error = Some(error.into());
+        self
+    }
+
     pub fn flow_started(flow_name: &str) -> Self {
-        let mut e = Self::new(EventType::FlowStarted);
-        e.flow_name = Some(flow_name.into());
-        e
+        Self::new(EventType::FlowStarted).with_flow(flow_name)
     }
 
     pub fn flow_completed(flow_name: &str, duration_ms: u64) -> Self {
-        let mut e = Self::new(EventType::FlowCompleted);
-        e.flow_name = Some(flow_name.into());
-        e.duration_ms = Some(duration_ms);
-        e
+        Self::new(EventType::FlowCompleted)
+            .with_flow(flow_name)
+            .with_duration(duration_ms)
     }
 
     pub fn flow_failed(flow_name: &str, error: &str) -> Self {
-        let mut e = Self::new(EventType::FlowFailed);
-        e.flow_name = Some(flow_name.into());
-        e.error = Some(error.into());
-        e
+        Self::new(EventType::FlowFailed)
+            .with_flow(flow_name)
+            .with_error(error)
     }
 
     pub fn flow_rolled_back(flow_name: &str) -> Self {
-        let mut e = Self::new(EventType::FlowRolledBack);
-        e.flow_name = Some(flow_name.into());
-        e
+        Self::new(EventType::FlowRolledBack).with_flow(flow_name)
     }
 
     pub fn step_started(step_name: &str, step_id: &str) -> Self {
-        let mut e = Self::new(EventType::StepStarted);
-        e.step_name = Some(step_name.into());
-        e.step_id = Some(step_id.into());
-        e
+        Self::new(EventType::StepStarted).with_step(step_name, step_id)
     }
 
     pub fn step_completed(step_name: &str, step_id: &str, duration_ms: u64, attempt: u32) -> Self {
-        let mut e = Self::new(EventType::StepCompleted);
-        e.step_name = Some(step_name.into());
-        e.step_id = Some(step_id.into());
-        e.duration_ms = Some(duration_ms);
-        e.attempt = Some(attempt);
-        e
+        Self::new(EventType::StepCompleted)
+            .with_step(step_name, step_id)
+            .with_duration(duration_ms)
+            .with_attempt(attempt)
     }
 
     pub fn step_failed(step_name: &str, step_id: &str, error: &str, attempt: u32) -> Self {
-        let mut e = Self::new(EventType::StepFailed);
-        e.step_name = Some(step_name.into());
-        e.step_id = Some(step_id.into());
-        e.error = Some(error.into());
-        e.attempt = Some(attempt);
-        e
+        Self::new(EventType::StepFailed)
+            .with_step(step_name, step_id)
+            .with_error(error)
+            .with_attempt(attempt)
     }
 
     pub fn step_retry(step_name: &str, step_id: &str, attempt: u32) -> Self {
-        let mut e = Self::new(EventType::StepRetry);
-        e.step_name = Some(step_name.into());
-        e.step_id = Some(step_id.into());
-        e.attempt = Some(attempt);
-        e
+        Self::new(EventType::StepRetry)
+            .with_step(step_name, step_id)
+            .with_attempt(attempt)
     }
 
     /// Build the topic string for this event.
@@ -180,7 +191,13 @@ impl EventBus {
     /// Publish a workflow event.
     pub fn publish(&self, event: &WorkflowEvent) {
         let topic = event.topic();
-        let payload = serde_json::to_value(event).unwrap_or_default();
+        let payload = match serde_json::to_value(event) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize workflow event");
+                return;
+            }
+        };
         self.pubsub.publish(&topic, payload);
     }
 

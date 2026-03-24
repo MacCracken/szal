@@ -30,26 +30,26 @@
 - [ ] **Majra heartbeat** — engine health reporting
 
 ### Engineering Backlog
-- [ ] Extract duplicate "unlock dependents" DAG logic into helper (`engine.rs` — 3 identical blocks)
+- [x] Extract duplicate "unlock dependents" DAG logic into helper (`engine.rs` — 3 identical blocks)
 - [ ] Hierarchical execution mode — currently a silent no-op delegating to sequential
 - [ ] Integrate `EventBus` into `Engine::run()` — bus exists but is disconnected from execution
-- [ ] `DirList` recursive mode silently swallows subdirectory read errors
-- [ ] `Exec` command metacharacter filter is misleading — `Command::new()` doesn't use a shell; validate `cwd` for path traversal instead
-- [ ] `Sha256` output uses compact JSON (`json!().to_string()`) while all other tools use `to_string_pretty`
-- [ ] `fuzz_flow_validate` — non-DAG flows with deps now always return Err after validation fix; update fuzzer to only wire deps for DAG mode
+- [x] `DirList` recursive mode silently swallows subdirectory read errors
+- [x] `Exec` command metacharacter filter is misleading — `Command::new()` doesn't use a shell; validate `cwd` for path traversal instead
+- [x] `Sha256` output uses compact JSON (`json!().to_string()`) while all other tools use `to_string_pretty`
+- [x] `fuzz_flow_validate` — non-DAG flows with deps now always return Err after validation fix; update fuzzer to only wire deps for DAG mode
 - [ ] `error.rs` — `StepTimeout`, `RetryExhausted`, `RollbackFailed` variants are never constructed; engine uses plain strings instead
 - [ ] Benchmarks only cover validation/serde — add execution throughput benchmarks (parallel, DAG scheduling overhead)
-- [ ] Convert remaining MCP tools to `result_ok_json` pattern (5 done, ~49 remaining)
-- [ ] Event builder duplication in `bus.rs` — 6 near-identical static builder methods
-- [ ] Magic numbers scattered across MCP tools — extract constants for timeouts, sizes, limits
-- [ ] MCP tool naming inconsistency (`szal_wc` vs `szal_file_read`) — establish naming convention
-- [ ] `parse_state` / `all_workflow_states` duplication in `state_tools.rs`
+- [x] Convert remaining MCP tools to `result_ok_json` pattern (5 done, ~49 remaining)
+- [x] Event builder duplication in `bus.rs` — 6 near-identical static builder methods
+- [x] Magic numbers scattered across MCP tools — extract constants for timeouts, sizes, limits
+- [x] MCP tool naming inconsistency (`szal_wc` vs `szal_file_read`) — establish naming convention
+- [x] `parse_state` / `all_workflow_states` duplication in `state_tools.rs`
 - [ ] Tracing calls missing flow context in concurrent scenarios — add flow_id to all spans
 - [ ] MCP error responses lack structured error codes (transient vs permanent)
-- [ ] Remaining `unwrap_or_default()` on serde serialization in MCP tools — propagate errors
-- [ ] `ready.pop_front().unwrap()` in DAG loop — safe but is unwrap in production code
+- [x] Remaining `unwrap_or_default()` on serde serialization in MCP tools — propagate errors
+- [x] `ready.pop_front().unwrap()` in DAG loop — safe but is unwrap in production code
 - [ ] Convert remaining blocking `std::fs` calls to `tokio::fs` (DirList read_dir, FileWrite append, validate_path canonicalize/exists, system_tools /etc/hostname + /proc/uptime, template_tools file read)
-- [ ] `git blame` file parameter has no path validation (low risk — git rejects non-tracked files)
+- [x] `git blame` file parameter has no path validation (low risk — git rejects non-tracked files)
 
 ## v0.23 — Agent Orchestration + LLM Gateway
 

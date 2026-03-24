@@ -1,6 +1,6 @@
 //! MCP tools for step creation and inspection.
 
-use crate::mcp::{Tool, result_error, result_ok, tool_def};
+use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
 use crate::step::StepDef;
 use bote::ToolDef;
 use serde_json::json;
@@ -74,7 +74,7 @@ impl Tool for StepCreate {
                 }
             }
 
-            result_ok(&serde_json::to_string_pretty(&step).unwrap_or_default())
+            result_ok_json(&serde_json::to_value(&step).unwrap_or_default())
         })
     }
 }
@@ -163,7 +163,7 @@ impl Tool for StepInspect {
                         "dependency_count": step.depends_on.len(),
                         "depends_on": step.depends_on.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                     });
-                    result_ok(&serde_json::to_string_pretty(&info).unwrap_or_default())
+                    result_ok_json(&info)
                 }
                 Err(e) => result_error(format!("invalid JSON: {e}")),
             }

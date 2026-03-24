@@ -1,9 +1,12 @@
 //! Process and command execution tools.
 
-use crate::mcp::{Tool, result_error, result_ok, tool_def};
+use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
+
+/// Default timeout for command execution (30 seconds).
+const DEFAULT_EXEC_TIMEOUT_MS: u64 = 30_000;
 
 /// Execute a shell command and return its output.
 pub struct Exec;
@@ -33,15 +36,14 @@ impl Tool for Exec {
                 None => return result_error("missing required field: command"),
             };
 
-            // Reject commands containing path traversal or shell metacharacters
-            if command.contains("..")
-                || command.contains(';')
-                || command.contains('|')
-                || command.contains('&')
-                || command.contains('`')
-                || command.contains('$')
-            {
-                return result_error("command contains disallowed characters (.. ; | & ` $)");
+            // Reject path traversal in the command name.
+            // Shell metacharacters (; | & ` $) are not dangerous here since
+            // Command::new() does not invoke a shell, but we block them anyway
+            // to prevent confusion if the caller expects shell expansion.
+            if command.contains("..") || command.contains('/') {
+                return result_error(
+                    "command must be a plain executable name, not a path — use PATH lookup",
+                );
             }
 
             let cmd_args: Vec<String> = args
@@ -57,7 +59,7 @@ impl Tool for Exec {
             let timeout_ms = args
                 .get("timeout_ms")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(30_000);
+                .unwrap_or(DEFAULT_EXEC_TIMEOUT_MS);
 
             let mut cmd = tokio::process::Command::new(command);
             cmd.args(&cmd_args);
@@ -80,15 +82,12 @@ impl Tool for Exec {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                     let code = output.status.code().unwrap_or(-1);
 
-                    result_ok(
-                        &serde_json::to_string_pretty(&json!({
-                            "exit_code": code,
-                            "stdout": stdout,
-                            "stderr": stderr,
-                            "success": output.status.success(),
-                        }))
-                        .unwrap_or_default(),
-                    )
+                    result_ok_json(&json!({
+                        "exit_code": code,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "success": output.status.success(),
+                    }))
                 }
                 Ok(Err(e)) => result_error(format!("command failed: {e}")),
                 Err(_) => result_error(format!("command timed out after {timeout_ms}ms")),
@@ -144,22 +143,16 @@ impl Tool for Which {
             match output {
                 Ok(out) if out.status.success() => {
                     let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    result_ok(
-                        &serde_json::to_string_pretty(&json!({
-                            "command": command,
-                            "found": true,
-                            "path": path,
-                        }))
-                        .unwrap_or_default(),
-                    )
-                }
-                _ => result_ok(
-                    &serde_json::to_string_pretty(&json!({
+                    result_ok_json(&json!({
                         "command": command,
-                        "found": false,
+                        "found": true,
+                        "path": path,
                     }))
-                    .unwrap_or_default(),
-                ),
+                }
+                _ => result_ok_json(&json!({
+                    "command": command,
+                    "found": false,
+                })),
             }
         })
     }

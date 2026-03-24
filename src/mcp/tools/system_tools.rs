@@ -6,6 +6,9 @@ use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
 
+/// Maximum number of UUIDs that can be generated in one call.
+const MAX_UUID_COUNT: u64 = 100;
+
 /// Get system information (hostname, OS, arch, CPUs, memory).
 pub struct SystemInfo;
 
@@ -158,14 +161,14 @@ impl Tool for UuidGen {
                 .get("count")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(1)
-                .min(100) as usize;
+                .min(MAX_UUID_COUNT) as usize;
             let uuids: Vec<String> = (0..count)
                 .map(|_| uuid::Uuid::new_v4().to_string())
                 .collect();
             if count == 1 {
                 result_ok(&uuids[0])
             } else {
-                result_ok(&serde_json::to_string_pretty(&uuids).unwrap_or_default())
+                result_ok_json(&json!(uuids))
             }
         })
     }
@@ -211,14 +214,11 @@ impl Tool for JsonDiff {
             };
 
             let equal = a == b;
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "equal": equal,
-                    "a_type": type_name(&a),
-                    "b_type": type_name(&b),
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "equal": equal,
+                "a_type": type_name(&a),
+                "b_type": type_name(&b),
+            }))
         })
     }
 }
@@ -263,17 +263,14 @@ impl Tool for JsonValidate {
                         "type": type_name(&val),
                         "size_bytes": json_str.len(),
                     });
-                    result_ok(&serde_json::to_string_pretty(&info).unwrap_or_default())
+                    result_ok_json(&info)
                 }
-                Err(e) => result_ok(
-                    &serde_json::to_string_pretty(&json!({
-                        "valid": false,
-                        "error": e.to_string(),
-                        "line": e.line(),
-                        "column": e.column(),
-                    }))
-                    .unwrap_or_default(),
-                ),
+                Err(e) => result_ok_json(&json!({
+                    "valid": false,
+                    "error": e.to_string(),
+                    "line": e.line(),
+                    "column": e.column(),
+                })),
             }
         })
     }

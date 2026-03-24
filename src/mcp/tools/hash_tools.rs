@@ -1,6 +1,6 @@
 //! Hashing and checksum tools.
 
-use crate::mcp::{Tool, result_error, result_ok, tool_def};
+use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use sha2::Digest;
@@ -49,14 +49,11 @@ impl Tool for Sha256 {
 
             let hash = sha2::Sha256::digest(&data);
             let hex = format!("{hash:x}");
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "algorithm": "sha256",
-                    "hash": hex,
-                    "input_bytes": data.len(),
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "algorithm": "sha256",
+                "hash": hex,
+                "input_bytes": data.len(),
+            }))
         })
     }
 }
@@ -88,14 +85,11 @@ impl Tool for Md5 {
 
             let hash = md5::Md5::digest(input.as_bytes());
             let hex = format!("{hash:x}");
-            result_ok(
-                &serde_json::to_string_pretty(&json!({
-                    "algorithm": "md5",
-                    "hash": hex,
-                    "input_bytes": input.len(),
-                }))
-                .unwrap_or_default(),
-            )
+            result_ok_json(&json!({
+                "algorithm": "md5",
+                "hash": hex,
+                "input_bytes": input.len(),
+            }))
         })
     }
 }

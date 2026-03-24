@@ -313,7 +313,7 @@ impl Engine {
             let batch_len = ready.len();
 
             for _ in 0..batch_len {
-                let id = ready.pop_front().unwrap();
+                let Some(id) = ready.pop_front() else { break };
                 if let Some(&step) = step_map.get(&id) {
                     // Skip if a dependency failed
                     let dep_failed = step.depends_on.iter().any(|d| failed.contains(d));
@@ -328,17 +328,7 @@ impl Engine {
                             error: Some("dependency failed".into()),
                         });
                         failed.insert(step.id);
-                        // Unlock dependents
-                        if let Some(deps) = dependents.get(&step.id) {
-                            for &dep_id in deps {
-                                if let Some(deg) = in_degree.get_mut(&dep_id) {
-                                    *deg = deg.saturating_sub(1);
-                                    if *deg == 0 {
-                                        ready.push_back(dep_id);
-                                    }
-                                }
-                            }
-                        }
+                        unlock_dependents(step.id, &dependents, &mut in_degree, &mut ready);
                         continue;
                     }
 
@@ -371,33 +361,13 @@ impl Engine {
                         if result.status != StepStatus::Completed {
                             failed.insert(original_id);
                         }
-                        // Unlock dependents
-                        if let Some(deps) = dependents.get(&original_id) {
-                            for &dep_id in deps {
-                                if let Some(deg) = in_degree.get_mut(&dep_id) {
-                                    *deg = deg.saturating_sub(1);
-                                    if *deg == 0 {
-                                        ready.push_back(dep_id);
-                                    }
-                                }
-                            }
-                        }
+                        unlock_dependents(original_id, &dependents, &mut in_degree, &mut ready);
                         results.push(result);
                     }
                     Err(e) => {
                         tracing::error!(step_id = %original_id, error = %e, "spawned task panicked");
                         failed.insert(original_id);
-                        // Unlock dependents even on panic
-                        if let Some(deps) = dependents.get(&original_id) {
-                            for &dep_id in deps {
-                                if let Some(deg) = in_degree.get_mut(&dep_id) {
-                                    *deg = deg.saturating_sub(1);
-                                    if *deg == 0 {
-                                        ready.push_back(dep_id);
-                                    }
-                                }
-                            }
-                        }
+                        unlock_dependents(original_id, &dependents, &mut in_degree, &mut ready);
                         results.push(StepResult {
                             step_id: original_id,
                             status: StepStatus::Failed,
@@ -638,6 +608,24 @@ async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> Ste
         duration_ms: total_start.elapsed().as_millis() as u64,
         attempts: max_attempts,
         error: last_error,
+    }
+}
+
+fn unlock_dependents(
+    step_id: StepId,
+    dependents: &HashMap<StepId, Vec<StepId>>,
+    in_degree: &mut HashMap<StepId, usize>,
+    ready: &mut VecDeque<StepId>,
+) {
+    if let Some(deps) = dependents.get(&step_id) {
+        for &dep_id in deps {
+            if let Some(deg) = in_degree.get_mut(&dep_id) {
+                *deg = deg.saturating_sub(1);
+                if *deg == 0 {
+                    ready.push_back(dep_id);
+                }
+            }
+        }
     }
 }
 
