@@ -10,12 +10,15 @@
 //! let config = EngineConfig {
 //!     max_concurrency: 4,
 //!     global_timeout_ms: Some(300_000),
+//!     ..Default::default()
 //! };
 //! assert_eq!(config.max_concurrency, 4);
 //! ```
 
 mod core;
 mod dag;
+#[cfg(feature = "hardware")]
+pub mod hardware;
 mod parallel;
 mod result;
 mod sequential;
@@ -31,6 +34,8 @@ use crate::step::StepDef;
 
 // Re-export public types
 pub use self::core::Engine;
+#[cfg(feature = "hardware")]
+pub use self::hardware::HardwareContext;
 pub use self::result::FlowResult;
 
 /// A step handler — async function that executes the step's work.
@@ -54,6 +59,9 @@ pub struct EngineConfig {
     pub max_concurrency: usize,
     /// Global timeout override (overrides per-flow timeout).
     pub global_timeout_ms: Option<u64>,
+    /// Hardware context for accelerator-aware scheduling.
+    #[cfg(feature = "hardware")]
+    pub hardware: Option<HardwareContext>,
 }
 
 impl Default for EngineConfig {
@@ -61,7 +69,18 @@ impl Default for EngineConfig {
         Self {
             max_concurrency: 16,
             global_timeout_ms: None,
+            #[cfg(feature = "hardware")]
+            hardware: None,
         }
+    }
+}
+
+impl EngineConfig {
+    /// Enable hardware-aware scheduling with automatic device detection.
+    #[cfg(feature = "hardware")]
+    pub fn with_hardware(mut self) -> Self {
+        self.hardware = Some(HardwareContext::detect());
+        self
     }
 }
 
@@ -225,7 +244,7 @@ mod tests {
 
         let config = EngineConfig {
             max_concurrency: 2,
-            global_timeout_ms: None,
+            ..Default::default()
         };
         let engine = Engine::new(config, counting_handler(counter.clone()));
         let result = engine.run(&flow).await.unwrap();

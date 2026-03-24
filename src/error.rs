@@ -14,6 +14,11 @@ pub enum SzalError {
     RollbackFailed { step: String, reason: String },
     #[error("cycle detected in DAG: {0}")]
     CycleDetected(String),
+    #[cfg(feature = "hardware")]
+    #[error(
+        "hardware unavailable: step '{step}' requires {requirement} but no matching device found"
+    )]
+    HardwareUnavailable { step: String, requirement: String },
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

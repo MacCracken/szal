@@ -42,6 +42,10 @@ pub mod step;
 mod error;
 pub use error::SzalError;
 
+/// Re-export `ai_hwaccel` key types when the `hardware` feature is enabled.
+#[cfg(feature = "hardware")]
+pub use ai_hwaccel::AcceleratorRequirement;
+
 pub type Result<T> = std::result::Result<T, SzalError>;
 
 #[cfg(test)]

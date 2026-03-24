@@ -83,6 +83,10 @@ pub struct StepDef {
     pub rollbackable: bool,
     /// Steps that must complete before this one (DAG edges).
     pub depends_on: Vec<StepId>,
+    /// Hardware accelerator requirement for this step.
+    #[cfg(feature = "hardware")]
+    #[serde(default)]
+    pub hardware: ai_hwaccel::AcceleratorRequirement,
 }
 
 impl StepDef {
@@ -96,6 +100,8 @@ impl StepDef {
             retry_delay_ms: 1_000,
             rollbackable: false,
             depends_on: Vec::new(),
+            #[cfg(feature = "hardware")]
+            hardware: ai_hwaccel::AcceleratorRequirement::None,
         }
     }
 
@@ -117,6 +123,13 @@ impl StepDef {
 
     pub fn depends_on(mut self, step_id: StepId) -> Self {
         self.depends_on.push(step_id);
+        self
+    }
+
+    /// Set the hardware accelerator requirement for this step.
+    #[cfg(feature = "hardware")]
+    pub fn with_hardware(mut self, req: ai_hwaccel::AcceleratorRequirement) -> Self {
+        self.hardware = req;
         self
     }
 }
