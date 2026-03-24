@@ -15,12 +15,12 @@
 //! assert_eq!(config.max_concurrency, 4);
 //! ```
 
-mod runner;
 mod dag;
 #[cfg(feature = "hardware")]
 pub mod hardware;
 mod parallel;
 mod result;
+mod runner;
 mod sequential;
 mod step_exec;
 
@@ -33,10 +33,10 @@ pub use tokio_util::sync::CancellationToken;
 use crate::step::StepDef;
 
 // Re-export public types
-pub use self::runner::Engine;
 #[cfg(feature = "hardware")]
 pub use self::hardware::HardwareContext;
 pub use self::result::FlowResult;
+pub use self::runner::Engine;
 
 /// A step handler — async function that executes the step's work.
 ///
