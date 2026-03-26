@@ -1,6 +1,6 @@
 [package]
 name = "szal"
-version = "0.23.4"
+version = "0.26.3"
 edition = "2024"
 rust-version = "1.89"
 license = "AGPL-3.0-only"
@@ -66,3 +66,8 @@ name = "state_machine"
 
 [[example]]
 name = "retry_rollback"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
