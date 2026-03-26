@@ -47,8 +47,28 @@ fn execute_tree<'a>(
                 continue;
             }
 
-            let result =
-                execute_step_with_handler(step, ctx.handler, ctx.event_sink, ctx.flow).await;
+            // Condition evaluation
+            if let Some(ref _cond) = step.condition {
+                match crate::engine::check_condition(step, results, steps) {
+                    Ok(false) => {
+                        skip_step_and_children(step, "condition not met", ctx.event_sink, results);
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(step = %step.name, error = %e, "condition evaluation failed");
+                    }
+                    Ok(true) => {}
+                }
+            }
+            let result = execute_step_with_handler(
+                step,
+                ctx.handler,
+                ctx.event_sink,
+                ctx.flow,
+                #[cfg(feature = "majra")]
+                ctx.metrics,
+            )
+            .await;
             let succeeded = result.status == StepStatus::Completed;
             results.push(result);
 

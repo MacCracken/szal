@@ -25,13 +25,14 @@ sha2 = "0.10"
 md-5 = "0.10"
 base64 = "0.22"
 bote = "0.22.3"
-majra = { version = "0.22.3", features = ["pubsub", "queue", "heartbeat"], optional = true }
+majra = { version = "0.22.3", features = ["pubsub", "queue", "heartbeat", "ratelimit"], optional = true }
 ai-hwaccel = { version = "0.23", optional = true }
 
 [features]
 default = []
 majra = ["dep:majra"]
 hardware = ["dep:ai-hwaccel"]
+prometheus = ["majra"]
 
 [dev-dependencies]
 tempfile = "3"

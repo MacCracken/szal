@@ -29,7 +29,12 @@ pub(crate) async fn run_dag(
     let mut dependents: HashMap<StepId, Vec<StepId>> = HashMap::new();
 
     for step in steps {
-        in_degree.insert(step.id, step.depends_on.len());
+        let deg = match step.trigger_mode {
+            crate::step::TriggerMode::All => step.depends_on.len(),
+            crate::step::TriggerMode::Any if !step.depends_on.is_empty() => 1,
+            _ => step.depends_on.len(), // Any with no deps = 0 (same as All)
+        };
+        in_degree.insert(step.id, deg);
         for &dep in &step.depends_on {
             dependents.entry(dep).or_default().push(step.id);
         }
@@ -105,11 +110,43 @@ pub(crate) async fn run_dag(
                     continue;
                 }
 
+                // Condition evaluation
+                if let Some(ref _cond) = step.condition {
+                    match crate::engine::check_condition(step, &results, steps) {
+                        Ok(false) => {
+                            emit(
+                                ctx.event_sink,
+                                WorkflowEvent::step_skipped(
+                                    &step.name,
+                                    &step.id.to_string(),
+                                    "condition not met",
+                                ),
+                            );
+                            results.push(StepResult {
+                                step_id: step.id,
+                                status: StepStatus::Skipped,
+                                output: serde_json::json!(null),
+                                duration_ms: 0,
+                                attempts: 0,
+                                error: Some("condition not met".into()),
+                            });
+                            unlock_dependents(step.id, &dependents, &mut in_degree, &mut ready);
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!(step = %step.name, error = %e, "condition evaluation failed");
+                        }
+                        Ok(true) => {}
+                    }
+                }
+
                 let sem = sem.clone();
                 let handler = ctx.handler.clone();
                 let step = step.clone();
                 let sink = ctx.event_sink.clone();
                 let fname = flow_name_owned.clone();
+                #[cfg(feature = "majra")]
+                let metrics = ctx.metrics.clone();
                 dag_step_ids.push(step.id);
                 handles.push(tokio::spawn(async move {
                     let _permit = match sem.acquire().await {
@@ -129,7 +166,15 @@ pub(crate) async fn run_dag(
                         name: &fname,
                         id: flow_id,
                     };
-                    execute_step_with_handler(&step, &handler, &sink, flow).await
+                    execute_step_with_handler(
+                        &step,
+                        &handler,
+                        &sink,
+                        flow,
+                        #[cfg(feature = "majra")]
+                        &metrics,
+                    )
+                    .await
                 }));
             }
         }
@@ -175,6 +220,8 @@ fn unlock_dependents(
                 *deg = deg.saturating_sub(1);
                 if *deg == 0 {
                     ready.push_back(dep_id);
+                    // Prevent re-queueing (important for TriggerMode::Any)
+                    *deg = usize::MAX;
                 }
             }
         }

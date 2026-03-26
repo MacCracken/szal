@@ -9,6 +9,7 @@ pub(crate) async fn execute_step_with_handler(
     handler: &StepHandler,
     event_sink: &EventSink,
     flow: FlowCtx<'_>,
+    #[cfg(feature = "majra")] metrics: &crate::metrics::MetricsSink,
 ) -> StepResult {
     let max_attempts = step.max_retries + 1;
     let mut last_error = None;
@@ -20,6 +21,8 @@ pub(crate) async fn execute_step_with_handler(
         event_sink,
         WorkflowEvent::step_started(&step.name, &step_id_str),
     );
+    #[cfg(feature = "majra")]
+    crate::metrics::metric_step_started(metrics, flow.name, &step.name);
 
     for attempt in 1..=max_attempts {
         let step_start = std::time::Instant::now();
@@ -67,6 +70,14 @@ pub(crate) async fn execute_step_with_handler(
                 emit(
                     event_sink,
                     WorkflowEvent::step_completed(&step.name, &step_id_str, duration_ms, attempt),
+                );
+                #[cfg(feature = "majra")]
+                crate::metrics::metric_step_finished(
+                    metrics,
+                    flow.name,
+                    &step.name,
+                    "completed",
+                    duration_ms,
                 );
                 return StepResult {
                     step_id: step.id,
@@ -120,6 +131,8 @@ pub(crate) async fn execute_step_with_handler(
         last_error.clone()
     };
 
+    let total_duration_ms = total_start.elapsed().as_millis() as u64;
+
     emit(
         event_sink,
         WorkflowEvent::step_failed(
@@ -129,12 +142,20 @@ pub(crate) async fn execute_step_with_handler(
             max_attempts,
         ),
     );
+    #[cfg(feature = "majra")]
+    crate::metrics::metric_step_finished(
+        metrics,
+        flow.name,
+        &step.name,
+        "failed",
+        total_duration_ms,
+    );
 
     StepResult {
         step_id: step.id,
         status: StepStatus::Failed,
         output: serde_json::json!(null),
-        duration_ms: total_start.elapsed().as_millis() as u64,
+        duration_ms: total_duration_ms,
         attempts: max_attempts,
         error,
     }

@@ -117,6 +117,15 @@ impl FlowDef {
         if self.mode == FlowMode::Hierarchical {
             self.validate_hierarchical(&self.steps)?;
         }
+        // Reject TriggerMode::Any with no dependencies
+        for step in &self.steps {
+            if step.trigger_mode == crate::step::TriggerMode::Any && step.depends_on.is_empty() {
+                return Err(crate::SzalError::InvalidFlow(format!(
+                    "step '{}' has trigger_mode Any but no dependencies",
+                    step.name
+                )));
+            }
+        }
         Ok(())
     }
 

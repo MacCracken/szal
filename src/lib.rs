@@ -33,9 +33,12 @@
 //! - [`state`] — Workflow state machine with validated transitions
 
 pub mod bus;
+pub mod condition;
 pub mod engine;
 pub mod flow;
 pub mod mcp;
+#[cfg(feature = "majra")]
+pub mod metrics;
 pub mod state;
 pub mod step;
 

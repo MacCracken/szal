@@ -25,7 +25,36 @@ pub(crate) async fn run_parallel(
     let mut step_names: Vec<String> = Vec::with_capacity(steps.len());
     let flow_name_owned = ctx.flow.name.to_owned();
     let flow_id = ctx.flow.id;
+    let mut pre_skipped: Vec<StepResult> = Vec::new();
     for step in steps {
+        // Condition evaluation (before spawning — no sibling results available)
+        if let Some(ref _cond) = step.condition {
+            match crate::engine::check_condition(step, &pre_skipped, steps) {
+                Ok(false) => {
+                    emit(
+                        ctx.event_sink,
+                        WorkflowEvent::step_skipped(
+                            &step.name,
+                            &step.id.to_string(),
+                            "condition not met",
+                        ),
+                    );
+                    pre_skipped.push(StepResult {
+                        step_id: step.id,
+                        status: StepStatus::Skipped,
+                        output: serde_json::json!(null),
+                        duration_ms: 0,
+                        attempts: 0,
+                        error: Some("condition not met".into()),
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(step = %step.name, error = %e, "condition evaluation failed");
+                }
+                Ok(true) => {}
+            }
+        }
         step_ids.push(step.id);
         step_names.push(step.name.clone());
         let sem = sem.clone();
@@ -33,6 +62,8 @@ pub(crate) async fn run_parallel(
         let step = step.clone();
         let sink = ctx.event_sink.clone();
         let fname = flow_name_owned.clone();
+        #[cfg(feature = "majra")]
+        let metrics = ctx.metrics.clone();
         handles.push(tokio::spawn(async move {
             let _permit = match sem.acquire().await {
                 Ok(p) => p,
@@ -51,7 +82,15 @@ pub(crate) async fn run_parallel(
                 name: &fname,
                 id: flow_id,
             };
-            execute_step_with_handler(&step, &handler, &sink, flow).await
+            execute_step_with_handler(
+                &step,
+                &handler,
+                &sink,
+                flow,
+                #[cfg(feature = "majra")]
+                &metrics,
+            )
+            .await
         }));
     }
 
@@ -94,5 +133,7 @@ pub(crate) async fn run_parallel(
             }
         }
     }
-    results
+    // Prepend condition-skipped results
+    pre_skipped.extend(results);
+    pre_skipped
 }

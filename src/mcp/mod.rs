@@ -13,6 +13,11 @@
 
 pub mod tools;
 
+#[cfg(feature = "majra")]
+pub mod pool;
+#[cfg(feature = "majra")]
+pub mod tenant;
+
 use bote::{Dispatcher, ToolDef, ToolRegistry, ToolSchema};
 use std::collections::HashMap;
 use std::sync::Arc;

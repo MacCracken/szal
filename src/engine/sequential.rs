@@ -53,7 +53,40 @@ pub(crate) async fn run_sequential(
             });
             continue;
         }
-        let result = execute_step_with_handler(step, ctx.handler, ctx.event_sink, ctx.flow).await;
+        // Condition evaluation
+        if let Some(ref _cond) = step.condition {
+            match super::check_condition(step, &results, steps) {
+                Ok(false) => {
+                    let reason = "condition not met";
+                    emit(
+                        ctx.event_sink,
+                        WorkflowEvent::step_skipped(&step.name, &step.id.to_string(), reason),
+                    );
+                    results.push(StepResult {
+                        step_id: step.id,
+                        status: StepStatus::Skipped,
+                        output: serde_json::json!(null),
+                        duration_ms: 0,
+                        attempts: 0,
+                        error: Some(reason.into()),
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(step = %step.name, error = %e, "condition evaluation failed");
+                }
+                Ok(true) => {}
+            }
+        }
+        let result = execute_step_with_handler(
+            step,
+            ctx.handler,
+            ctx.event_sink,
+            ctx.flow,
+            #[cfg(feature = "majra")]
+            ctx.metrics,
+        )
+        .await;
         if result.status == StepStatus::Failed {
             failed = true;
         }

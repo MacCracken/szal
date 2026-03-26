@@ -101,6 +101,20 @@ impl Tool for HttpRequest {
             if let Err(e) = is_safe_url(url) {
                 return result_error_typed(McpErrorCode::PermissionDenied, e);
             }
+            #[cfg(feature = "majra")]
+            {
+                let host = url
+                    .split("://")
+                    .nth(1)
+                    .and_then(|s| s.split('/').next())
+                    .unwrap_or(url);
+                if !crate::mcp::pool::NETWORK_POOL.check_http(host) {
+                    return result_error_typed(
+                        McpErrorCode::Timeout,
+                        format!("rate limit exceeded for host: {host}"),
+                    );
+                }
+            }
             let method = args.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
             let timeout = args
                 .get("timeout_secs")
@@ -219,6 +233,13 @@ impl Tool for DnsLookup {
                 }
             };
 
+            #[cfg(feature = "majra")]
+            if !crate::mcp::pool::NETWORK_POOL.check_dns(hostname) {
+                return result_error_typed(
+                    McpErrorCode::Timeout,
+                    format!("rate limit exceeded for DNS: {hostname}"),
+                );
+            }
             let addr = format!("{hostname}:0");
             match tokio::net::lookup_host(&addr).await {
                 Ok(addrs) => {
@@ -283,6 +304,16 @@ impl Tool for PortCheck {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(DEFAULT_PORT_CHECK_TIMEOUT_MS);
 
+            #[cfg(feature = "majra")]
+            {
+                let key = format!("{host}:{port}");
+                if !crate::mcp::pool::NETWORK_POOL.check_port(&key) {
+                    return result_error_typed(
+                        McpErrorCode::Timeout,
+                        format!("rate limit exceeded for port check: {key}"),
+                    );
+                }
+            }
             let addr = format!("{host}:{port}");
             let open = tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),

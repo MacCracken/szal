@@ -20,6 +20,9 @@ pub enum SzalError {
         "hardware unavailable: step '{step}' requires {requirement} but no matching device found"
     )]
     HardwareUnavailable { step: String, requirement: String },
+    #[cfg(feature = "majra")]
+    #[error("queue operation failed: {0}")]
+    QueueError(String),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

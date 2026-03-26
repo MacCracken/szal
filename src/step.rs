@@ -20,6 +20,17 @@ use uuid::Uuid;
 
 pub type StepId = Uuid;
 
+/// Trigger mode for DAG dependency resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[non_exhaustive]
+pub enum TriggerMode {
+    /// Wait for all dependencies to complete (default).
+    #[default]
+    All,
+    /// Ready when any single dependency completes.
+    Any,
+}
+
 /// Step execution status.
 ///
 /// ```
@@ -81,8 +92,21 @@ pub struct StepDef {
     pub retry_delay_ms: u64,
     /// Whether this step can be rolled back.
     pub rollbackable: bool,
+    /// Step type for handler dispatch (e.g. "http", "bash", "webhook").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_type: Option<String>,
+    /// Arbitrary configuration passed to the step handler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
+    /// Condition expression evaluated before execution.
+    /// When set and evaluates to false, the step is skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
     /// Steps that must complete before this one (DAG edges).
     pub depends_on: Vec<StepId>,
+    /// Trigger mode for DAG dependencies.
+    #[serde(default)]
+    pub trigger_mode: TriggerMode,
     /// Sub-steps for hierarchical execution.
     /// When this step completes successfully, sub-steps are executed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -103,7 +127,11 @@ impl StepDef {
             max_retries: 0,
             retry_delay_ms: 1_000,
             rollbackable: false,
+            step_type: None,
+            config: None,
+            condition: None,
             depends_on: Vec::new(),
+            trigger_mode: TriggerMode::All,
             sub_steps: Vec::new(),
             #[cfg(feature = "hardware")]
             hardware: ai_hwaccel::AcceleratorRequirement::None,
@@ -128,6 +156,26 @@ impl StepDef {
 
     pub fn depends_on(mut self, step_id: StepId) -> Self {
         self.depends_on.push(step_id);
+        self
+    }
+
+    pub fn with_step_type(mut self, step_type: impl Into<String>) -> Self {
+        self.step_type = Some(step_type.into());
+        self
+    }
+
+    pub fn with_config(mut self, config: serde_json::Value) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    pub fn with_condition(mut self, expr: impl Into<String>) -> Self {
+        self.condition = Some(expr.into());
+        self
+    }
+
+    pub fn with_trigger_mode(mut self, mode: TriggerMode) -> Self {
+        self.trigger_mode = mode;
         self
     }
 
