@@ -2,19 +2,20 @@ use crate::SzalError;
 use crate::bus::WorkflowEvent;
 use crate::step::{StepDef, StepResult, StepStatus};
 
-use super::{EventSink, StepHandler, emit};
+use super::{EventSink, FlowCtx, StepHandler, emit};
 
 pub(crate) async fn execute_step_with_handler(
     step: &StepDef,
     handler: &StepHandler,
     event_sink: &EventSink,
+    flow: FlowCtx<'_>,
 ) -> StepResult {
     let max_attempts = step.max_retries + 1;
     let mut last_error = None;
     let total_start = std::time::Instant::now();
     let step_id_str = step.id.to_string();
 
-    tracing::debug!(step = %step.name, attempt = 1, "starting step execution");
+    tracing::debug!(step = %step.name, flow_id = %flow.id, flow = %flow.name, attempt = 1, "starting step execution");
     emit(
         event_sink,
         WorkflowEvent::step_started(&step.name, &step_id_str),
@@ -29,7 +30,7 @@ pub(crate) async fn execute_step_with_handler(
             {
                 Ok(r) => r,
                 Err(_) => {
-                    tracing::warn!(step = %step.name, timeout_ms = step.timeout_ms, "step timed out");
+                    tracing::warn!(step = %step.name, flow_id = %flow.id, flow = %flow.name, timeout_ms = step.timeout_ms, "step timed out");
                     let err = SzalError::StepTimeout {
                         step: step.name.clone(),
                         timeout_ms: step.timeout_ms,
@@ -57,6 +58,8 @@ pub(crate) async fn execute_step_with_handler(
             Ok(output) => {
                 tracing::debug!(
                     step = %step.name,
+                    flow_id = %flow.id,
+                    flow = %flow.name,
                     duration_ms,
                     attempts = attempt,
                     "step completed successfully"
@@ -78,6 +81,8 @@ pub(crate) async fn execute_step_with_handler(
                 if attempt < max_attempts {
                     tracing::warn!(
                         step = %step.name,
+                        flow_id = %flow.id,
+                        flow = %flow.name,
                         attempt,
                         error = %e,
                         "step failed, retrying"
@@ -97,6 +102,8 @@ pub(crate) async fn execute_step_with_handler(
 
     tracing::error!(
         step = %step.name,
+        flow_id = %flow.id,
+        flow = %flow.name,
         attempts = max_attempts,
         "step failed after all retries exhausted"
     );

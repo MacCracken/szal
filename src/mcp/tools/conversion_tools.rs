@@ -1,6 +1,6 @@
 //! Conversion tools: base convert, byte format, duration format.
 
-use crate::mcp::{Tool, result_error, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -37,19 +37,37 @@ impl Tool for BaseConvert {
         Box::pin(async move {
             let value = match args.get("value").and_then(|v| v.as_str()) {
                 Some(v) => v,
-                None => return result_error("missing required field: value"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: value",
+                    );
+                }
             };
             let from = match args.get("from_base").and_then(|v| v.as_u64()) {
                 Some(b) => b as u32,
-                None => return result_error("missing required field: from_base"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: from_base",
+                    );
+                }
             };
             let to = match args.get("to_base").and_then(|v| v.as_u64()) {
                 Some(b) => b as u32,
-                None => return result_error("missing required field: to_base"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: to_base",
+                    );
+                }
             };
 
             if ![2, 8, 10, 16].contains(&from) || ![2, 8, 10, 16].contains(&to) {
-                return result_error("supported bases: 2, 8, 10, 16");
+                return result_error_typed(
+                    McpErrorCode::Validation,
+                    "supported bases: 2, 8, 10, 16",
+                );
             }
 
             // Strip common prefixes
@@ -77,7 +95,10 @@ impl Tool for BaseConvert {
                         "result": result,
                     }))
                 }
-                Err(e) => result_error(format!("invalid number '{value}' for base {from}: {e}")),
+                Err(e) => result_error_typed(
+                    McpErrorCode::Validation,
+                    format!("invalid number '{value}' for base {from}: {e}"),
+                ),
             }
         })
     }
@@ -103,7 +124,12 @@ impl Tool for ByteFormat {
         Box::pin(async move {
             let bytes = match args.get("bytes").and_then(|v| v.as_u64()) {
                 Some(b) => b,
-                None => return result_error("missing required field: bytes"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: bytes",
+                    );
+                }
             };
 
             let (value, unit) = if bytes >= BYTES_PER_TB as u64 {
@@ -151,7 +177,12 @@ impl Tool for DurationFormat {
         Box::pin(async move {
             let secs = match args.get("seconds").and_then(|v| v.as_f64()) {
                 Some(s) => s,
-                None => return result_error("missing required field: seconds"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: seconds",
+                    );
+                }
             };
 
             let total = secs as u64;

@@ -1,6 +1,6 @@
 //! Math expression evaluator tool.
 
-use crate::mcp::{Tool, result_error, result_ok, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -25,14 +25,20 @@ impl Tool for MathEval {
         Box::pin(async move {
             let expr = match args.get("expression").and_then(|v| v.as_str()) {
                 Some(e) => e,
-                None => return result_error("missing required field: expression"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: expression",
+                    );
+                }
             };
 
             let valid = expr
                 .chars()
                 .all(|c| c.is_ascii_digit() || " +-*/.%()".contains(c));
             if !valid {
-                return result_error(
+                return result_error_typed(
+                    McpErrorCode::Validation,
                     "expression contains invalid characters — only digits, +, -, *, /, %, (, ), . allowed",
                 );
             }
@@ -46,7 +52,7 @@ impl Tool for MathEval {
                         result_ok(&format!("{val}"))
                     }
                 }
-                Err(e) => result_error(e),
+                Err(e) => result_error_typed(McpErrorCode::Internal, e),
             }
         })
     }

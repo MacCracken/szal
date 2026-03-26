@@ -1,6 +1,6 @@
 //! JSON tools: path extraction, diff, validation.
 
-use crate::mcp::{Tool, result_error, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -28,16 +28,31 @@ impl Tool for JsonPath {
         Box::pin(async move {
             let json_str = match args.get("json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: json"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: json",
+                    );
+                }
             };
             let path = match args.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p,
-                None => return result_error("missing required field: path"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: path",
+                    );
+                }
             };
 
             let value: serde_json::Value = match serde_json::from_str(json_str) {
                 Ok(v) => v,
-                Err(e) => return result_error(format!("invalid JSON: {e}")),
+                Err(e) => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        format!("invalid JSON: {e}"),
+                    );
+                }
             };
 
             let mut current = &value;
@@ -46,13 +61,21 @@ impl Tool for JsonPath {
                     match current.get(idx) {
                         Some(v) => current = v,
                         None => {
-                            return result_error(format!("index {idx} not found at '{segment}'"));
+                            return result_error_typed(
+                                McpErrorCode::NotFound,
+                                format!("index {idx} not found at '{segment}'"),
+                            );
                         }
                     }
                 } else {
                     match current.get(segment) {
                         Some(v) => current = v,
-                        None => return result_error(format!("key '{segment}' not found")),
+                        None => {
+                            return result_error_typed(
+                                McpErrorCode::NotFound,
+                                format!("key '{segment}' not found"),
+                            );
+                        }
                     }
                 }
             }
@@ -85,20 +108,40 @@ impl Tool for JsonDiff {
         Box::pin(async move {
             let a_str = match args.get("a").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: a"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: a",
+                    );
+                }
             };
             let b_str = match args.get("b").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: b"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: b",
+                    );
+                }
             };
 
             let a: serde_json::Value = match serde_json::from_str(a_str) {
                 Ok(v) => v,
-                Err(e) => return result_error(format!("invalid JSON in 'a': {e}")),
+                Err(e) => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        format!("invalid JSON in 'a': {e}"),
+                    );
+                }
             };
             let b: serde_json::Value = match serde_json::from_str(b_str) {
                 Ok(v) => v,
-                Err(e) => return result_error(format!("invalid JSON in 'b': {e}")),
+                Err(e) => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        format!("invalid JSON in 'b': {e}"),
+                    );
+                }
             };
 
             let equal = a == b;
@@ -142,7 +185,12 @@ impl Tool for JsonValidate {
         Box::pin(async move {
             let json_str = match args.get("json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: json"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: json",
+                    );
+                }
             };
             match serde_json::from_str::<serde_json::Value>(json_str) {
                 Ok(val) => {

@@ -1,7 +1,7 @@
 //! MCP tools for engine configuration and flow result inspection.
 
 use crate::engine::EngineConfig;
-use crate::mcp::{Tool, result_error, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -60,11 +60,21 @@ impl Tool for ResultInspect {
         Box::pin(async move {
             let json_str = match args.get("result_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: result_json"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: result_json",
+                    );
+                }
             };
             let val: serde_json::Value = match serde_json::from_str(json_str) {
                 Ok(v) => v,
-                Err(e) => return result_error(format!("invalid JSON: {e}")),
+                Err(e) => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        format!("invalid JSON: {e}"),
+                    );
+                }
             };
             let flow_name = val
                 .get("flow_name")

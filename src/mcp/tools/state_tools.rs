@@ -1,6 +1,6 @@
 //! MCP tools for workflow state machine operations.
 
-use crate::mcp::{Tool, result_error, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok_json, tool_def};
 use crate::state::WorkflowState;
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
@@ -45,11 +45,21 @@ impl Tool for StateCheck {
         Box::pin(async move {
             let state_str = match args.get("state").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: state"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: state",
+                    );
+                }
             };
             let state = match parse_state(state_str) {
                 Some(s) => s,
-                None => return result_error(format!("invalid state: {state_str}")),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        format!("invalid state: {state_str}"),
+                    );
+                }
             };
             let all = all_workflow_states();
             let valid_targets: Vec<&str> = all
@@ -92,7 +102,12 @@ impl Tool for StateTransition {
                 .and_then(parse_state)
             {
                 Some(s) => s,
-                None => return result_error("missing or invalid 'from' state"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing or invalid 'from' state",
+                    );
+                }
             };
             let to = match args
                 .get("to")
@@ -100,7 +115,12 @@ impl Tool for StateTransition {
                 .and_then(parse_state)
             {
                 Some(s) => s,
-                None => return result_error("missing or invalid 'to' state"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing or invalid 'to' state",
+                    );
+                }
             };
             result_ok_json(&json!({
                 "from": args["from"],

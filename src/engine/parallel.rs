@@ -7,30 +7,32 @@ use crate::bus::WorkflowEvent;
 use crate::step::{StepDef, StepResult, StepStatus};
 
 use super::step_exec::execute_step_with_handler;
-use super::{EventSink, StepHandler, emit};
+use super::{ExecCtx, FlowCtx, emit};
 
 pub(crate) async fn run_parallel(
     steps: &[StepDef],
-    handler: &StepHandler,
     max_concurrency: usize,
     timeout_ms: u64,
     start: std::time::Instant,
     token: Option<&CancellationToken>,
-    event_sink: &EventSink,
+    ctx: &ExecCtx<'_>,
 ) -> Vec<StepResult> {
-    tracing::debug!(steps = steps.len(), "running parallel execution");
+    tracing::debug!(steps = steps.len(), flow_id = %ctx.flow.id, flow = %ctx.flow.name, "running parallel execution");
     let sem = Arc::new(Semaphore::new(max_concurrency.max(1)));
     let mut handles = Vec::with_capacity(steps.len());
 
     let mut step_ids = Vec::with_capacity(steps.len());
     let mut step_names: Vec<String> = Vec::with_capacity(steps.len());
+    let flow_name_owned = ctx.flow.name.to_owned();
+    let flow_id = ctx.flow.id;
     for step in steps {
         step_ids.push(step.id);
         step_names.push(step.name.clone());
         let sem = sem.clone();
-        let handler = handler.clone();
+        let handler = ctx.handler.clone();
         let step = step.clone();
-        let sink = event_sink.clone();
+        let sink = ctx.event_sink.clone();
+        let fname = flow_name_owned.clone();
         handles.push(tokio::spawn(async move {
             let _permit = match sem.acquire().await {
                 Ok(p) => p,
@@ -45,7 +47,11 @@ pub(crate) async fn run_parallel(
                     };
                 }
             };
-            execute_step_with_handler(&step, &handler, &sink).await
+            let flow = FlowCtx {
+                name: &fname,
+                id: flow_id,
+            };
+            execute_step_with_handler(&step, &handler, &sink, flow).await
         }));
     }
 
@@ -60,7 +66,7 @@ pub(crate) async fn run_parallel(
                 "flow timeout exceeded"
             };
             emit(
-                event_sink,
+                ctx.event_sink,
                 WorkflowEvent::step_skipped(&name, &original_id.to_string(), reason),
             );
             results.push(StepResult {
@@ -76,7 +82,7 @@ pub(crate) async fn run_parallel(
         match handle.await {
             Ok(result) => results.push(result),
             Err(e) => {
-                tracing::error!(step_id = %original_id, error = %e, "spawned task panicked");
+                tracing::error!(step_id = %original_id, flow_id = %ctx.flow.id, flow = %ctx.flow.name, error = %e, "spawned task panicked");
                 results.push(StepResult {
                     step_id: original_id,
                     status: StepStatus::Failed,

@@ -1,6 +1,6 @@
 //! Template and text transformation tools.
 
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -28,11 +28,21 @@ impl Tool for TemplateRender {
         Box::pin(async move {
             let template = match args.get("template").and_then(|v| v.as_str()) {
                 Some(t) => t.to_string(),
-                None => return result_error("missing required field: template"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: template",
+                    );
+                }
             };
             let vars = match args.get("variables").and_then(|v| v.as_object()) {
                 Some(v) => v,
-                None => return result_error("missing required field: variables"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: variables",
+                    );
+                }
             };
 
             let mut result = template;
@@ -74,21 +84,24 @@ impl Tool for WordCount {
             let text = if let Some(t) = args.get("text").and_then(|v| v.as_str()) {
                 t.to_string()
             } else if let Some(path) = args.get("file").and_then(|v| v.as_str()) {
-                let validated = match crate::mcp::validate_path(path) {
+                let validated = match crate::mcp::validate_path(path).await {
                     Ok(p) => p,
-                    Err(e) => return result_error(e),
+                    Err(e) => return result_error_typed(McpErrorCode::PermissionDenied, e),
                 };
-                match std::fs::read_to_string(&validated) {
+                match tokio::fs::read_to_string(&validated).await {
                     Ok(c) => c,
                     Err(e) => {
-                        return result_error(format!(
-                            "failed to read {}: {e}",
-                            validated.display()
-                        ));
+                        return result_error_typed(
+                            McpErrorCode::IoError,
+                            format!("failed to read {}: {e}", validated.display()),
+                        );
                     }
                 }
             } else {
-                return result_error("provide either 'text' or 'file'");
+                return result_error_typed(
+                    McpErrorCode::Validation,
+                    "provide either 'text' or 'file'",
+                );
             };
 
             let lines = text.lines().count();
@@ -131,15 +144,30 @@ impl Tool for TextReplace {
         Box::pin(async move {
             let text = match args.get("text").and_then(|v| v.as_str()) {
                 Some(t) => t,
-                None => return result_error("missing required field: text"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: text",
+                    );
+                }
             };
             let search = match args.get("search").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: search"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: search",
+                    );
+                }
             };
             let replace_with = match args.get("replace").and_then(|v| v.as_str()) {
                 Some(r) => r,
-                None => return result_error("missing required field: replace"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: replace",
+                    );
+                }
             };
             let all = args.get("all").and_then(|v| v.as_bool()).unwrap_or(true);
 
@@ -177,7 +205,12 @@ impl Tool for TextSplit {
         Box::pin(async move {
             let text = match args.get("text").and_then(|v| v.as_str()) {
                 Some(t) => t,
-                None => return result_error("missing required field: text"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: text",
+                    );
+                }
             };
             let delim = args
                 .get("delimiter")
@@ -213,7 +246,12 @@ impl Tool for TextJoin {
         Box::pin(async move {
             let parts = match args.get("parts").and_then(|v| v.as_array()) {
                 Some(arr) => arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
-                None => return result_error("missing required field: parts"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: parts",
+                    );
+                }
             };
             let sep = args
                 .get("separator")

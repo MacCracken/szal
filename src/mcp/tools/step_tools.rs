@@ -1,6 +1,6 @@
 //! MCP tools for step creation and inspection.
 
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, result_ok_json, tool_def};
 use crate::step::StepDef;
 use bote::ToolDef;
 use serde_json::json;
@@ -38,7 +38,12 @@ impl Tool for StepCreate {
         Box::pin(async move {
             let name = match args.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n,
-                None => return result_error("missing required field: name"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: name",
+                    );
+                }
             };
 
             let mut step = StepDef::new(name);
@@ -68,7 +73,12 @@ impl Tool for StepCreate {
                     if let Some(id_str) = dep.as_str() {
                         match uuid::Uuid::parse_str(id_str) {
                             Ok(id) => step = step.depends_on(id),
-                            Err(_) => return result_error(format!("invalid UUID: {id_str}")),
+                            Err(_) => {
+                                return result_error_typed(
+                                    McpErrorCode::Validation,
+                                    format!("invalid UUID: {id_str}"),
+                                );
+                            }
                         }
                     }
                 }
@@ -101,7 +111,12 @@ impl Tool for StepValidate {
         Box::pin(async move {
             let json_str = match args.get("step_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: step_json"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: step_json",
+                    );
+                }
             };
 
             match serde_json::from_str::<StepDef>(json_str) {
@@ -116,10 +131,15 @@ impl Tool for StepValidate {
                     if issues.is_empty() {
                         result_ok(&format!("valid: step '{}' (id={})", step.name, step.id))
                     } else {
-                        result_error(format!("issues: {}", issues.join(", ")))
+                        result_error_typed(
+                            McpErrorCode::Validation,
+                            format!("issues: {}", issues.join(", ")),
+                        )
                     }
                 }
-                Err(e) => result_error(format!("invalid JSON: {e}")),
+                Err(e) => {
+                    result_error_typed(McpErrorCode::Validation, format!("invalid JSON: {e}"))
+                }
             }
         })
     }
@@ -147,7 +167,12 @@ impl Tool for StepInspect {
         Box::pin(async move {
             let json_str = match args.get("step_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: step_json"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: step_json",
+                    );
+                }
             };
 
             match serde_json::from_str::<StepDef>(json_str) {
@@ -165,7 +190,9 @@ impl Tool for StepInspect {
                     });
                     result_ok_json(&info)
                 }
-                Err(e) => result_error(format!("invalid JSON: {e}")),
+                Err(e) => {
+                    result_error_typed(McpErrorCode::Validation, format!("invalid JSON: {e}"))
+                }
             }
         })
     }

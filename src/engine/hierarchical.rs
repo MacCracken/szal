@@ -6,38 +6,27 @@ use crate::step::{StepDef, StepResult, StepStatus};
 use tokio_util::sync::CancellationToken;
 
 use super::step_exec::execute_step_with_handler;
-use super::{EventSink, StepHandler, emit};
+use super::{EventSink, ExecCtx, emit};
 
 pub(crate) async fn run_hierarchical(
     steps: &[StepDef],
-    handler: &StepHandler,
     timeout_ms: u64,
     start: std::time::Instant,
     token: Option<&CancellationToken>,
-    event_sink: &EventSink,
+    ctx: &ExecCtx<'_>,
 ) -> Vec<StepResult> {
-    tracing::debug!(steps = steps.len(), "running hierarchical execution");
+    tracing::debug!(steps = steps.len(), flow_id = %ctx.flow.id, flow = %ctx.flow.name, "running hierarchical execution");
     let mut results = Vec::new();
-    execute_tree(
-        steps,
-        handler,
-        timeout_ms,
-        start,
-        token,
-        event_sink,
-        &mut results,
-    )
-    .await;
+    execute_tree(steps, timeout_ms, start, token, ctx, &mut results).await;
     results
 }
 
 fn execute_tree<'a>(
     steps: &'a [StepDef],
-    handler: &'a StepHandler,
     timeout_ms: u64,
     start: std::time::Instant,
     token: Option<&'a CancellationToken>,
-    event_sink: &'a EventSink,
+    ctx: &'a ExecCtx<'a>,
     results: &'a mut Vec<StepResult>,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     Box::pin(async move {
@@ -50,32 +39,23 @@ fn execute_tree<'a>(
                 } else {
                     "prior step failed"
                 };
-                skip_step_and_children(step, reason, event_sink, results);
+                skip_step_and_children(step, reason, ctx.event_sink, results);
                 continue;
             }
             if start.elapsed().as_millis() as u64 > timeout_ms {
-                skip_step_and_children(step, "flow timeout exceeded", event_sink, results);
+                skip_step_and_children(step, "flow timeout exceeded", ctx.event_sink, results);
                 continue;
             }
 
-            let result = execute_step_with_handler(step, handler, event_sink).await;
+            let result =
+                execute_step_with_handler(step, ctx.handler, ctx.event_sink, ctx.flow).await;
             let succeeded = result.status == StepStatus::Completed;
             results.push(result);
 
             if succeeded && !step.sub_steps.is_empty() {
-                execute_tree(
-                    &step.sub_steps,
-                    handler,
-                    timeout_ms,
-                    start,
-                    token,
-                    event_sink,
-                    results,
-                )
-                .await;
+                execute_tree(&step.sub_steps, timeout_ms, start, token, ctx, results).await;
             } else if !succeeded {
-                // Skip sub-steps on failure
-                skip_children(step, "parent step failed", event_sink, results);
+                skip_children(step, "parent step failed", ctx.event_sink, results);
                 failed = true;
             }
         }

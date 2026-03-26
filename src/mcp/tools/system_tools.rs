@@ -1,6 +1,6 @@
 //! System information and process tools.
 
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -23,7 +23,8 @@ impl Tool for SystemInfo {
         _args: serde_json::Value,
     ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async {
-            let hostname = std::fs::read_to_string("/etc/hostname")
+            let hostname = tokio::fs::read_to_string("/etc/hostname")
+                .await
                 .unwrap_or_else(|_| "unknown".into())
                 .trim()
                 .to_string();
@@ -35,7 +36,8 @@ impl Tool for SystemInfo {
                 .unwrap_or(0);
 
             // Read uptime from /proc/uptime
-            let uptime_secs = std::fs::read_to_string("/proc/uptime")
+            let uptime_secs = tokio::fs::read_to_string("/proc/uptime")
+                .await
                 .ok()
                 .and_then(|s| s.split_whitespace().next().map(String::from))
                 .and_then(|s| s.parse::<f64>().ok());
@@ -71,7 +73,7 @@ impl Tool for Cwd {
         Box::pin(async {
             match std::env::current_dir() {
                 Ok(p) => result_ok(&p.display().to_string()),
-                Err(e) => result_error(e.to_string()),
+                Err(e) => result_error_typed(McpErrorCode::IoError, e.to_string()),
             }
         })
     }
@@ -97,11 +99,19 @@ impl Tool for EnvGet {
         Box::pin(async move {
             let name = match args.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n,
-                None => return result_error("missing required field: name"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: name",
+                    );
+                }
             };
             match std::env::var(name) {
                 Ok(val) => result_ok(&val),
-                Err(_) => result_error(format!("environment variable not set: {name}")),
+                Err(_) => result_error_typed(
+                    McpErrorCode::NotFound,
+                    format!("environment variable not set: {name}"),
+                ),
             }
         })
     }

@@ -1,6 +1,6 @@
 //! Encoding tools: UUID generation, base64 encode/decode.
 
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, result_ok_json, tool_def};
 use base64::{Engine as B64Engine, engine::general_purpose::STANDARD};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
@@ -67,7 +67,12 @@ impl Tool for Base64Tool {
         Box::pin(async move {
             let input = match args.get("input").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: input"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: input",
+                    );
+                }
             };
             let op = args
                 .get("operation")
@@ -82,11 +87,19 @@ impl Tool for Base64Tool {
                 "decode" => match STANDARD.decode(input) {
                     Ok(bytes) => match String::from_utf8(bytes) {
                         Ok(s) => result_ok(&s),
-                        Err(_) => result_error("decoded bytes are not valid UTF-8"),
+                        Err(_) => result_error_typed(
+                            McpErrorCode::Internal,
+                            "decoded bytes are not valid UTF-8",
+                        ),
                     },
-                    Err(e) => result_error(format!("base64 decode error: {e}")),
+                    Err(e) => result_error_typed(
+                        McpErrorCode::Internal,
+                        format!("base64 decode error: {e}"),
+                    ),
                 },
-                _ => result_error(format!("invalid operation: {op}")),
+                _ => {
+                    result_error_typed(McpErrorCode::Validation, format!("invalid operation: {op}"))
+                }
             }
         })
     }

@@ -8,18 +8,17 @@ use crate::bus::WorkflowEvent;
 use crate::step::{StepDef, StepId, StepResult, StepStatus};
 
 use super::step_exec::execute_step_with_handler;
-use super::{EventSink, StepHandler, emit};
+use super::{ExecCtx, FlowCtx, emit};
 
 pub(crate) async fn run_dag(
     steps: &[StepDef],
-    handler: &StepHandler,
     max_concurrency: usize,
     timeout_ms: u64,
     start: std::time::Instant,
     token: Option<&CancellationToken>,
-    event_sink: &EventSink,
+    ctx: &ExecCtx<'_>,
 ) -> Vec<StepResult> {
-    tracing::debug!(steps = steps.len(), "running DAG execution");
+    tracing::debug!(steps = steps.len(), flow_id = %ctx.flow.id, flow = %ctx.flow.name, "running DAG execution");
     let sem = Arc::new(Semaphore::new(max_concurrency.max(1)));
     let mut results: Vec<StepResult> = Vec::with_capacity(steps.len());
     let mut failed: HashSet<StepId> = HashSet::new();
@@ -43,6 +42,9 @@ pub(crate) async fn run_dag(
         .map(|s| s.id)
         .collect();
 
+    let flow_name_owned = ctx.flow.name.to_owned();
+    let flow_id = ctx.flow.id;
+
     while !ready.is_empty() {
         let cancelled = token.is_some_and(|t| t.is_cancelled());
         if cancelled || start.elapsed().as_millis() as u64 > timeout_ms {
@@ -54,7 +56,7 @@ pub(crate) async fn run_dag(
             for &id in ready.iter() {
                 if let Some(step) = step_map.get(&id) {
                     emit(
-                        event_sink,
+                        ctx.event_sink,
                         WorkflowEvent::step_skipped(&step.name, &step.id.to_string(), reason),
                     );
                     results.push(StepResult {
@@ -81,9 +83,9 @@ pub(crate) async fn run_dag(
                 // Skip if a dependency failed
                 let dep_failed = step.depends_on.iter().any(|d| failed.contains(d));
                 if dep_failed {
-                    tracing::debug!(step = %step.name, "skipping step due to dependency failure");
+                    tracing::debug!(step = %step.name, flow_id = %ctx.flow.id, flow = %ctx.flow.name, "skipping step due to dependency failure");
                     emit(
-                        event_sink,
+                        ctx.event_sink,
                         WorkflowEvent::step_skipped(
                             &step.name,
                             &step.id.to_string(),
@@ -104,9 +106,10 @@ pub(crate) async fn run_dag(
                 }
 
                 let sem = sem.clone();
-                let handler = handler.clone();
+                let handler = ctx.handler.clone();
                 let step = step.clone();
-                let sink = event_sink.clone();
+                let sink = ctx.event_sink.clone();
+                let fname = flow_name_owned.clone();
                 dag_step_ids.push(step.id);
                 handles.push(tokio::spawn(async move {
                     let _permit = match sem.acquire().await {
@@ -122,7 +125,11 @@ pub(crate) async fn run_dag(
                             };
                         }
                     };
-                    execute_step_with_handler(&step, &handler, &sink).await
+                    let flow = FlowCtx {
+                        name: &fname,
+                        id: flow_id,
+                    };
+                    execute_step_with_handler(&step, &handler, &sink, flow).await
                 }));
             }
         }
@@ -137,7 +144,7 @@ pub(crate) async fn run_dag(
                     results.push(result);
                 }
                 Err(e) => {
-                    tracing::error!(step_id = %original_id, error = %e, "spawned task panicked");
+                    tracing::error!(step_id = %original_id, flow_id = %ctx.flow.id, flow = %ctx.flow.name, error = %e, "spawned task panicked");
                     failed.insert(original_id);
                     unlock_dependents(original_id, &dependents, &mut in_degree, &mut ready);
                     results.push(StepResult {

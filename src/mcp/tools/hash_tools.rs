@@ -1,6 +1,6 @@
 //! Hashing and checksum tools.
 
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use sha2::Digest;
@@ -30,21 +30,24 @@ impl Tool for Sha256 {
             let data = if let Some(input) = args.get("input").and_then(|v| v.as_str()) {
                 input.as_bytes().to_vec()
             } else if let Some(path) = args.get("file").and_then(|v| v.as_str()) {
-                let validated = match crate::mcp::validate_path(path) {
+                let validated = match crate::mcp::validate_path(path).await {
                     Ok(p) => p,
-                    Err(e) => return result_error(e),
+                    Err(e) => return result_error_typed(McpErrorCode::PermissionDenied, e),
                 };
-                match std::fs::read(&validated) {
+                match tokio::fs::read(&validated).await {
                     Ok(d) => d,
                     Err(e) => {
-                        return result_error(format!(
-                            "failed to read {}: {e}",
-                            validated.display()
-                        ));
+                        return result_error_typed(
+                            McpErrorCode::IoError,
+                            format!("failed to read {}: {e}", validated.display()),
+                        );
                     }
                 }
             } else {
-                return result_error("provide either 'input' or 'file'");
+                return result_error_typed(
+                    McpErrorCode::Validation,
+                    "provide either 'input' or 'file'",
+                );
             };
 
             let hash = sha2::Sha256::digest(&data);
@@ -80,7 +83,12 @@ impl Tool for Md5 {
         Box::pin(async move {
             let input = match args.get("input").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: input"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: input",
+                    );
+                }
             };
 
             let hash = md5::Md5::digest(input.as_bytes());
@@ -119,13 +127,21 @@ impl Tool for RandomToken {
                 .min(256) as usize;
 
             let mut buf = vec![0u8; bytes];
-            use std::io::Read;
-            let mut f = match std::fs::File::open("/dev/urandom") {
+            use tokio::io::AsyncReadExt;
+            let mut f = match tokio::fs::File::open("/dev/urandom").await {
                 Ok(f) => f,
-                Err(e) => return result_error(format!("failed to open /dev/urandom: {e}")),
+                Err(e) => {
+                    return result_error_typed(
+                        McpErrorCode::IoError,
+                        format!("failed to open /dev/urandom: {e}"),
+                    );
+                }
             };
-            if let Err(e) = f.read_exact(&mut buf) {
-                return result_error(format!("failed to read random bytes: {e}"));
+            if let Err(e) = f.read_exact(&mut buf).await {
+                return result_error_typed(
+                    McpErrorCode::IoError,
+                    format!("failed to read random bytes: {e}"),
+                );
             }
             use std::fmt::Write;
             let mut hex = String::with_capacity(bytes * 2);

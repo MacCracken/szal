@@ -1,6 +1,6 @@
 //! Git repository tools.
 
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -145,7 +145,7 @@ impl Tool for GitLog {
                         .collect();
                     result_ok_json(&json!(commits))
                 }
-                Err(e) => result_error(e),
+                Err(e) => result_error_typed(McpErrorCode::IoError, e),
             }
         })
     }
@@ -195,12 +195,12 @@ impl Tool for GitDiff {
 
             if let Some(r1) = args.get("ref1").and_then(|v| v.as_str()) {
                 if let Err(e) = validate_git_ref(r1) {
-                    return result_error(e);
+                    return result_error_typed(McpErrorCode::PermissionDenied, e);
                 }
                 git_args.push(r1);
                 if let Some(r2) = args.get("ref2").and_then(|v| v.as_str()) {
                     if let Err(e) = validate_git_ref(r2) {
-                        return result_error(e);
+                        return result_error_typed(McpErrorCode::PermissionDenied, e);
                     }
                     git_args.push(r2);
                 }
@@ -214,7 +214,7 @@ impl Tool for GitDiff {
                         result_ok(&diff)
                     }
                 }
-                Err(e) => result_error(e),
+                Err(e) => result_error_typed(McpErrorCode::IoError, e),
             }
         })
     }
@@ -292,14 +292,25 @@ impl Tool for GitBlame {
         Box::pin(async move {
             let file = match args.get("file").and_then(|v| v.as_str()) {
                 Some(f) => f,
-                None => return result_error("missing required field: file"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: file",
+                    );
+                }
             };
             // Reject option injection and path traversal
             if file.starts_with('-') {
-                return result_error("file must not start with '-'");
+                return result_error_typed(
+                    McpErrorCode::PermissionDenied,
+                    "file must not start with '-'",
+                );
             }
             if file.contains("..") {
-                return result_error("file must not contain '..'");
+                return result_error_typed(
+                    McpErrorCode::PermissionDenied,
+                    "file must not contain '..'",
+                );
             }
             let cwd = args.get("path").and_then(|v| v.as_str());
 
@@ -326,7 +337,7 @@ impl Tool for GitBlame {
                         })).collect::<Vec<_>>(),
                     }))
                 }
-                Err(e) => result_error(e),
+                Err(e) => result_error_typed(McpErrorCode::IoError, e),
             }
         })
     }

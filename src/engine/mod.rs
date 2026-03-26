@@ -32,7 +32,22 @@ use std::sync::Arc;
 pub use tokio_util::sync::CancellationToken;
 
 use crate::bus::WorkflowEvent;
+use crate::flow::FlowId;
 use crate::step::StepDef;
+
+/// Lightweight context threaded through executor functions for tracing correlation.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FlowCtx<'a> {
+    pub name: &'a str,
+    pub id: FlowId,
+}
+
+/// Shared execution context passed to all executor functions.
+pub(crate) struct ExecCtx<'a> {
+    pub handler: &'a StepHandler,
+    pub event_sink: &'a EventSink,
+    pub flow: FlowCtx<'a>,
+}
 
 /// Optional event sink for workflow lifecycle events.
 ///

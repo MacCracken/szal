@@ -2,18 +2,21 @@
 
 ## Backlog
 
-- Hierarchical execution mode — currently a silent no-op delegating to sequential
-- Integrate `EventBus` into `Engine::run()` — bus exists but is disconnected from execution
-- `error.rs` — `StepTimeout`, `RetryExhausted`, `RollbackFailed` variants are never constructed; engine uses plain strings instead
-- Benchmarks only cover validation/serde — add execution throughput benchmarks (parallel, DAG scheduling overhead)
-- Tracing calls missing flow context in concurrent scenarios — add flow_id to all spans
-- MCP error responses lack structured error codes (transient vs permanent)
-- Convert remaining blocking `std::fs` calls to `tokio::fs` (DirList read_dir, FileWrite append, validate_path canonicalize/exists, system_tools /etc/hostname + /proc/uptime, template_tools file read)
 - Majra ManagedQueue — queue-backed step execution for distributed workloads
 - Majra heartbeat — engine health reporting
 - Connection pooling and backpressure for network tools
 - Multi-tenant isolation (tenant-scoped tool access, quota enforcement)
 - OpenTelemetry + Prometheus metrics via Majra MajraMetrics
+
+## Completed
+
+- ~~Hierarchical execution mode~~ — static sub-step trees with recursive executor
+- ~~Integrate `EventBus` into `Engine::run()`~~ — `EventSink` type, events at all 10 lifecycle points
+- ~~`error.rs` structured variants~~ — `StepTimeout`, `RetryExhausted`, `RollbackFailed` now constructed
+- ~~Execution throughput benchmarks~~ — 7 criterion benchmarks across all modes
+- ~~Tracing flow context~~ — `flow_id` and `flow_name` on all spans via `FlowCtx`/`ExecCtx`
+- ~~MCP structured error codes~~ — `McpErrorCode` enum with transient/permanent distinction
+- ~~Convert blocking `std::fs` to `tokio::fs`~~ — all 18 call sites async, `validate_path` async
 
 ## v1.0 — Unified MCP Engine
 

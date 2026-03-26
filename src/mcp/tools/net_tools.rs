@@ -1,6 +1,6 @@
 //! Network and HTTP tools.
 
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -85,13 +85,21 @@ impl Tool for HttpRequest {
         Box::pin(async move {
             let url = match args.get("url").and_then(|v| v.as_str()) {
                 Some(u) => u,
-                None => return result_error("missing required field: url"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: url",
+                    );
+                }
             };
             if !url.starts_with("http://") && !url.starts_with("https://") {
-                return result_error("only http:// and https:// URLs are allowed");
+                return result_error_typed(
+                    McpErrorCode::Validation,
+                    "only http:// and https:// URLs are allowed",
+                );
             }
             if let Err(e) = is_safe_url(url) {
-                return result_error(e);
+                return result_error_typed(McpErrorCode::PermissionDenied, e);
             }
             let method = args.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
             let timeout = args
@@ -113,9 +121,10 @@ impl Tool for HttpRequest {
                             || val.contains('\n')
                             || val.contains('\r')
                         {
-                            return result_error(format!(
-                                "header '{k}' contains invalid newline characters"
-                            ));
+                            return result_error_typed(
+                                McpErrorCode::Validation,
+                                format!("header '{k}' contains invalid newline characters"),
+                            );
                         }
                         cmd.args(["-H", &format!("{k}: {val}")]);
                     }
@@ -134,7 +143,10 @@ impl Tool for HttpRequest {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
                     if !output.status.success() && !stderr.is_empty() {
-                        return result_error(format!("curl failed: {stderr}"));
+                        return result_error_typed(
+                            McpErrorCode::IoError,
+                            format!("curl failed: {stderr}"),
+                        );
                     }
 
                     // Last line is status code from -w
@@ -170,7 +182,10 @@ impl Tool for HttpRequest {
                         "body": body_lines.join("\n"),
                     }))
                 }
-                Err(e) => result_error(format!("failed to execute curl: {e}")),
+                Err(e) => result_error_typed(
+                    McpErrorCode::IoError,
+                    format!("failed to execute curl: {e}"),
+                ),
             }
         })
     }
@@ -196,7 +211,12 @@ impl Tool for DnsLookup {
         Box::pin(async move {
             let hostname = match args.get("hostname").and_then(|v| v.as_str()) {
                 Some(h) => h,
-                None => return result_error("missing required field: hostname"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: hostname",
+                    );
+                }
             };
 
             let addr = format!("{hostname}:0");
@@ -208,7 +228,10 @@ impl Tool for DnsLookup {
                         "addresses": ips,
                     }))
                 }
-                Err(e) => result_error(format!("DNS lookup failed for {hostname}: {e}")),
+                Err(e) => result_error_typed(
+                    McpErrorCode::IoError,
+                    format!("DNS lookup failed for {hostname}: {e}"),
+                ),
             }
         })
     }
@@ -242,8 +265,18 @@ impl Tool for PortCheck {
                 .unwrap_or("127.0.0.1");
             let port = match args.get("port").and_then(|v| v.as_u64()) {
                 Some(p) if p <= 65535 => p as u16,
-                Some(p) => return result_error(format!("port {p} out of range (0-65535)")),
-                None => return result_error("missing required field: port"),
+                Some(p) => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        format!("port {p} out of range (0-65535)"),
+                    );
+                }
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: port",
+                    );
+                }
             };
             let timeout_ms = args
                 .get("timeout_ms")
@@ -290,7 +323,12 @@ impl Tool for UrlEncode {
         Box::pin(async move {
             let input = match args.get("input").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: input"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: input",
+                    );
+                }
             };
             let op = args
                 .get("operation")
@@ -330,10 +368,15 @@ impl Tool for UrlEncode {
                     }
                     match String::from_utf8(bytes) {
                         Ok(s) => result_ok(&s),
-                        Err(_) => result_error("decoded bytes are not valid UTF-8"),
+                        Err(_) => result_error_typed(
+                            McpErrorCode::Validation,
+                            "decoded bytes are not valid UTF-8",
+                        ),
                     }
                 }
-                _ => result_error(format!("invalid operation: {op}")),
+                _ => {
+                    result_error_typed(McpErrorCode::Validation, format!("invalid operation: {op}"))
+                }
             }
         })
     }

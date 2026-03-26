@@ -4,7 +4,7 @@ use crate::step::{StepDef, StepResult, StepStatus};
 use tokio_util::sync::CancellationToken;
 
 use super::result::FlowResult;
-use super::{EngineConfig, EventSink, RollbackHandler, StepHandler, emit};
+use super::{EngineConfig, EventSink, ExecCtx, FlowCtx, RollbackHandler, StepHandler, emit};
 use super::{dag, hierarchical, parallel, sequential};
 
 /// The workflow execution engine.
@@ -70,53 +70,43 @@ impl Engine {
             .unwrap_or(u64::MAX);
 
         let start = std::time::Instant::now();
+        let exec = ExecCtx {
+            handler: &self.handler,
+            event_sink: &self.event_sink,
+            flow: FlowCtx {
+                name: &flow.name,
+                id: flow.id,
+            },
+        };
 
         let step_results = match flow.mode {
             FlowMode::Sequential => {
-                sequential::run_sequential(
-                    &flow.steps,
-                    &self.handler,
-                    timeout,
-                    start,
-                    None,
-                    &self.event_sink,
-                )
-                .await
+                sequential::run_sequential(&flow.steps, timeout, start, None, &exec).await
             }
             FlowMode::Parallel => {
                 parallel::run_parallel(
                     &flow.steps,
-                    &self.handler,
                     self.config.max_concurrency,
                     timeout,
                     start,
                     None,
-                    &self.event_sink,
+                    &exec,
                 )
                 .await
             }
             FlowMode::Dag => {
                 dag::run_dag(
                     &flow.steps,
-                    &self.handler,
                     self.config.max_concurrency,
                     timeout,
                     start,
                     None,
-                    &self.event_sink,
+                    &exec,
                 )
                 .await
             }
             FlowMode::Hierarchical => {
-                hierarchical::run_hierarchical(
-                    &flow.steps,
-                    &self.handler,
-                    timeout,
-                    start,
-                    None,
-                    &self.event_sink,
-                )
-                .await
+                hierarchical::run_hierarchical(&flow.steps, timeout, start, None, &exec).await
             }
         };
 
@@ -200,53 +190,44 @@ impl Engine {
             .unwrap_or(u64::MAX);
 
         let start = std::time::Instant::now();
+        let exec = ExecCtx {
+            handler: &self.handler,
+            event_sink: &self.event_sink,
+            flow: FlowCtx {
+                name: &flow.name,
+                id: flow.id,
+            },
+        };
 
         let step_results = match flow.mode {
             FlowMode::Sequential => {
-                sequential::run_sequential(
-                    &flow.steps,
-                    &self.handler,
-                    timeout,
-                    start,
-                    Some(&token),
-                    &self.event_sink,
-                )
-                .await
+                sequential::run_sequential(&flow.steps, timeout, start, Some(&token), &exec).await
             }
             FlowMode::Parallel => {
                 parallel::run_parallel(
                     &flow.steps,
-                    &self.handler,
                     self.config.max_concurrency,
                     timeout,
                     start,
                     Some(&token),
-                    &self.event_sink,
+                    &exec,
                 )
                 .await
             }
             FlowMode::Dag => {
                 dag::run_dag(
                     &flow.steps,
-                    &self.handler,
                     self.config.max_concurrency,
                     timeout,
                     start,
                     Some(&token),
-                    &self.event_sink,
+                    &exec,
                 )
                 .await
             }
             FlowMode::Hierarchical => {
-                hierarchical::run_hierarchical(
-                    &flow.steps,
-                    &self.handler,
-                    timeout,
-                    start,
-                    Some(&token),
-                    &self.event_sink,
-                )
-                .await
+                hierarchical::run_hierarchical(&flow.steps, timeout, start, Some(&token), &exec)
+                    .await
             }
         };
 

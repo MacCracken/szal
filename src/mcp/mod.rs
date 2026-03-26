@@ -73,12 +73,62 @@ pub fn result_error(msg: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
 }
 
+/// Structured error code for MCP tool responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum McpErrorCode {
+    /// Permanent: bad input, missing fields, invalid format.
+    Validation,
+    /// Permanent: file, resource, or key not found.
+    NotFound,
+    /// Permanent: path outside working directory, security rejection.
+    PermissionDenied,
+    /// Transient: operation timed out.
+    Timeout,
+    /// Transient: filesystem or network I/O failure.
+    IoError,
+    /// Transient: unexpected internal error.
+    Internal,
+}
+
+impl McpErrorCode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Validation => "validation",
+            Self::NotFound => "not_found",
+            Self::PermissionDenied => "permission_denied",
+            Self::Timeout => "timeout",
+            Self::IoError => "io_error",
+            Self::Internal => "internal",
+        }
+    }
+
+    #[must_use]
+    pub fn is_retryable(self) -> bool {
+        matches!(self, Self::Timeout | Self::IoError | Self::Internal)
+    }
+}
+
+/// Build an error MCP tool response with a structured error code.
+pub fn result_error_typed(code: McpErrorCode, msg: impl Into<String>) -> serde_json::Value {
+    let msg = msg.into();
+    serde_json::json!({
+        "content": [{"type": "text", "text": msg}],
+        "isError": true,
+        "_meta": {
+            "error_code": code.as_str(),
+            "retryable": code.is_retryable()
+        }
+    })
+}
+
 /// Validate that a path resolves to a location under the current working directory.
 /// For paths that don't exist yet (e.g. FileWrite to a new file), the parent must exist.
-pub fn validate_path(path: &str) -> Result<std::path::PathBuf, String> {
-    let cwd = std::env::current_dir()
-        .map_err(|e| format!("failed to get cwd: {e}"))?
-        .canonicalize()
+pub async fn validate_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("failed to get cwd: {e}"))?;
+    let cwd = tokio::fs::canonicalize(&cwd)
+        .await
         .map_err(|e| format!("failed to resolve cwd: {e}"))?;
 
     let p = std::path::Path::new(path);
@@ -92,17 +142,17 @@ pub fn validate_path(path: &str) -> Result<std::path::PathBuf, String> {
 
     // Canonicalize to resolve symlinks and ..
     // For new files (FileWrite), parent must exist
-    let canonical = if resolved.exists() {
-        resolved
-            .canonicalize()
+    let canonical = if tokio::fs::metadata(&resolved).await.is_ok() {
+        tokio::fs::canonicalize(&resolved)
+            .await
             .map_err(|e| format!("failed to resolve path: {e}"))?
     } else {
         // For non-existent paths, canonicalize the parent
         let parent = resolved
             .parent()
             .ok_or_else(|| "invalid path".to_string())?;
-        let canonical_parent = parent
-            .canonicalize()
+        let canonical_parent = tokio::fs::canonicalize(parent)
+            .await
             .map_err(|e| format!("failed to resolve parent path: {e}"))?;
         canonical_parent.join(resolved.file_name().unwrap_or_default())
     };
@@ -140,31 +190,31 @@ pub fn tool_def(
 mod tests {
     use super::*;
 
-    #[test]
-    fn validate_path_current_dir() {
-        assert!(validate_path(".").is_ok());
+    #[tokio::test]
+    async fn validate_path_current_dir() {
+        assert!(validate_path(".").await.is_ok());
     }
 
-    #[test]
-    fn validate_path_rejects_outside_cwd() {
-        let err = validate_path("/etc/passwd").unwrap_err();
+    #[tokio::test]
+    async fn validate_path_rejects_outside_cwd() {
+        let err = validate_path("/etc/passwd").await.unwrap_err();
         assert!(
             err.contains("outside working directory"),
             "expected 'outside working directory', got: {err}"
         );
     }
 
-    #[test]
-    fn validate_path_rejects_traversal() {
-        assert!(validate_path("../../etc/passwd").is_err());
+    #[tokio::test]
+    async fn validate_path_rejects_traversal() {
+        assert!(validate_path("../../etc/passwd").await.is_err());
     }
 
-    #[test]
-    fn validate_path_new_file_in_valid_dir() {
+    #[tokio::test]
+    async fn validate_path_new_file_in_valid_dir() {
         let cwd = std::env::current_dir().unwrap();
         let tmp = tempfile::TempDir::new_in(&cwd).unwrap();
         let new_file = tmp.path().join("newfile.txt");
-        let result = validate_path(new_file.to_str().unwrap());
+        let result = validate_path(new_file.to_str().unwrap()).await;
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
     }
 }

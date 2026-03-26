@@ -1,7 +1,7 @@
 //! MCP tools for flow creation, validation, and manipulation.
 
 use crate::flow::{FlowDef, FlowMode};
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, result_ok_json, tool_def};
 use crate::step::StepDef;
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
@@ -42,7 +42,12 @@ impl Tool for FlowCreate {
         Box::pin(async move {
             let name = match args.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n,
-                None => return result_error("missing required field: name"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: name",
+                    );
+                }
             };
             let mode = match args
                 .get("mode")
@@ -50,7 +55,9 @@ impl Tool for FlowCreate {
                 .and_then(parse_flow_mode)
             {
                 Some(m) => m,
-                None => return result_error("missing or invalid mode"),
+                None => {
+                    return result_error_typed(McpErrorCode::Validation, "missing or invalid mode");
+                }
             };
 
             let mut flow = FlowDef::new(name, mode);
@@ -68,7 +75,12 @@ impl Tool for FlowCreate {
                 for step_val in steps {
                     match serde_json::from_value::<StepDef>(step_val.clone()) {
                         Ok(step) => flow.add_step(step),
-                        Err(e) => return result_error(format!("invalid step: {e}")),
+                        Err(e) => {
+                            return result_error_typed(
+                                McpErrorCode::Validation,
+                                format!("invalid step: {e}"),
+                            );
+                        }
                     }
                 }
             }
@@ -96,11 +108,21 @@ impl Tool for FlowValidate {
         Box::pin(async move {
             let json_str = match args.get("flow_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: flow_json"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: flow_json",
+                    );
+                }
             };
             let flow: FlowDef = match serde_json::from_str(json_str) {
                 Ok(f) => f,
-                Err(e) => return result_error(format!("invalid JSON: {e}")),
+                Err(e) => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        format!("invalid JSON: {e}"),
+                    );
+                }
             };
             match flow.validate() {
                 Ok(()) => result_ok(&format!(
@@ -109,7 +131,9 @@ impl Tool for FlowValidate {
                     flow.steps.len(),
                     flow.mode
                 )),
-                Err(e) => result_error(format!("validation failed: {e}")),
+                Err(e) => {
+                    result_error_typed(McpErrorCode::Validation, format!("validation failed: {e}"))
+                }
             }
         })
     }
@@ -134,11 +158,21 @@ impl Tool for FlowFromJson {
         Box::pin(async move {
             let json_str = match args.get("flow_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: flow_json"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: flow_json",
+                    );
+                }
             };
             let flow: FlowDef = match serde_json::from_str(json_str) {
                 Ok(f) => f,
-                Err(e) => return result_error(format!("invalid JSON: {e}")),
+                Err(e) => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        format!("invalid JSON: {e}"),
+                    );
+                }
             };
             let info = json!({
                 "id": flow.id.to_string(),
@@ -208,19 +242,39 @@ impl Tool for FlowAddStep {
         Box::pin(async move {
             let flow_str = match args.get("flow_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: flow_json"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: flow_json",
+                    );
+                }
             };
             let step_str = match args.get("step_json").and_then(|v| v.as_str()) {
                 Some(s) => s,
-                None => return result_error("missing required field: step_json"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: step_json",
+                    );
+                }
             };
             let mut flow: FlowDef = match serde_json::from_str(flow_str) {
                 Ok(f) => f,
-                Err(e) => return result_error(format!("invalid flow JSON: {e}")),
+                Err(e) => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        format!("invalid flow JSON: {e}"),
+                    );
+                }
             };
             let step: StepDef = match serde_json::from_str(step_str) {
                 Ok(s) => s,
-                Err(e) => return result_error(format!("invalid step JSON: {e}")),
+                Err(e) => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        format!("invalid step JSON: {e}"),
+                    );
+                }
             };
             flow.add_step(step);
             result_ok_json(&serde_json::to_value(&flow).unwrap_or_default())

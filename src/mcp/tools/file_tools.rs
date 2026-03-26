@@ -1,10 +1,13 @@
 //! File system tools — read, write, list, stat, search.
 
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def, validate_path};
+use crate::mcp::{
+    McpErrorCode, Tool, result_error_typed, result_ok, result_ok_json, tool_def, validate_path,
+};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::path::Path;
 use std::pin::Pin;
+use tokio::io::AsyncWriteExt;
 
 /// Maximum bytes to read from a file by default (1 MB).
 const DEFAULT_MAX_READ_BYTES: usize = 1_048_576;
@@ -38,11 +41,16 @@ impl Tool for FileRead {
         Box::pin(async move {
             let path = match args.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p,
-                None => return result_error("missing required field: path"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: path",
+                    );
+                }
             };
-            let path = match validate_path(path) {
+            let path = match validate_path(path).await {
                 Ok(p) => p.display().to_string(),
-                Err(e) => return result_error(e),
+                Err(e) => return result_error_typed(McpErrorCode::PermissionDenied, e),
             };
             let path = path.as_str();
             let max_bytes = args
@@ -50,7 +58,7 @@ impl Tool for FileRead {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(DEFAULT_MAX_READ_BYTES as u64) as usize;
 
-            match std::fs::read_to_string(path) {
+            match tokio::fs::read_to_string(path).await {
                 Ok(content) => {
                     if content.len() > max_bytes {
                         let end = content[..max_bytes]
@@ -63,7 +71,9 @@ impl Tool for FileRead {
                         result_ok(&content)
                     }
                 }
-                Err(e) => result_error(format!("failed to read {path}: {e}")),
+                Err(e) => {
+                    result_error_typed(McpErrorCode::IoError, format!("failed to read {path}: {e}"))
+                }
             }
         })
     }
@@ -93,16 +103,26 @@ impl Tool for FileWrite {
         Box::pin(async move {
             let path = match args.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p,
-                None => return result_error("missing required field: path"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: path",
+                    );
+                }
             };
-            let path = match validate_path(path) {
+            let path = match validate_path(path).await {
                 Ok(p) => p.display().to_string(),
-                Err(e) => return result_error(e),
+                Err(e) => return result_error_typed(McpErrorCode::PermissionDenied, e),
             };
             let path = path.as_str();
             let content = match args.get("content").and_then(|v| v.as_str()) {
                 Some(c) => c,
-                None => return result_error("missing required field: content"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: content",
+                    );
+                }
             };
             let append = args
                 .get("append")
@@ -110,19 +130,25 @@ impl Tool for FileWrite {
                 .unwrap_or(false);
 
             let result = if append {
-                use std::io::Write;
-                std::fs::OpenOptions::new()
+                let file = tokio::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(path)
-                    .and_then(|mut f| f.write_all(content.as_bytes()))
+                    .await;
+                match file {
+                    Ok(mut f) => f.write_all(content.as_bytes()).await,
+                    Err(e) => Err(e),
+                }
             } else {
-                std::fs::write(path, content)
+                tokio::fs::write(path, content).await
             };
 
             match result {
                 Ok(()) => result_ok(&format!("wrote {} bytes to {path}", content.len())),
-                Err(e) => result_error(format!("failed to write {path}: {e}")),
+                Err(e) => result_error_typed(
+                    McpErrorCode::IoError,
+                    format!("failed to write {path}: {e}"),
+                ),
             }
         })
     }
@@ -151,9 +177,9 @@ impl Tool for DirList {
     ) -> Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + '_>> {
         Box::pin(async move {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let path = match validate_path(path) {
+            let path = match validate_path(path).await {
                 Ok(p) => p.display().to_string(),
-                Err(e) => return result_error(e),
+                Err(e) => return result_error_typed(McpErrorCode::PermissionDenied, e),
             };
             let path = path.as_str();
             let recursive = args
@@ -167,8 +193,11 @@ impl Tool for DirList {
                 .min(MAX_DIR_ENTRIES) as usize;
 
             let mut entries = Vec::new();
-            if let Err(e) = collect_dir(Path::new(path), recursive, max, &mut entries, 0) {
-                return result_error(format!("failed to list {path}: {e}"));
+            if let Err(e) = collect_dir(Path::new(path), recursive, max, &mut entries, 0).await {
+                return result_error_typed(
+                    McpErrorCode::IoError,
+                    format!("failed to list {path}: {e}"),
+                );
             }
 
             result_ok_json(&json!(entries))
@@ -176,54 +205,55 @@ impl Tool for DirList {
     }
 }
 
-fn collect_dir(
-    path: &Path,
+fn collect_dir<'a>(
+    path: &'a Path,
     recursive: bool,
     max: usize,
-    entries: &mut Vec<serde_json::Value>,
+    entries: &'a mut Vec<serde_json::Value>,
     depth: usize,
-) -> std::io::Result<()> {
-    if depth > MAX_DIR_DEPTH {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(path)? {
-        if entries.len() >= max {
-            break;
+) -> Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        if depth > MAX_DIR_DEPTH {
+            return Ok(());
         }
-        let entry = entry?;
-        let ft = entry.file_type()?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        let kind = if ft.is_dir() {
-            "directory"
-        } else if ft.is_symlink() {
-            "symlink"
-        } else {
-            "file"
-        };
+        let mut read_dir = tokio::fs::read_dir(path).await?;
+        while let Some(entry) = read_dir.next_entry().await? {
+            if entries.len() >= max {
+                break;
+            }
+            let ft = entry.file_type().await?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let kind = if ft.is_dir() {
+                "directory"
+            } else if ft.is_symlink() {
+                "symlink"
+            } else {
+                "file"
+            };
 
-        let mut info = json!({
-            "name": name,
-            "path": entry.path().display().to_string(),
-            "type": kind,
-        });
+            let mut info = json!({
+                "name": name,
+                "path": entry.path().display().to_string(),
+                "type": kind,
+            });
 
-        if ft.is_file()
-            && let Ok(meta) = entry.metadata()
-        {
-            info["size"] = json!(meta.len());
+            if ft.is_file()
+                && let Ok(meta) = entry.metadata().await
+            {
+                info["size"] = json!(meta.len());
+            }
+
+            entries.push(info);
+
+            if recursive && ft.is_dir() && entries.len() < max {
+                let entry_path = entry.path();
+                if let Err(e) = collect_dir(&entry_path, true, max, entries, depth + 1).await {
+                    tracing::debug!(path = %entry_path.display(), error = %e, "skipping unreadable subdirectory");
+                }
+            }
         }
-
-        entries.push(info);
-
-        if recursive
-            && ft.is_dir()
-            && entries.len() < max
-            && let Err(e) = collect_dir(&entry.path(), true, max, entries, depth + 1)
-        {
-            tracing::debug!(path = %entry.path().display(), error = %e, "skipping unreadable subdirectory");
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Get file or directory metadata.
@@ -246,15 +276,20 @@ impl Tool for FileStat {
         Box::pin(async move {
             let path = match args.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p,
-                None => return result_error("missing required field: path"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: path",
+                    );
+                }
             };
-            let path = match validate_path(path) {
+            let path = match validate_path(path).await {
                 Ok(p) => p.display().to_string(),
-                Err(e) => return result_error(e),
+                Err(e) => return result_error_typed(McpErrorCode::PermissionDenied, e),
             };
             let path = path.as_str();
 
-            match std::fs::symlink_metadata(path) {
+            match tokio::fs::symlink_metadata(path).await {
                 Ok(meta) => {
                     let kind = if meta.is_dir() {
                         "directory"
@@ -277,7 +312,9 @@ impl Tool for FileStat {
                         "modified": modified,
                     }))
                 }
-                Err(e) => result_error(format!("failed to stat {path}: {e}")),
+                Err(e) => {
+                    result_error_typed(McpErrorCode::IoError, format!("failed to stat {path}: {e}"))
+                }
             }
         })
     }
@@ -303,17 +340,26 @@ impl Tool for PathExists {
         Box::pin(async move {
             let path = match args.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p,
-                None => return result_error("missing required field: path"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: path",
+                    );
+                }
             };
-            let validated = match validate_path(path) {
+            let validated = match validate_path(path).await {
                 Ok(p) => p,
-                Err(e) => return result_error(e),
+                Err(e) => return result_error_typed(McpErrorCode::PermissionDenied, e),
+            };
+            let (exists, is_file, is_dir) = match tokio::fs::metadata(&validated).await {
+                Ok(meta) => (true, meta.is_file(), meta.is_dir()),
+                Err(_) => (false, false, false),
             };
             result_ok_json(&json!({
                 "path": validated.display().to_string(),
-                "exists": validated.exists(),
-                "is_file": validated.is_file(),
-                "is_dir": validated.is_dir(),
+                "exists": exists,
+                "is_file": is_file,
+                "is_dir": is_dir,
             }))
         })
     }

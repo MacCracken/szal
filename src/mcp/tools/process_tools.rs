@@ -1,6 +1,6 @@
 //! Process and command execution tools.
 
-use crate::mcp::{Tool, result_error, result_ok, result_ok_json, tool_def};
+use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, result_ok_json, tool_def};
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use std::pin::Pin;
@@ -33,7 +33,12 @@ impl Tool for Exec {
         Box::pin(async move {
             let command = match args.get("command").and_then(|v| v.as_str()) {
                 Some(c) => c,
-                None => return result_error("missing required field: command"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: command",
+                    );
+                }
             };
 
             // Reject path traversal in the command name.
@@ -41,7 +46,8 @@ impl Tool for Exec {
             // Command::new() does not invoke a shell, but we block them anyway
             // to prevent confusion if the caller expects shell expansion.
             if command.contains("..") || command.contains('/') {
-                return result_error(
+                return result_error_typed(
+                    McpErrorCode::PermissionDenied,
                     "command must be a plain executable name, not a path — use PATH lookup",
                 );
             }
@@ -65,9 +71,9 @@ impl Tool for Exec {
             cmd.args(&cmd_args);
 
             if let Some(cwd) = args.get("cwd").and_then(|v| v.as_str()) {
-                let validated = match crate::mcp::validate_path(cwd) {
+                let validated = match crate::mcp::validate_path(cwd).await {
                     Ok(p) => p,
-                    Err(e) => return result_error(e),
+                    Err(e) => return result_error_typed(McpErrorCode::PermissionDenied, e),
                 };
                 cmd.current_dir(validated);
             }
@@ -89,8 +95,13 @@ impl Tool for Exec {
                         "success": output.status.success(),
                     }))
                 }
-                Ok(Err(e)) => result_error(format!("command failed: {e}")),
-                Err(_) => result_error(format!("command timed out after {timeout_ms}ms")),
+                Ok(Err(e)) => {
+                    result_error_typed(McpErrorCode::IoError, format!("command failed: {e}"))
+                }
+                Err(_) => result_error_typed(
+                    McpErrorCode::Timeout,
+                    format!("command timed out after {timeout_ms}ms"),
+                ),
             }
         })
     }
@@ -132,7 +143,12 @@ impl Tool for Which {
         Box::pin(async move {
             let command = match args.get("command").and_then(|v| v.as_str()) {
                 Some(c) => c,
-                None => return result_error("missing required field: command"),
+                None => {
+                    return result_error_typed(
+                        McpErrorCode::Validation,
+                        "missing required field: command",
+                    );
+                }
             };
 
             let output = tokio::process::Command::new("which")
