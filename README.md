@@ -12,7 +12,7 @@ Define steps, wire them into flows with branching, retry, and rollback — then 
 
 ```toml
 [dependencies]
-szal = "0.21"
+szal = "0.26"
 ```
 
 ### Sequential flow
@@ -80,14 +80,14 @@ assert!(!state.is_terminal());
 
 ## Roadmap to v1.0
 
-| Version | Milestone |
-|---------|-----------|
-| **0.22** | MCP protocol layer, majra integration, ai-hwaccel, examples, fuzz targets |
-| **0.23** | Agent orchestration + LLM gateway (~200 tools) |
-| **0.24** | Security/governance + integration tools (~350 tools) |
-| **0.25** | Knowledge, training, simulation tools (~490 tools) |
-| **0.26** | Consolidation, hardening, multi-tenant isolation |
-| **1.0** | Stable unified MCP engine |
+| Version | Milestone | Status |
+|---------|-----------|--------|
+| **0.22** | MCP protocol layer, majra integration, ai-hwaccel, examples, fuzz targets | Done |
+| **0.23** | Agent orchestration + LLM gateway (~200 tools) | Done |
+| **0.24** | Security/governance + integration tools (~350 tools) | Done |
+| **0.25** | Knowledge, training, simulation tools (~490 tools) | Done |
+| **0.26** | Consolidation, hardening, supply chain security | Current |
+| **1.0** | Stable unified MCP engine | — |
 
 ## License
 

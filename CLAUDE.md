@@ -7,7 +7,7 @@
 - **Type**: Flat library crate (not a workspace)
 - **License**: AGPL-3.0-only
 - **MSRV**: 1.89
-- **Version**: SemVer `0.D.M` pre-1.0 (date-based: `0.23.3` = March 23rd)
+- **Version**: SemVer `0.D.M` pre-1.0 (date-based: `0.26.3` = March 26th)
 
 ## Architecture
 

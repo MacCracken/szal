@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.3] — 2026-03-26
+
+### Added
+- `scripts/bench-history.sh` — criterion benchmark runner with CSV history tracking (timestamp, version, commit, timing in nanoseconds); supports `--show` for recent history
+- `benchmarks/` directory for persistent benchmark CSV data
+- Makefile targets: `coverage`, `fuzz`, `semver`, `msrv`, `bench-history`
+- Release profile: `opt-level = 3`, thin LTO, symbol stripping
+
+### Changed
+- CI clippy now runs with `--all-features` to match CLAUDE.md development process
+- Makefile clippy target updated to `--all-features --all-targets`
+- CI workflow scoped to least-privilege permissions (`contents: read`, `actions: read`)
+- Release workflow: added `workflow_dispatch` for manual releases, SLSA provenance attestations (`id-token: write`, `attestations: write`), `cancel-in-progress: false` for release safety, `timeout-minutes: 30` on build jobs, scoped CI gate permissions
+- README roadmap table updated to reflect current milestone
+
 ## [0.23.4] — 2026-03-23
 
 ### Added
