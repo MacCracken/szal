@@ -83,6 +83,10 @@ pub struct StepDef {
     pub rollbackable: bool,
     /// Steps that must complete before this one (DAG edges).
     pub depends_on: Vec<StepId>,
+    /// Sub-steps for hierarchical execution.
+    /// When this step completes successfully, sub-steps are executed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub_steps: Vec<StepDef>,
     /// Hardware accelerator requirement for this step.
     #[cfg(feature = "hardware")]
     #[serde(default)]
@@ -100,6 +104,7 @@ impl StepDef {
             retry_delay_ms: 1_000,
             rollbackable: false,
             depends_on: Vec::new(),
+            sub_steps: Vec::new(),
             #[cfg(feature = "hardware")]
             hardware: ai_hwaccel::AcceleratorRequirement::None,
         }
@@ -123,6 +128,11 @@ impl StepDef {
 
     pub fn depends_on(mut self, step_id: StepId) -> Self {
         self.depends_on.push(step_id);
+        self
+    }
+
+    pub fn with_sub_step(mut self, step: StepDef) -> Self {
+        self.sub_steps.push(step);
         self
     }
 

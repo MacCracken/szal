@@ -4,10 +4,11 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
+use crate::bus::WorkflowEvent;
 use crate::step::{StepDef, StepId, StepResult, StepStatus};
 
-use super::StepHandler;
 use super::step_exec::execute_step_with_handler;
+use super::{EventSink, StepHandler, emit};
 
 pub(crate) async fn run_dag(
     steps: &[StepDef],
@@ -16,6 +17,7 @@ pub(crate) async fn run_dag(
     timeout_ms: u64,
     start: std::time::Instant,
     token: Option<&CancellationToken>,
+    event_sink: &EventSink,
 ) -> Vec<StepResult> {
     tracing::debug!(steps = steps.len(), "running DAG execution");
     let sem = Arc::new(Semaphore::new(max_concurrency.max(1)));
@@ -51,6 +53,10 @@ pub(crate) async fn run_dag(
             };
             for &id in ready.iter() {
                 if let Some(step) = step_map.get(&id) {
+                    emit(
+                        event_sink,
+                        WorkflowEvent::step_skipped(&step.name, &step.id.to_string(), reason),
+                    );
                     results.push(StepResult {
                         step_id: step.id,
                         status: StepStatus::Skipped,
@@ -76,6 +82,14 @@ pub(crate) async fn run_dag(
                 let dep_failed = step.depends_on.iter().any(|d| failed.contains(d));
                 if dep_failed {
                     tracing::debug!(step = %step.name, "skipping step due to dependency failure");
+                    emit(
+                        event_sink,
+                        WorkflowEvent::step_skipped(
+                            &step.name,
+                            &step.id.to_string(),
+                            "dependency failed",
+                        ),
+                    );
                     results.push(StepResult {
                         step_id: step.id,
                         status: StepStatus::Skipped,
@@ -92,6 +106,7 @@ pub(crate) async fn run_dag(
                 let sem = sem.clone();
                 let handler = handler.clone();
                 let step = step.clone();
+                let sink = event_sink.clone();
                 dag_step_ids.push(step.id);
                 handles.push(tokio::spawn(async move {
                     let _permit = match sem.acquire().await {
@@ -107,7 +122,7 @@ pub(crate) async fn run_dag(
                             };
                         }
                     };
-                    execute_step_with_handler(&step, &handler).await
+                    execute_step_with_handler(&step, &handler, &sink).await
                 }));
             }
         }

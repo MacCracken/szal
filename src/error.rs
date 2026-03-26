@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SzalError {
     #[error("step failed: {step} — {reason}")]
     StepFailed { step: String, reason: String },

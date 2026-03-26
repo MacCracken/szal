@@ -114,6 +114,22 @@ impl FlowDef {
                 self.mode
             )));
         }
+        if self.mode == FlowMode::Hierarchical {
+            self.validate_hierarchical(&self.steps)?;
+        }
+        Ok(())
+    }
+
+    fn validate_hierarchical(&self, steps: &[crate::step::StepDef]) -> crate::Result<()> {
+        for step in steps {
+            if !step.depends_on.is_empty() {
+                return Err(crate::SzalError::InvalidFlow(format!(
+                    "step '{}' has depends_on in hierarchical mode (use sub_steps for nesting)",
+                    step.name
+                )));
+            }
+            self.validate_hierarchical(&step.sub_steps)?;
+        }
         Ok(())
     }
 

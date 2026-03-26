@@ -1,13 +1,24 @@
+use crate::SzalError;
+use crate::bus::WorkflowEvent;
 use crate::step::{StepDef, StepResult, StepStatus};
 
-use super::StepHandler;
+use super::{EventSink, StepHandler, emit};
 
-pub(crate) async fn execute_step_with_handler(step: &StepDef, handler: &StepHandler) -> StepResult {
+pub(crate) async fn execute_step_with_handler(
+    step: &StepDef,
+    handler: &StepHandler,
+    event_sink: &EventSink,
+) -> StepResult {
     let max_attempts = step.max_retries + 1;
     let mut last_error = None;
     let total_start = std::time::Instant::now();
+    let step_id_str = step.id.to_string();
 
     tracing::debug!(step = %step.name, attempt = 1, "starting step execution");
+    emit(
+        event_sink,
+        WorkflowEvent::step_started(&step.name, &step_id_str),
+    );
 
     for attempt in 1..=max_attempts {
         let step_start = std::time::Instant::now();
@@ -19,7 +30,21 @@ pub(crate) async fn execute_step_with_handler(step: &StepDef, handler: &StepHand
                 Ok(r) => r,
                 Err(_) => {
                     tracing::warn!(step = %step.name, timeout_ms = step.timeout_ms, "step timed out");
-                    Err(format!("timeout after {}ms", step.timeout_ms))
+                    let err = SzalError::StepTimeout {
+                        step: step.name.clone(),
+                        timeout_ms: step.timeout_ms,
+                    };
+                    emit(
+                        event_sink,
+                        WorkflowEvent::step_failed(
+                            &step.name,
+                            &step_id_str,
+                            &err.to_string(),
+                            attempt,
+                        )
+                        .with_duration(step_start.elapsed().as_millis() as u64),
+                    );
+                    Err(err.to_string())
                 }
             }
         } else {
@@ -35,6 +60,10 @@ pub(crate) async fn execute_step_with_handler(step: &StepDef, handler: &StepHand
                     duration_ms,
                     attempts = attempt,
                     "step completed successfully"
+                );
+                emit(
+                    event_sink,
+                    WorkflowEvent::step_completed(&step.name, &step_id_str, duration_ms, attempt),
                 );
                 return StepResult {
                     step_id: step.id,
@@ -53,6 +82,10 @@ pub(crate) async fn execute_step_with_handler(step: &StepDef, handler: &StepHand
                         error = %e,
                         "step failed, retrying"
                     );
+                    emit(
+                        event_sink,
+                        WorkflowEvent::step_retry(&step.name, &step_id_str, attempt),
+                    );
                 }
                 last_error = Some(e);
                 if attempt < max_attempts {
@@ -68,12 +101,34 @@ pub(crate) async fn execute_step_with_handler(step: &StepDef, handler: &StepHand
         "step failed after all retries exhausted"
     );
 
+    let error = if max_attempts > 1 {
+        Some(
+            SzalError::RetryExhausted {
+                step: step.name.clone(),
+                attempts: max_attempts,
+            }
+            .to_string(),
+        )
+    } else {
+        last_error.clone()
+    };
+
+    emit(
+        event_sink,
+        WorkflowEvent::step_failed(
+            &step.name,
+            &step_id_str,
+            error.as_deref().unwrap_or("unknown"),
+            max_attempts,
+        ),
+    );
+
     StepResult {
         step_id: step.id,
         status: StepStatus::Failed,
         output: serde_json::json!(null),
         duration_ms: total_start.elapsed().as_millis() as u64,
         attempts: max_attempts,
-        error: last_error,
+        error,
     }
 }

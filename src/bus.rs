@@ -155,6 +155,22 @@ impl WorkflowEvent {
             .with_attempt(attempt)
     }
 
+    pub fn step_skipped(step_name: &str, step_id: &str, reason: &str) -> Self {
+        Self::new(EventType::StepSkipped)
+            .with_step(step_name, step_id)
+            .with_error(reason)
+    }
+
+    pub fn step_timeout(step_name: &str, step_id: &str, timeout_ms: u64) -> Self {
+        Self::new(EventType::StepTimeout)
+            .with_step(step_name, step_id)
+            .with_duration(timeout_ms)
+    }
+
+    pub fn step_rollback(step_name: &str, step_id: &str) -> Self {
+        Self::new(EventType::StepRollback).with_step(step_name, step_id)
+    }
+
     /// Build the topic string for this event.
     pub fn topic(&self) -> String {
         match self.event_type {

@@ -18,6 +18,7 @@
 mod dag;
 #[cfg(feature = "hardware")]
 pub mod hardware;
+mod hierarchical;
 mod parallel;
 mod result;
 mod runner;
@@ -30,7 +31,22 @@ use std::sync::Arc;
 
 pub use tokio_util::sync::CancellationToken;
 
+use crate::bus::WorkflowEvent;
 use crate::step::StepDef;
+
+/// Optional event sink for workflow lifecycle events.
+///
+/// When `Some`, receives events fire-and-forget — implementations must not block.
+/// When `None`, no events are emitted and the check is a single branch.
+pub type EventSink = Option<Arc<dyn Fn(WorkflowEvent) + Send + Sync>>;
+
+/// Emit an event if a sink is configured.
+#[inline]
+pub(crate) fn emit(sink: &EventSink, event: WorkflowEvent) {
+    if let Some(ref f) = *sink {
+        f(event);
+    }
+}
 
 // Re-export public types
 #[cfg(feature = "hardware")]
@@ -562,5 +578,272 @@ mod tests {
         let result = engine.run_with_cancellation(&flow, token).await.unwrap();
         assert!(result.success);
         assert_eq!(result.completed_count(), 2);
+    }
+
+    fn capturing_sink() -> (
+        EventSink,
+        Arc<std::sync::Mutex<Vec<crate::bus::WorkflowEvent>>>,
+    ) {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let sink: EventSink = Some(Arc::new(move |e| {
+            events_clone.lock().unwrap().push(e);
+        }));
+        (sink, events)
+    }
+
+    #[tokio::test]
+    async fn event_sink_sequential_flow() {
+        let (sink, events) = capturing_sink();
+        let mut flow = FlowDef::new("test", FlowMode::Sequential);
+        flow.add_step(StepDef::new("a"));
+        flow.add_step(StepDef::new("b"));
+
+        let engine =
+            Engine::new(EngineConfig::default(), success_handler()).with_event_sink(sink.unwrap());
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+
+        let evts = events.lock().unwrap();
+        let types: Vec<_> = evts.iter().map(|e| e.event_type).collect();
+        assert_eq!(types[0], crate::bus::EventType::FlowStarted);
+        assert_eq!(types[1], crate::bus::EventType::StepStarted);
+        assert_eq!(types[2], crate::bus::EventType::StepCompleted);
+        assert_eq!(types[3], crate::bus::EventType::StepStarted);
+        assert_eq!(types[4], crate::bus::EventType::StepCompleted);
+        assert_eq!(types[5], crate::bus::EventType::FlowCompleted);
+        assert_eq!(types.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn event_sink_failure_and_skip() {
+        let (sink, events) = capturing_sink();
+        let mut flow = FlowDef::new("test", FlowMode::Sequential);
+        flow.add_step(StepDef::new("a"));
+        flow.add_step(StepDef::new("b"));
+
+        let engine =
+            Engine::new(EngineConfig::default(), failing_handler()).with_event_sink(sink.unwrap());
+        let result = engine.run(&flow).await.unwrap();
+        assert!(!result.success);
+
+        let evts = events.lock().unwrap();
+        let types: Vec<_> = evts.iter().map(|e| e.event_type).collect();
+        assert_eq!(types[0], crate::bus::EventType::FlowStarted);
+        assert_eq!(types[1], crate::bus::EventType::StepStarted);
+        assert_eq!(types[2], crate::bus::EventType::StepFailed);
+        assert_eq!(types[3], crate::bus::EventType::StepSkipped);
+        assert_eq!(types[4], crate::bus::EventType::FlowFailed);
+        assert_eq!(types.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn event_sink_retry_events() {
+        let (sink, events) = capturing_sink();
+        let fail_count = Arc::new(AtomicU32::new(0));
+        let mut flow = FlowDef::new("retry", FlowMode::Sequential);
+        flow.add_step(StepDef::new("flaky").with_retries(3, 1));
+
+        let engine = Engine::new(
+            EngineConfig::default(),
+            fail_then_succeed_handler(fail_count),
+        )
+        .with_event_sink(sink.unwrap());
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+
+        let evts = events.lock().unwrap();
+        let types: Vec<_> = evts.iter().map(|e| e.event_type).collect();
+        // FlowStarted, StepStarted, StepRetry(1), StepRetry(2), StepCompleted, FlowCompleted
+        assert_eq!(types[0], crate::bus::EventType::FlowStarted);
+        assert_eq!(types[1], crate::bus::EventType::StepStarted);
+        assert_eq!(types[2], crate::bus::EventType::StepRetry);
+        assert_eq!(types[3], crate::bus::EventType::StepRetry);
+        assert_eq!(types[4], crate::bus::EventType::StepCompleted);
+        assert_eq!(types[5], crate::bus::EventType::FlowCompleted);
+    }
+
+    #[tokio::test]
+    async fn event_sink_rollback_events() {
+        let (sink, events) = capturing_sink();
+        let rollback_count = Arc::new(AtomicU32::new(0));
+        let rb_count = rollback_count.clone();
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let handler: StepHandler = Arc::new(move |_step| {
+            let call_count = call_count.clone();
+            Box::pin(async move {
+                let n = call_count.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Ok(serde_json::json!({"done": true}))
+                } else {
+                    Err("second step fails".into())
+                }
+            })
+        });
+
+        let rollback_handler: RollbackHandler = Arc::new(move |_step| {
+            let rb_count = rb_count.clone();
+            Box::pin(async move {
+                rb_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        });
+
+        let mut flow = FlowDef::new("rb-test", FlowMode::Sequential).with_rollback();
+        flow.add_step(StepDef::new("setup").with_rollback());
+        flow.add_step(StepDef::new("deploy"));
+
+        let engine = Engine::new(EngineConfig::default(), handler)
+            .with_rollback_handler(rollback_handler)
+            .with_event_sink(sink.unwrap());
+        let result = engine.run(&flow).await.unwrap();
+        assert!(!result.success);
+        assert!(result.rolled_back);
+
+        let evts = events.lock().unwrap();
+        let types: Vec<_> = evts.iter().map(|e| e.event_type).collect();
+        assert!(types.contains(&crate::bus::EventType::StepRollback));
+        assert!(types.contains(&crate::bus::EventType::FlowRolledBack));
+        assert!(types.contains(&crate::bus::EventType::FlowFailed));
+    }
+
+    // --- Hierarchical execution tests ---
+
+    #[tokio::test]
+    async fn hierarchical_no_substeps_like_sequential() {
+        let mut flow = FlowDef::new("test", FlowMode::Hierarchical);
+        flow.add_step(StepDef::new("a"));
+        flow.add_step(StepDef::new("b"));
+        flow.add_step(StepDef::new("c"));
+
+        let engine = Engine::new(EngineConfig::default(), success_handler());
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.completed_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn hierarchical_substeps_execute_on_success() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let mut flow = FlowDef::new("test", FlowMode::Hierarchical);
+        let manager = StepDef::new("manager")
+            .with_sub_step(StepDef::new("child-a"))
+            .with_sub_step(StepDef::new("child-b"));
+        flow.add_step(manager);
+        flow.add_step(StepDef::new("after"));
+
+        let engine = Engine::new(EngineConfig::default(), counting_handler(counter.clone()));
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+        // manager + child-a + child-b + after = 4 steps executed
+        assert_eq!(counter.load(Ordering::SeqCst), 4);
+        assert_eq!(result.steps.len(), 4);
+        assert_eq!(result.completed_count(), 4);
+    }
+
+    #[tokio::test]
+    async fn hierarchical_substeps_skipped_on_failure() {
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = call_count.clone();
+        // First step (manager) fails
+        let handler: StepHandler = Arc::new(move |_step| {
+            let cc = cc.clone();
+            Box::pin(async move {
+                cc.fetch_add(1, Ordering::SeqCst);
+                Err("manager fails".into())
+            })
+        });
+
+        let mut flow = FlowDef::new("test", FlowMode::Hierarchical);
+        let manager = StepDef::new("manager")
+            .with_sub_step(StepDef::new("child-a"))
+            .with_sub_step(StepDef::new("child-b"));
+        flow.add_step(manager);
+        flow.add_step(StepDef::new("after"));
+
+        let engine = Engine::new(EngineConfig::default(), handler);
+        let result = engine.run(&flow).await.unwrap();
+        assert!(!result.success);
+        // Only manager handler called (children and sibling skipped)
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(result.failed_count(), 1);
+        assert_eq!(result.skipped_count(), 3); // child-a, child-b, after
+    }
+
+    #[tokio::test]
+    async fn hierarchical_nested_depth_3() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let mut flow = FlowDef::new("deep", FlowMode::Hierarchical);
+        let leaf = StepDef::new("leaf");
+        let mid = StepDef::new("mid").with_sub_step(leaf);
+        let top = StepDef::new("top").with_sub_step(mid);
+        flow.add_step(top);
+
+        let engine = Engine::new(EngineConfig::default(), counting_handler(counter.clone()));
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+        assert_eq!(result.steps.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn hierarchical_cancellation() {
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let mut flow = FlowDef::new("cancel", FlowMode::Hierarchical);
+        let manager = StepDef::new("manager").with_sub_step(StepDef::new("child"));
+        flow.add_step(manager);
+
+        let engine = Engine::new(EngineConfig::default(), success_handler());
+        let result = engine.run_with_cancellation(&flow, token).await.unwrap();
+        assert!(!result.success);
+        assert_eq!(result.skipped_count(), 2); // manager + child
+    }
+
+    #[tokio::test]
+    async fn hierarchical_rejects_depends_on() {
+        let a = StepDef::new("a");
+        let b = StepDef::new("b").depends_on(a.id);
+        let mut flow = FlowDef::new("bad", FlowMode::Hierarchical);
+        flow.add_step(a);
+        flow.add_step(b);
+
+        let engine = Engine::new(EngineConfig::default(), success_handler());
+        assert!(engine.run(&flow).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn hierarchical_substeps_serde_roundtrip() {
+        let manager = StepDef::new("manager")
+            .with_sub_step(StepDef::new("child-a"))
+            .with_sub_step(StepDef::new("child-b"));
+        let json = serde_json::to_string(&manager).unwrap();
+        let back: StepDef = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sub_steps.len(), 2);
+        assert_eq!(back.sub_steps[0].name, "child-a");
+        assert_eq!(back.sub_steps[1].name, "child-b");
+    }
+
+    #[tokio::test]
+    async fn hierarchical_events_with_substeps() {
+        let (sink, events) = capturing_sink();
+        let mut flow = FlowDef::new("test", FlowMode::Hierarchical);
+        let manager = StepDef::new("manager").with_sub_step(StepDef::new("child"));
+        flow.add_step(manager);
+
+        let engine =
+            Engine::new(EngineConfig::default(), success_handler()).with_event_sink(sink.unwrap());
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+
+        let evts = events.lock().unwrap();
+        let types: Vec<_> = evts.iter().map(|e| e.event_type).collect();
+        // FlowStarted, StepStarted(manager), StepCompleted(manager),
+        // StepStarted(child), StepCompleted(child), FlowCompleted
+        assert_eq!(types.len(), 6);
+        assert_eq!(types[0], crate::bus::EventType::FlowStarted);
+        assert_eq!(types[5], crate::bus::EventType::FlowCompleted);
     }
 }

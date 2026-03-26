@@ -1,16 +1,18 @@
+use crate::SzalError;
 use crate::flow::{FlowDef, FlowMode};
 use crate::step::{StepDef, StepResult, StepStatus};
 use tokio_util::sync::CancellationToken;
 
 use super::result::FlowResult;
-use super::{EngineConfig, RollbackHandler, StepHandler};
-use super::{dag, parallel, sequential};
+use super::{EngineConfig, EventSink, RollbackHandler, StepHandler, emit};
+use super::{dag, hierarchical, parallel, sequential};
 
 /// The workflow execution engine.
 pub struct Engine {
     config: EngineConfig,
     handler: StepHandler,
     rollback_handler: Option<RollbackHandler>,
+    event_sink: EventSink,
 }
 
 impl Engine {
@@ -20,6 +22,7 @@ impl Engine {
             config,
             handler,
             rollback_handler: None,
+            event_sink: None,
         }
     }
 
@@ -27,6 +30,21 @@ impl Engine {
     pub fn with_rollback_handler(mut self, handler: RollbackHandler) -> Self {
         self.rollback_handler = Some(handler);
         self
+    }
+
+    /// Attach a custom event sink for workflow lifecycle events.
+    pub fn with_event_sink(
+        mut self,
+        sink: std::sync::Arc<dyn Fn(crate::bus::WorkflowEvent) + Send + Sync>,
+    ) -> Self {
+        self.event_sink = Some(sink);
+        self
+    }
+
+    /// Attach an [`EventBus`](crate::bus::EventBus) as the event sink.
+    #[cfg(feature = "majra")]
+    pub fn with_event_bus(self, bus: std::sync::Arc<crate::bus::EventBus>) -> Self {
+        self.with_event_sink(std::sync::Arc::new(move |e| bus.publish(&e)))
     }
 
     /// Execute a flow and return the result.
@@ -40,6 +58,10 @@ impl Engine {
         }
 
         tracing::info!(flow = %flow.name, steps = flow.steps.len(), "starting flow execution");
+        emit(
+            &self.event_sink,
+            crate::bus::WorkflowEvent::flow_started(&flow.name),
+        );
 
         let timeout = self
             .config
@@ -50,8 +72,16 @@ impl Engine {
         let start = std::time::Instant::now();
 
         let step_results = match flow.mode {
-            FlowMode::Sequential | FlowMode::Hierarchical => {
-                sequential::run_sequential(&flow.steps, &self.handler, timeout, start, None).await
+            FlowMode::Sequential => {
+                sequential::run_sequential(
+                    &flow.steps,
+                    &self.handler,
+                    timeout,
+                    start,
+                    None,
+                    &self.event_sink,
+                )
+                .await
             }
             FlowMode::Parallel => {
                 parallel::run_parallel(
@@ -61,6 +91,7 @@ impl Engine {
                     timeout,
                     start,
                     None,
+                    &self.event_sink,
                 )
                 .await
             }
@@ -72,6 +103,18 @@ impl Engine {
                     timeout,
                     start,
                     None,
+                    &self.event_sink,
+                )
+                .await
+            }
+            FlowMode::Hierarchical => {
+                hierarchical::run_hierarchical(
+                    &flow.steps,
+                    &self.handler,
+                    timeout,
+                    start,
+                    None,
+                    &self.event_sink,
                 )
                 .await
             }
@@ -98,6 +141,24 @@ impl Engine {
             result = result_status,
             "flow execution completed"
         );
+
+        if has_failures {
+            if rolled_back {
+                emit(
+                    &self.event_sink,
+                    crate::bus::WorkflowEvent::flow_rolled_back(&flow.name),
+                );
+            }
+            emit(
+                &self.event_sink,
+                crate::bus::WorkflowEvent::flow_failed(&flow.name, result_status),
+            );
+        } else {
+            emit(
+                &self.event_sink,
+                crate::bus::WorkflowEvent::flow_completed(&flow.name, total_duration_ms),
+            );
+        }
 
         Ok(FlowResult {
             flow_name: flow.name.clone(),
@@ -127,6 +188,10 @@ impl Engine {
         }
 
         tracing::info!(flow = %flow.name, steps = flow.steps.len(), "starting flow execution (cancellable)");
+        emit(
+            &self.event_sink,
+            crate::bus::WorkflowEvent::flow_started(&flow.name),
+        );
 
         let timeout = self
             .config
@@ -137,9 +202,16 @@ impl Engine {
         let start = std::time::Instant::now();
 
         let step_results = match flow.mode {
-            FlowMode::Sequential | FlowMode::Hierarchical => {
-                sequential::run_sequential(&flow.steps, &self.handler, timeout, start, Some(&token))
-                    .await
+            FlowMode::Sequential => {
+                sequential::run_sequential(
+                    &flow.steps,
+                    &self.handler,
+                    timeout,
+                    start,
+                    Some(&token),
+                    &self.event_sink,
+                )
+                .await
             }
             FlowMode::Parallel => {
                 parallel::run_parallel(
@@ -149,6 +221,7 @@ impl Engine {
                     timeout,
                     start,
                     Some(&token),
+                    &self.event_sink,
                 )
                 .await
             }
@@ -160,6 +233,18 @@ impl Engine {
                     timeout,
                     start,
                     Some(&token),
+                    &self.event_sink,
+                )
+                .await
+            }
+            FlowMode::Hierarchical => {
+                hierarchical::run_hierarchical(
+                    &flow.steps,
+                    &self.handler,
+                    timeout,
+                    start,
+                    Some(&token),
+                    &self.event_sink,
                 )
                 .await
             }
@@ -193,6 +278,24 @@ impl Engine {
             "flow execution completed"
         );
 
+        if !success {
+            if rolled_back {
+                emit(
+                    &self.event_sink,
+                    crate::bus::WorkflowEvent::flow_rolled_back(&flow.name),
+                );
+            }
+            emit(
+                &self.event_sink,
+                crate::bus::WorkflowEvent::flow_failed(&flow.name, result_status),
+            );
+        } else {
+            emit(
+                &self.event_sink,
+                crate::bus::WorkflowEvent::flow_completed(&flow.name, total_duration_ms),
+            );
+        }
+
         Ok(FlowResult {
             flow_name: flow.name.clone(),
             steps: step_results,
@@ -221,8 +324,16 @@ impl Engine {
         tracing::info!(flow = %flow.name, steps = completed_steps.len(), "starting rollback");
         let mut all_rolled_back = true;
         for step in completed_steps.into_iter().rev() {
-            if (rollback_handler)(step.clone()).await.is_err() {
-                tracing::warn!(step = %step.name, "rollback step failed");
+            emit(
+                &self.event_sink,
+                crate::bus::WorkflowEvent::step_rollback(&step.name, &step.id.to_string()),
+            );
+            if let Err(reason) = (rollback_handler)(step.clone()).await {
+                let err = SzalError::RollbackFailed {
+                    step: step.name.clone(),
+                    reason,
+                };
+                tracing::warn!(step = %step.name, error = %err, "rollback step failed");
                 all_rolled_back = false;
             }
         }
