@@ -82,6 +82,7 @@ szal/src/
 - CI: fmt + clippy + deny + audit + test + msrv + coverage
 
 ## DO NOT
+- **Do not commit or push** — the user handles all git operations (commit, push, tag)
 
 - **NEVER use `gh` CLI** — use `curl` to GitHub API only
 - Do not add unnecessary dependencies — keep it lean
