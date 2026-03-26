@@ -34,6 +34,15 @@ impl Engine {
         self
     }
 
+    /// Attach workflow storage for dynamic subworkflow resolution.
+    pub fn with_storage(
+        mut self,
+        storage: std::sync::Arc<dyn crate::storage::WorkflowStorage>,
+    ) -> Self {
+        self.config.storage = Some(storage);
+        self
+    }
+
     /// Attach a custom event sink for workflow lifecycle events.
     pub fn with_event_sink(
         mut self,

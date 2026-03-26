@@ -45,16 +45,8 @@ impl Tool for TemplateRender {
                 }
             };
 
-            let mut result = template;
-            for (key, value) in vars {
-                let placeholder = format!("{{{{{key}}}}}");
-                let replacement = match value {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                result = result.replace(&placeholder, &replacement);
-            }
-
+            let variables = serde_json::Value::Object(vars.clone());
+            let result = crate::condition::render_template(&template, &variables);
             result_ok(&result)
         })
     }

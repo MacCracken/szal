@@ -108,6 +108,8 @@ pub struct EngineConfig {
     pub max_concurrency: usize,
     /// Global timeout override (overrides per-flow timeout).
     pub global_timeout_ms: Option<u64>,
+    /// Workflow storage for dynamic subworkflow resolution.
+    pub storage: Option<Arc<dyn crate::storage::WorkflowStorage>>,
     /// Hardware context for accelerator-aware scheduling.
     #[cfg(feature = "hardware")]
     pub hardware: Option<HardwareContext>,
@@ -126,7 +128,8 @@ impl std::fmt::Debug for EngineConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut d = f.debug_struct("EngineConfig");
         d.field("max_concurrency", &self.max_concurrency)
-            .field("global_timeout_ms", &self.global_timeout_ms);
+            .field("global_timeout_ms", &self.global_timeout_ms)
+            .field("storage", &self.storage.is_some());
         #[cfg(feature = "hardware")]
         d.field("hardware", &self.hardware);
         #[cfg(feature = "majra")]
@@ -144,6 +147,7 @@ impl Default for EngineConfig {
         Self {
             max_concurrency: 16,
             global_timeout_ms: None,
+            storage: None,
             #[cfg(feature = "hardware")]
             hardware: None,
             #[cfg(feature = "majra")]

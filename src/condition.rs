@@ -295,8 +295,22 @@ impl Parser {
 // Evaluation
 // ---------------------------------------------------------------------------
 
+/// Resolve a dot-notation path against a JSON value.
+///
+/// Walks the JSON tree segment by segment. Returns `&Value::Null` if any
+/// segment is missing.
+///
+/// ```
+/// use serde_json::json;
+/// use szal::condition::resolve_path;
+///
+/// let ctx = json!({"steps": {"build": {"output": {"url": "https://example.com"}}}});
+/// assert_eq!(resolve_path("steps.build.output.url", &ctx), "https://example.com");
+/// assert!(resolve_path("steps.missing.field", &ctx).is_null());
+/// ```
 #[inline]
-fn resolve_path<'a>(path: &str, context: &'a Value) -> &'a Value {
+#[must_use]
+pub fn resolve_path<'a>(path: &str, context: &'a Value) -> &'a Value {
     let mut current = context;
     for segment in path.split('.') {
         match current.get(segment) {
@@ -404,6 +418,50 @@ pub fn evaluate(expr: &str, context: &Value) -> Result<bool, String> {
 
     let result = eval_expr(&ast, context)?;
     Ok(is_truthy(&result))
+}
+
+/// Render a template string by resolving `{{path}}` placeholders against a JSON context.
+///
+/// Supports dot-notation paths: `{{steps.build.output.url}}` walks into nested JSON.
+/// Missing paths resolve to empty string. Non-string values are JSON-serialized.
+///
+/// ```
+/// use serde_json::json;
+/// use szal::condition::render_template;
+///
+/// let ctx = json!({"name": "Alice", "meta": {"role": "admin"}});
+/// assert_eq!(render_template("Hello {{name}}, role={{meta.role}}", &ctx), "Hello Alice, role=admin");
+/// ```
+#[must_use]
+pub fn render_template(template: &str, context: &Value) -> String {
+    let mut result = String::with_capacity(template.len());
+    let chars: Vec<char> = template.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if i + 1 < len && chars[i] == '{' && chars[i + 1] == '{' {
+            // Find closing }}
+            if let Some(end) = template[i + 2..].find("}}") {
+                let path = template[i + 2..i + 2 + end].trim();
+                let resolved = resolve_path(path, context);
+                match resolved {
+                    Value::Null => {} // missing path → empty
+                    Value::String(s) => result.push_str(s),
+                    other => {
+                        use std::fmt::Write;
+                        let _ = write!(result, "{other}");
+                    }
+                }
+                i += 2 + end + 2; // skip past }}
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result
 }
 
 /// Build a step result context for condition evaluation.

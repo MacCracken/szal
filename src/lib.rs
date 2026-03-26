@@ -41,6 +41,7 @@ pub mod mcp;
 pub mod metrics;
 pub mod state;
 pub mod step;
+pub mod storage;
 
 mod error;
 pub use error::SzalError;
