@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-03-26
+
+Stable API release. All public enums are `#[non_exhaustive]`, all pure functions are `#[must_use]`.
+
+### Added
+
+#### Engine
+- **Hierarchical execution mode** — static sub-step trees via `StepDef::with_sub_step()`. Recursive executor in `engine/hierarchical.rs` with fail-fast and sub-step skipping
+- **EventBus integration** — `EventSink` type (`Option<Arc<dyn Fn(WorkflowEvent)>>`) with `emit()` helper. Events at all 10 lifecycle points (FlowStarted/Completed/Failed/RolledBack, StepStarted/Completed/Failed/Retry/Timeout/Skipped). `Engine::with_event_sink()` and `Engine::with_event_bus()` builders
+- **Structured error construction** — `SzalError::StepTimeout`, `RetryExhausted`, `RollbackFailed` now constructed at their respective sites (previously unused)
+- **Execution throughput benchmarks** — 7 criterion benchmarks in `benches/engine.rs` (sequential 10/100, parallel 10/100, DAG diamond/linear-100, hierarchical 10x10)
+- **Tracing flow context** — `flow_id` and `flow_name` on all tracing spans via `FlowCtx`/`ExecCtx`. Spawned tasks in parallel/DAG carry flow context
+- **Step type + config** — `StepDef::step_type: Option<String>` and `config: Option<serde_json::Value>` for handler dispatch (webhook, bash, HTTP, etc.)
+- **Condition evaluation** — `StepDef::condition: Option<String>` with lightweight predicate DSL. `condition::evaluate()` recursive descent parser supporting dot-path access, `==`/`!=`, `&&`/`||`, parens, string/number/bool literals. Integrated into all 4 executors
+- **'Any' trigger mode** — `TriggerMode::Any` for DAG dependencies. Step becomes ready when first dependency completes (vs all). Anti-duplicate queueing via sentinel in `unlock_dependents`
+- **Backoff strategies** — `BackoffStrategy` enum (Fixed/Linear/Exponential) with `delay_ms()` calculation. `StepDef::with_backoff()` builder
+- **Template path walking** — `condition::render_template()` resolves `{{steps.build.output.url}}` dot-notation paths in templates. `condition::resolve_path()` public utility
+- **Dynamic subworkflow storage** — `WorkflowStorage` trait with `get_by_name()`/`get_by_id()`/`list()`. `InMemoryStorage` reference impl. `EngineConfig::storage` field and `Engine::with_storage()` builder
+- **OTel adapter** — `bus::otel_event_sink()` maps `WorkflowEvent` to tracing spans with `workflow.*` attributes for OpenTelemetry export
+
+#### Majra Integration (feature: `majra`)
+- **Prometheus metrics** — `SzalMetrics` trait with workflow_run_started/completed/failed and workflow_step_started/finished. `MetricsSink` type threaded through `ExecCtx`. `Engine::with_metrics()` builder
+- **Heartbeat health reporting** — `Engine::with_heartbeat()` with `ConcurrentHeartbeatTracker`. RAII `HeartbeatGuard` auto-registers/deregisters, heartbeats every 10s
+- **ManagedQueue execution** — `Engine::with_queue()` for distributed step execution. `engine/queue_runner.rs` enqueues steps, worker loop dequeues + executes + marks complete/fail
+- **Connection pooling** — `mcp::pool::NetworkPool` with per-host/domain/port `RateLimiter` instances. `LazyLock` static. Rate-limit checks in HttpRequest, DnsLookup, PortCheck tools
+- **Multi-tenant isolation** — `mcp::tenant::TenantCtx` with per-tenant quota enforcement via `check_tenant_quota()` and tool access control via `check_tenant_tool_access()`
+- `SzalError::QueueError` variant for queue operation failures
+
+#### MCP
+- **Structured error codes** — `McpErrorCode` enum (Validation, NotFound, PermissionDenied, Timeout, IoError, Internal) with `is_retryable()`. `result_error_typed()` adds `_meta.error_code` and `_meta.retryable` to responses. All 110 `result_error()` calls replaced
+- **Async I/O** — all 18 blocking `std::fs` calls converted to `tokio::fs`. `validate_path()` is now async
+
+### Changed
+- All public enums now have `#[non_exhaustive]` (StepStatus, FlowMode, WorkflowState, EventType added)
+- 60 `#[must_use]` annotations added to all pure public functions
+- `EngineConfig` now has manual `Debug` impl (supports non-Debug majra types)
+- Majra dependency updated from 0.22.3 to 1.0.0
+- Criterion dev-dependency updated from 0.5 to 0.8
+
 ## [0.26.3] — 2026-03-26
 
 ### Added

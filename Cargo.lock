@@ -1082,7 +1082,7 @@ dependencies = [
 
 [[package]]
 name = "szal"
-version = "0.26.3"
+version = "1.0.0"
 dependencies = [
  "ai-hwaccel",
  "anyhow",
