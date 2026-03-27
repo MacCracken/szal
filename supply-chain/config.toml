@@ -12,6 +12,10 @@ criteria = "safe-to-deploy"
 version = "0.23.3"
 criteria = "safe-to-deploy"
 
+[[exemptions.alloca]]
+version = "0.4.0"
+criteria = "safe-to-run"
+
 [[exemptions.android_system_properties]]
 version = "0.1.5"
 criteria = "safe-to-deploy"
@@ -120,8 +124,16 @@ criteria = "safe-to-deploy"
 version = "0.5.1"
 criteria = "safe-to-run"
 
+[[exemptions.criterion]]
+version = "0.8.2"
+criteria = "safe-to-run"
+
 [[exemptions.criterion-plot]]
 version = "0.5.0"
+criteria = "safe-to-run"
+
+[[exemptions.criterion-plot]]
+version = "0.8.2"
 criteria = "safe-to-run"
 
 [[exemptions.crossbeam-deque]]
@@ -260,6 +272,10 @@ criteria = "safe-to-run"
 version = "0.10.5"
 criteria = "safe-to-run"
 
+[[exemptions.itertools]]
+version = "0.13.0"
+criteria = "safe-to-run"
+
 [[exemptions.itoa]]
 version = "1.0.18"
 criteria = "safe-to-deploy"
@@ -296,6 +312,10 @@ criteria = "safe-to-deploy"
 version = "0.22.3"
 criteria = "safe-to-deploy"
 
+[[exemptions.majra]]
+version = "1.0.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.matchers]]
 version = "0.2.0"
 criteria = "safe-to-deploy"
@@ -326,6 +346,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.oorandom]]
 version = "11.1.5"
+criteria = "safe-to-run"
+
+[[exemptions.page_size]]
+version = "0.6.0"
 criteria = "safe-to-run"
 
 [[exemptions.parking_lot_core]]
@@ -636,8 +660,20 @@ criteria = "safe-to-deploy"
 version = "0.3.91"
 criteria = "safe-to-run"
 
+[[exemptions.winapi]]
+version = "0.3.9"
+criteria = "safe-to-run"
+
+[[exemptions.winapi-i686-pc-windows-gnu]]
+version = "0.4.0"
+criteria = "safe-to-run"
+
 [[exemptions.winapi-util]]
 version = "0.1.11"
+criteria = "safe-to-run"
+
+[[exemptions.winapi-x86_64-pc-windows-gnu]]
+version = "0.4.0"
 criteria = "safe-to-run"
 
 [[exemptions.windows-core]]
