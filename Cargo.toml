@@ -1,6 +1,6 @@
 [package]
 name = "szal"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 rust-version = "1.89"
 license = "AGPL-3.0-only"
@@ -24,15 +24,18 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 md-5 = "0.10"
 base64 = "0.22"
-bote = "0.22.3"
-majra = { version = "1.0.0", features = ["pubsub", "queue", "heartbeat", "ratelimit"], optional = true }
+bote = "0.50.0"
+majra = { version = "1.0.1", features = ["pubsub", "queue", "heartbeat", "ratelimit"], optional = true }
 ai-hwaccel = { version = "0.23", optional = true }
 
 [features]
 default = []
 majra = ["dep:majra"]
 hardware = ["dep:ai-hwaccel"]
-prometheus = ["majra"]
+prometheus = ["majra", "majra/prometheus"]
+barrier = ["majra", "majra/barrier"]
+dag = ["majra", "majra/dag"]
+fleet = ["majra", "majra/fleet"]
 
 [dev-dependencies]
 tempfile = "3"

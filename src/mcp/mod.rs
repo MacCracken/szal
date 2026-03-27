@@ -18,7 +18,7 @@ pub mod pool;
 #[cfg(feature = "majra")]
 pub mod tenant;
 
-use bote::{Dispatcher, ToolDef, ToolRegistry, ToolSchema};
+use bote::{AuditSink, Dispatcher, EventSink, ToolDef, ToolRegistry, ToolSchema};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -37,6 +37,17 @@ pub trait Tool: Send + Sync {
 /// Register all szal workflow tools and return a ready-to-use bote dispatcher.
 #[must_use]
 pub fn register_tools() -> Dispatcher {
+    register_tools_with(None, None)
+}
+
+/// Register all szal workflow tools with optional audit and event sinks.
+///
+/// Pass `None` for either sink to disable that feature.
+#[must_use]
+pub fn register_tools_with(
+    audit: Option<Arc<dyn AuditSink>>,
+    events: Option<Arc<dyn EventSink>>,
+) -> Dispatcher {
     let tool_impls = tools::all_tools();
     let mut registry = ToolRegistry::new();
 
@@ -45,6 +56,13 @@ pub fn register_tools() -> Dispatcher {
     }
 
     let mut dispatcher = Dispatcher::new(registry);
+
+    if let Some(audit) = audit {
+        dispatcher.set_audit(audit);
+    }
+    if let Some(events) = events {
+        dispatcher.set_events(events);
+    }
 
     for tool in tool_impls {
         let tool = Arc::new(tool);
@@ -186,15 +204,11 @@ pub fn tool_def(
         serde_json::Value::Object(map) => map.into_iter().collect(),
         _ => HashMap::new(),
     };
-    ToolDef {
-        name: name.into(),
-        description: description.into(),
-        input_schema: ToolSchema {
-            schema_type: "object".into(),
-            properties: props,
-            required,
-        },
-    }
+    ToolDef::new(
+        name,
+        description,
+        ToolSchema::new("object", props, required),
+    )
 }
 
 #[cfg(test)]

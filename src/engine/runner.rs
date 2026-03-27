@@ -68,7 +68,7 @@ impl Engine {
     #[must_use]
     pub fn with_metrics(
         mut self,
-        metrics: std::sync::Arc<dyn crate::metrics::SzalMetrics>,
+        metrics: std::sync::Arc<dyn crate::metrics::MajraMetrics>,
     ) -> Self {
         self.config.metrics = Some(metrics);
         self

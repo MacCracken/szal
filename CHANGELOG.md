@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-03-27
+
+### Changed
+- Bump bote dependency from 0.22.3 to 0.50.0
+- Bump majra dependency from 1.0.0 to 1.0.1
+- `tool_def()` helper now uses `ToolDef::new()` / `ToolSchema::new()` constructors (bote 0.50.0 made both `#[non_exhaustive]`)
+- Re-export `AuditSink` and `EventSink` from bote in `mcp` module
+- Replace duplicate `SzalMetrics` trait with re-export of `majra::metrics::MajraMetrics` (identical signatures, eliminates redundancy)
+- `MetricsSink` type alias now uses `Arc<dyn MajraMetrics>` instead of `Arc<dyn SzalMetrics>`
+- `Engine::with_metrics()` now accepts `Arc<dyn MajraMetrics>` — consumers get full infrastructure metrics (queue, pubsub, heartbeat, rate limiter) alongside workflow metrics
+- Fix `prometheus` feature to actually enable `majra/prometheus` — `PrometheusMetrics` is now available when the feature is active
+
+### Added
+- `register_tools_with(audit, events)` — configure bote dispatcher with optional audit logging and event publishing sinks
+- Consumers can now leverage bote 0.50.0 features: streaming handlers with progress/cancellation, dynamic tool registration/deregistration, tool versioning, tool deprecation, and compiled schema validation with type checking and default injection
+- `barrier` feature — exposes majra's N-way barrier synchronisation with deadlock recovery
+- `dag` feature — exposes majra's DAG dependency scheduler for queue-based execution
+- `fleet` feature — exposes majra's distributed job queue with work-stealing
+
 ## [1.0.0] — 2026-03-26
 
 Stable API release. All public enums are `#[non_exhaustive]`, all pure functions are `#[must_use]`.

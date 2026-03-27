@@ -1,53 +1,24 @@
-//! Workflow metrics — extends majra's `MajraMetrics` with workflow lifecycle hooks.
+//! Workflow metrics — re-exports majra's [`MajraMetrics`] trait for workflow lifecycle hooks.
 //!
-//! The [`SzalMetrics`] trait adds workflow-run and workflow-step metrics
-//! on top of majra's infrastructure metrics (queue, pubsub, heartbeat).
+//! Majra's `MajraMetrics` provides workflow-run and workflow-step metrics alongside
+//! infrastructure metrics (queue, pubsub, heartbeat, rate limiter). Consumers implement
+//! `MajraMetrics` to wire szal's engine into their metrics backend.
 
 #[cfg(feature = "majra")]
 use std::sync::Arc;
 
-/// Workflow metrics trait — extends majra's `MajraMetrics` with workflow lifecycle hooks.
-///
-/// All methods have default no-op implementations, so consumers only override
-/// the metrics they care about.
 #[cfg(feature = "majra")]
-pub trait SzalMetrics: Send + Sync {
-    /// A workflow run was started.
-    fn workflow_run_started(&self, _workflow_id: &str) {}
-
-    /// A workflow run completed successfully.
-    fn workflow_run_completed(&self, _workflow_id: &str, _duration_ms: u64) {}
-
-    /// A workflow run failed.
-    fn workflow_run_failed(&self, _workflow_id: &str, _duration_ms: u64) {}
-
-    /// A workflow step began executing.
-    fn workflow_step_started(&self, _workflow_id: &str, _step_id: &str) {}
-
-    /// A workflow step reached a terminal status.
-    fn workflow_step_finished(
-        &self,
-        _workflow_id: &str,
-        _step_id: &str,
-        _status: &str,
-        _duration_ms: u64,
-    ) {
-    }
-}
-
-/// No-op metrics sink.
-#[cfg(feature = "majra")]
-pub struct NoopSzalMetrics;
+pub use majra::metrics::MajraMetrics;
 
 #[cfg(feature = "majra")]
-impl SzalMetrics for NoopSzalMetrics {}
+pub use majra::metrics::NoopMetrics;
 
 /// Optional metrics sink threaded through the engine.
 ///
 /// When `Some`, lifecycle methods are called fire-and-forget.
 /// When `None`, no metrics are emitted.
 #[cfg(feature = "majra")]
-pub type MetricsSink = Option<Arc<dyn SzalMetrics>>;
+pub type MetricsSink = Option<Arc<dyn MajraMetrics>>;
 
 #[cfg(feature = "majra")]
 #[inline]
@@ -111,7 +82,7 @@ mod tests {
 
     #[test]
     fn metric_sink_with_noop() {
-        let sink: MetricsSink = Some(Arc::new(NoopSzalMetrics));
+        let sink: MetricsSink = Some(Arc::new(NoopMetrics));
         metric_run_started(&sink, "test");
         metric_run_completed(&sink, "test", 100);
         metric_step_started(&sink, "test", "step-1");
