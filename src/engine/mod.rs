@@ -163,6 +163,7 @@ impl Default for EngineConfig {
 impl EngineConfig {
     /// Enable hardware-aware scheduling with automatic device detection.
     #[cfg(feature = "hardware")]
+    #[must_use]
     pub fn with_hardware(mut self) -> Self {
         self.hardware = Some(HardwareContext::detect());
         self
@@ -185,6 +186,7 @@ impl EngineConfig {
 ///     }),
 /// );
 /// ```
+#[must_use]
 pub fn handler_fn<F, Fut>(f: F) -> StepHandler
 where
     F: Fn(StepDef) -> Fut + Send + Sync + 'static,
@@ -204,6 +206,7 @@ where
 ///     Ok(())
 /// });
 /// ```
+#[must_use]
 pub fn rollback_fn<F, Fut>(f: F) -> RollbackHandler
 where
     F: Fn(StepDef) -> Fut + Send + Sync + 'static,

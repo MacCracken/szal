@@ -19,6 +19,7 @@ pub struct Engine {
 
 impl Engine {
     /// Create an engine with a step handler.
+    #[must_use]
     pub fn new(config: EngineConfig, handler: StepHandler) -> Self {
         Self {
             config,
@@ -29,12 +30,14 @@ impl Engine {
     }
 
     /// Set a rollback handler for steps that support rollback.
+    #[must_use]
     pub fn with_rollback_handler(mut self, handler: RollbackHandler) -> Self {
         self.rollback_handler = Some(handler);
         self
     }
 
     /// Attach workflow storage for dynamic subworkflow resolution.
+    #[must_use]
     pub fn with_storage(
         mut self,
         storage: std::sync::Arc<dyn crate::storage::WorkflowStorage>,
@@ -44,6 +47,7 @@ impl Engine {
     }
 
     /// Attach a custom event sink for workflow lifecycle events.
+    #[must_use]
     pub fn with_event_sink(
         mut self,
         sink: std::sync::Arc<dyn Fn(crate::bus::WorkflowEvent) + Send + Sync>,
@@ -54,12 +58,14 @@ impl Engine {
 
     /// Attach an [`EventBus`](crate::bus::EventBus) as the event sink.
     #[cfg(feature = "majra")]
+    #[must_use]
     pub fn with_event_bus(self, bus: std::sync::Arc<crate::bus::EventBus>) -> Self {
         self.with_event_sink(std::sync::Arc::new(move |e| bus.publish(&e)))
     }
 
     /// Attach a metrics sink for workflow/step lifecycle instrumentation.
     #[cfg(feature = "majra")]
+    #[must_use]
     pub fn with_metrics(
         mut self,
         metrics: std::sync::Arc<dyn crate::metrics::SzalMetrics>,
@@ -70,6 +76,7 @@ impl Engine {
 
     /// Attach a heartbeat tracker for engine health reporting.
     #[cfg(feature = "majra")]
+    #[must_use]
     pub fn with_heartbeat(
         mut self,
         tracker: std::sync::Arc<majra::heartbeat::ConcurrentHeartbeatTracker>,
@@ -80,6 +87,7 @@ impl Engine {
 
     /// Attach a managed queue for distributed step execution.
     #[cfg(feature = "majra")]
+    #[must_use]
     pub fn with_queue(
         mut self,
         queue: std::sync::Arc<majra::queue::ManagedQueue<crate::step::StepDef>>,
@@ -459,7 +467,7 @@ impl Engine {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                t.heartbeat(&id);
+                let _ = t.heartbeat(&id);
             }
         });
 

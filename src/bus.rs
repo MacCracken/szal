@@ -85,56 +85,67 @@ impl WorkflowEvent {
         }
     }
 
+    #[must_use]
     pub fn with_flow(mut self, name: &str) -> Self {
         self.flow_name = Some(name.into());
         self
     }
 
+    #[must_use]
     pub fn with_step(mut self, name: &str, id: &str) -> Self {
         self.step_name = Some(name.into());
         self.step_id = Some(id.into());
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, ms: u64) -> Self {
         self.duration_ms = Some(ms);
         self
     }
 
+    #[must_use]
     pub fn with_attempt(mut self, attempt: u32) -> Self {
         self.attempt = Some(attempt);
         self
     }
 
+    #[must_use]
     pub fn with_error(mut self, error: &str) -> Self {
         self.error = Some(error.into());
         self
     }
 
+    #[must_use]
     pub fn flow_started(flow_name: &str) -> Self {
         Self::new(EventType::FlowStarted).with_flow(flow_name)
     }
 
+    #[must_use]
     pub fn flow_completed(flow_name: &str, duration_ms: u64) -> Self {
         Self::new(EventType::FlowCompleted)
             .with_flow(flow_name)
             .with_duration(duration_ms)
     }
 
+    #[must_use]
     pub fn flow_failed(flow_name: &str, error: &str) -> Self {
         Self::new(EventType::FlowFailed)
             .with_flow(flow_name)
             .with_error(error)
     }
 
+    #[must_use]
     pub fn flow_rolled_back(flow_name: &str) -> Self {
         Self::new(EventType::FlowRolledBack).with_flow(flow_name)
     }
 
+    #[must_use]
     pub fn step_started(step_name: &str, step_id: &str) -> Self {
         Self::new(EventType::StepStarted).with_step(step_name, step_id)
     }
 
+    #[must_use]
     pub fn step_completed(step_name: &str, step_id: &str, duration_ms: u64, attempt: u32) -> Self {
         Self::new(EventType::StepCompleted)
             .with_step(step_name, step_id)
@@ -142,6 +153,7 @@ impl WorkflowEvent {
             .with_attempt(attempt)
     }
 
+    #[must_use]
     pub fn step_failed(step_name: &str, step_id: &str, error: &str, attempt: u32) -> Self {
         Self::new(EventType::StepFailed)
             .with_step(step_name, step_id)
@@ -149,29 +161,34 @@ impl WorkflowEvent {
             .with_attempt(attempt)
     }
 
+    #[must_use]
     pub fn step_retry(step_name: &str, step_id: &str, attempt: u32) -> Self {
         Self::new(EventType::StepRetry)
             .with_step(step_name, step_id)
             .with_attempt(attempt)
     }
 
+    #[must_use]
     pub fn step_skipped(step_name: &str, step_id: &str, reason: &str) -> Self {
         Self::new(EventType::StepSkipped)
             .with_step(step_name, step_id)
             .with_error(reason)
     }
 
+    #[must_use]
     pub fn step_timeout(step_name: &str, step_id: &str, timeout_ms: u64) -> Self {
         Self::new(EventType::StepTimeout)
             .with_step(step_name, step_id)
             .with_duration(timeout_ms)
     }
 
+    #[must_use]
     pub fn step_rollback(step_name: &str, step_id: &str) -> Self {
         Self::new(EventType::StepRollback).with_step(step_name, step_id)
     }
 
     /// Build the topic string for this event.
+    #[must_use]
     pub fn topic(&self) -> String {
         match self.event_type {
             EventType::FlowStarted
@@ -198,6 +215,7 @@ pub struct EventBus {
 #[cfg(feature = "majra")]
 impl EventBus {
     /// Create a new event bus.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             pubsub: PubSub::new(),
@@ -236,6 +254,61 @@ impl Default for EventBus {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Create an [`EventSink`](crate::engine::EventSink) that maps workflow events to tracing spans.
+///
+/// Each event becomes a tracing event with structured fields following
+/// OpenTelemetry semantic conventions. Consumers wire a `tracing-opentelemetry`
+/// subscriber layer to export these as OTel spans to a collector.
+///
+/// Fields emitted: `workflow.event_type`, `workflow.flow_name`, `workflow.step_name`,
+/// `workflow.step_id`, `workflow.attempt`, `workflow.duration_ms`, `workflow.error`,
+/// `workflow.status`.
+#[must_use]
+pub fn otel_event_sink() -> std::sync::Arc<dyn Fn(WorkflowEvent) + Send + Sync> {
+    std::sync::Arc::new(|event: WorkflowEvent| {
+        let event_type = event.event_type.to_string();
+        let flow = event.flow_name.as_deref().unwrap_or("");
+        let step = event.step_name.as_deref().unwrap_or("");
+        let step_id = event.step_id.as_deref().unwrap_or("");
+        let status = match event.event_type {
+            EventType::FlowCompleted | EventType::StepCompleted => "ok",
+            EventType::FlowFailed | EventType::StepFailed | EventType::StepTimeout => "error",
+            EventType::StepSkipped => "skipped",
+            EventType::FlowRolledBack | EventType::StepRollback => "rolled_back",
+            _ => "unset",
+        };
+
+        match event.event_type {
+            EventType::FlowStarted
+            | EventType::FlowCompleted
+            | EventType::FlowFailed
+            | EventType::FlowRolledBack => {
+                tracing::info!(
+                    workflow.event_type = %event_type,
+                    workflow.flow_name = %flow,
+                    workflow.status = %status,
+                    workflow.duration_ms = event.duration_ms.unwrap_or(0),
+                    workflow.error = event.error.as_deref().unwrap_or(""),
+                    "workflow.flow"
+                );
+            }
+            _ => {
+                tracing::info!(
+                    workflow.event_type = %event_type,
+                    workflow.flow_name = %flow,
+                    workflow.step_name = %step,
+                    workflow.step_id = %step_id,
+                    workflow.status = %status,
+                    workflow.attempt = event.attempt.unwrap_or(0),
+                    workflow.duration_ms = event.duration_ms.unwrap_or(0),
+                    workflow.error = event.error.as_deref().unwrap_or(""),
+                    "workflow.step"
+                );
+            }
+        }
+    })
 }
 
 #[cfg(test)]

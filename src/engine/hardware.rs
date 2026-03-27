@@ -23,11 +23,13 @@ pub struct HardwareContext {
 
 impl HardwareContext {
     /// Create a hardware context with default cache TTL (5 minutes).
+    #[must_use]
     pub fn detect() -> Self {
         Self::with_ttl(std::time::Duration::from_secs(DEFAULT_CACHE_TTL_SECS))
     }
 
     /// Create a hardware context with a custom cache TTL.
+    #[must_use]
     pub fn with_ttl(ttl: std::time::Duration) -> Self {
         Self {
             registry: Arc::new(CachedRegistry::new(ttl)),
@@ -35,6 +37,7 @@ impl HardwareContext {
     }
 
     /// Get the underlying cached registry snapshot.
+    #[must_use]
     pub fn registry(&self) -> Arc<AcceleratorRegistry> {
         self.registry.get()
     }
@@ -65,6 +68,7 @@ impl HardwareContext {
     /// If steps require accelerators, concurrency is capped by the number
     /// of available devices in the required family. CPU-only steps are
     /// unconstrained.
+    #[must_use]
     pub fn effective_concurrency(&self, steps: &[StepDef], base_concurrency: usize) -> usize {
         let reg = self.registry.get();
 

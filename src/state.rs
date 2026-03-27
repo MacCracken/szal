@@ -39,10 +39,12 @@ pub enum WorkflowState {
 }
 
 impl WorkflowState {
+    #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::RolledBack | Self::Cancelled)
     }
 
+    #[must_use]
     pub fn valid_transition(&self, to: &Self) -> bool {
         matches!(
             (self, to),

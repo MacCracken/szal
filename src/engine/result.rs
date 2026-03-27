@@ -35,6 +35,7 @@ pub struct FlowResult {
 }
 
 impl FlowResult {
+    #[must_use]
     pub fn completed_count(&self) -> usize {
         self.steps
             .iter()
@@ -42,6 +43,7 @@ impl FlowResult {
             .count()
     }
 
+    #[must_use]
     pub fn failed_count(&self) -> usize {
         self.steps
             .iter()
@@ -49,6 +51,7 @@ impl FlowResult {
             .count()
     }
 
+    #[must_use]
     pub fn skipped_count(&self) -> usize {
         self.steps
             .iter()

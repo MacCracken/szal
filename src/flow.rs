@@ -78,6 +78,7 @@ pub struct FlowDef {
 }
 
 impl FlowDef {
+    #[must_use]
     pub fn new(name: impl Into<String>, mode: FlowMode) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -94,11 +95,13 @@ impl FlowDef {
         self.steps.push(step);
     }
 
+    #[must_use]
     pub fn with_rollback(mut self) -> Self {
         self.rollback_on_failure = true;
         self
     }
 
+    #[must_use]
     pub fn with_timeout(mut self, ms: u64) -> Self {
         self.timeout_ms = Some(ms);
         self

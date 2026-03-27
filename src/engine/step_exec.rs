@@ -105,7 +105,8 @@ pub(crate) async fn execute_step_with_handler(
                 }
                 last_error = Some(e);
                 if attempt < max_attempts {
-                    tokio::time::sleep(std::time::Duration::from_millis(step.retry_delay_ms)).await;
+                    let delay = step.backoff.delay_ms(step.retry_delay_ms, attempt);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                 }
             }
         }

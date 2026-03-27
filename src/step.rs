@@ -31,6 +31,35 @@ pub enum TriggerMode {
     Any,
 }
 
+/// Backoff strategy for retry delays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[non_exhaustive]
+pub enum BackoffStrategy {
+    /// Fixed delay between retries (default).
+    #[default]
+    Fixed,
+    /// Delay increases linearly: `base_delay * attempt`.
+    Linear,
+    /// Delay doubles each attempt: `base_delay * 2^(attempt-1)`.
+    Exponential,
+}
+
+impl BackoffStrategy {
+    /// Calculate the delay for the given attempt (1-indexed).
+    #[must_use]
+    #[inline]
+    pub fn delay_ms(self, base_delay_ms: u64, attempt: u32) -> u64 {
+        match self {
+            Self::Fixed => base_delay_ms,
+            Self::Linear => base_delay_ms.saturating_mul(u64::from(attempt)),
+            Self::Exponential => base_delay_ms.saturating_mul(
+                1u64.checked_shl(attempt.saturating_sub(1))
+                    .unwrap_or(u64::MAX),
+            ),
+        }
+    }
+}
+
 /// Step execution status.
 ///
 /// ```
@@ -90,6 +119,9 @@ pub struct StepDef {
     pub max_retries: u32,
     /// Delay between retries in milliseconds.
     pub retry_delay_ms: u64,
+    /// Backoff strategy for retry delays.
+    #[serde(default)]
+    pub backoff: BackoffStrategy,
     /// Whether this step can be rolled back.
     pub rollbackable: bool,
     /// Step type for handler dispatch (e.g. "http", "bash", "webhook").
@@ -118,6 +150,7 @@ pub struct StepDef {
 }
 
 impl StepDef {
+    #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -126,6 +159,7 @@ impl StepDef {
             timeout_ms: 30_000,
             max_retries: 0,
             retry_delay_ms: 1_000,
+            backoff: BackoffStrategy::Fixed,
             rollbackable: false,
             step_type: None,
             config: None,
@@ -138,47 +172,62 @@ impl StepDef {
         }
     }
 
+    #[must_use]
     pub fn with_timeout(mut self, ms: u64) -> Self {
         self.timeout_ms = ms;
         self
     }
 
+    #[must_use]
     pub fn with_retries(mut self, max: u32, delay_ms: u64) -> Self {
         self.max_retries = max;
         self.retry_delay_ms = delay_ms;
         self
     }
 
+    #[must_use]
+    pub fn with_backoff(mut self, strategy: BackoffStrategy) -> Self {
+        self.backoff = strategy;
+        self
+    }
+
+    #[must_use]
     pub fn with_rollback(mut self) -> Self {
         self.rollbackable = true;
         self
     }
 
+    #[must_use]
     pub fn depends_on(mut self, step_id: StepId) -> Self {
         self.depends_on.push(step_id);
         self
     }
 
+    #[must_use]
     pub fn with_step_type(mut self, step_type: impl Into<String>) -> Self {
         self.step_type = Some(step_type.into());
         self
     }
 
+    #[must_use]
     pub fn with_config(mut self, config: serde_json::Value) -> Self {
         self.config = Some(config);
         self
     }
 
+    #[must_use]
     pub fn with_condition(mut self, expr: impl Into<String>) -> Self {
         self.condition = Some(expr.into());
         self
     }
 
+    #[must_use]
     pub fn with_trigger_mode(mut self, mode: TriggerMode) -> Self {
         self.trigger_mode = mode;
         self
     }
 
+    #[must_use]
     pub fn with_sub_step(mut self, step: StepDef) -> Self {
         self.sub_steps.push(step);
         self
@@ -186,6 +235,7 @@ impl StepDef {
 
     /// Set the hardware accelerator requirement for this step.
     #[cfg(feature = "hardware")]
+    #[must_use]
     pub fn with_hardware(mut self, req: ai_hwaccel::AcceleratorRequirement) -> Self {
         self.hardware = req;
         self
