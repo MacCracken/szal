@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 /// assert!(state.valid_transition(&WorkflowState::RollingBack));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum WorkflowState {
     Created,
     Running,

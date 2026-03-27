@@ -30,6 +30,7 @@ pub type FlowId = Uuid;
 /// assert_eq!(FlowMode::Dag.to_string(), "dag");
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum FlowMode {
     /// Steps run one after another.
     Sequential,

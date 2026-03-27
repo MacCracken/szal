@@ -69,6 +69,7 @@ impl BackoffStrategy {
 /// assert_eq!(status.to_string(), "completed");
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum StepStatus {
     Pending,
     Running,

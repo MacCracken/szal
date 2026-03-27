@@ -39,6 +39,7 @@ pub struct WorkflowEvent {
 /// Event types emitted during workflow execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EventType {
     FlowStarted,
     FlowCompleted,
