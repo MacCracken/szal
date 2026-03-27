@@ -316,6 +316,10 @@ criteria = "safe-to-deploy"
 version = "1.0.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.majra]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.matchers]]
 version = "0.2.0"
 criteria = "safe-to-deploy"
@@ -598,6 +602,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.uuid]]
 version = "1.22.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.uuid]]
+version = "1.23.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.valuable]]
