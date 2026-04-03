@@ -51,6 +51,8 @@ pub(crate) struct ExecCtx<'a> {
     pub flow: FlowCtx<'a>,
     #[cfg(feature = "majra")]
     pub metrics: &'a crate::metrics::MetricsSink,
+    pub step_type_metrics: &'a StepTypeMetricsFn,
+    pub progress_sink: &'a ProgressSink,
 }
 
 /// Optional event sink for workflow lifecycle events.
@@ -64,6 +66,26 @@ pub type EventSink = Option<Arc<dyn Fn(WorkflowEvent) + Send + Sync>>;
 pub(crate) fn emit(sink: &EventSink, event: WorkflowEvent) {
     if let Some(ref f) = *sink {
         f(event);
+    }
+}
+
+/// Optional callback for step-type metrics (histograms by step type).
+///
+/// Called after each step completes with `(step_type, status, duration_ms)`.
+/// The `step_type` is from [`StepDef::step_type`](crate::step::StepDef::step_type),
+/// defaulting to `"default"` when unset. Works without the `majra` feature.
+pub type StepTypeMetricsFn = Option<Arc<dyn Fn(&str, &str, u64) + Send + Sync>>;
+
+/// Emit a step-type metric if a callback is configured.
+#[inline]
+pub(crate) fn emit_step_type_metric(
+    sink: &StepTypeMetricsFn,
+    step_type: Option<&str>,
+    status: &str,
+    duration_ms: u64,
+) {
+    if let Some(ref f) = *sink {
+        f(step_type.unwrap_or("default"), status, duration_ms);
     }
 }
 
@@ -98,6 +120,44 @@ pub type StepHandler = Arc<
         + Sync,
 >;
 
+/// A step progress event emitted mid-execution.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StepProgress {
+    pub step_name: String,
+    pub step_id: String,
+    /// Arbitrary progress data (e.g., `{"percent": 50, "message": "compiling..."}`).
+    pub data: serde_json::Value,
+}
+
+/// Callback for step progress events.
+pub type ProgressSink = Option<Arc<dyn Fn(StepProgress) + Send + Sync>>;
+
+/// Handle passed to step handlers for reporting progress mid-execution.
+///
+/// Clone-cheap (`Arc` internally). Call [`report`](Self::report) to emit
+/// progress events that flow to the engine's [`ProgressSink`].
+#[derive(Clone)]
+pub struct ProgressReporter {
+    sink: ProgressSink,
+    step_name: Arc<str>,
+    step_id: Arc<str>,
+}
+
+impl ProgressReporter {
+    /// Report progress data for the current step.
+    ///
+    /// No-op if the engine has no progress sink configured.
+    pub fn report(&self, data: serde_json::Value) {
+        if let Some(ref f) = self.sink {
+            f(StepProgress {
+                step_name: self.step_name.to_string(),
+                step_id: self.step_id.to_string(),
+                data,
+            });
+        }
+    }
+}
+
 /// A rollback handler — called when a completed step needs to be undone.
 pub type RollbackHandler =
     Arc<dyn Fn(StepDef) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
@@ -122,6 +182,12 @@ pub struct EngineConfig {
     /// Queue for distributed step execution.
     #[cfg(feature = "majra")]
     pub queue: Option<Arc<majra::queue::ManagedQueue<crate::step::StepDef>>>,
+    /// Step-type metrics callback for per-type histograms.
+    pub step_type_metrics: StepTypeMetricsFn,
+    /// Progress sink for streaming step output.
+    pub progress_sink: ProgressSink,
+    /// Execution store for persisting workflow state.
+    pub execution_store: Option<Arc<dyn crate::storage::ExecutionStore>>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -138,6 +204,9 @@ impl std::fmt::Debug for EngineConfig {
         d.field("heartbeat", &self.heartbeat.is_some());
         #[cfg(feature = "majra")]
         d.field("queue", &self.queue.is_some());
+        d.field("step_type_metrics", &self.step_type_metrics.is_some());
+        d.field("progress_sink", &self.progress_sink.is_some());
+        d.field("execution_store", &self.execution_store.is_some());
         d.finish()
     }
 }
@@ -156,6 +225,9 @@ impl Default for EngineConfig {
             heartbeat: None,
             #[cfg(feature = "majra")]
             queue: None,
+            step_type_metrics: None,
+            progress_sink: None,
+            execution_store: None,
         }
     }
 }
@@ -195,6 +267,48 @@ where
     Arc::new(move |step| Box::pin(f(step)))
 }
 
+/// Create a [`StepHandler`] from an async function that receives a [`ProgressReporter`].
+///
+/// The returned handler captures the `progress_sink` from the engine config.
+/// Pass the same sink to both `Engine::with_progress_sink()` and this function.
+///
+/// ```
+/// use szal::engine::{EngineConfig, Engine, handler_fn_with_progress, ProgressReporter};
+/// use szal::step::StepDef;
+/// use std::sync::Arc;
+///
+/// let sink = Arc::new(|p: szal::engine::StepProgress| {
+///     println!("progress: {} — {:?}", p.step_name, p.data);
+/// });
+///
+/// let engine = Engine::new(
+///     EngineConfig { progress_sink: Some(sink.clone()), ..Default::default() },
+///     handler_fn_with_progress(sink, |step: StepDef, progress: ProgressReporter| async move {
+///         progress.report(serde_json::json!({"percent": 50}));
+///         Ok(serde_json::json!({"step": step.name}))
+///     }),
+/// );
+/// ```
+#[must_use]
+pub fn handler_fn_with_progress<F, Fut>(
+    sink: Arc<dyn Fn(StepProgress) + Send + Sync>,
+    f: F,
+) -> StepHandler
+where
+    F: Fn(StepDef, ProgressReporter) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<serde_json::Value, String>> + Send + 'static,
+{
+    let sink = Some(sink);
+    Arc::new(move |step: StepDef| {
+        let reporter = ProgressReporter {
+            sink: sink.clone(),
+            step_name: Arc::from(step.name.as_str()),
+            step_id: Arc::from(step.id.to_string()),
+        };
+        Box::pin(f(step, reporter))
+    })
+}
+
 /// Create a [`RollbackHandler`] from an async function.
 ///
 /// ```
@@ -213,6 +327,57 @@ where
     Fut: Future<Output = Result<(), String>> + Send + 'static,
 {
     Arc::new(move |step| Box::pin(f(step)))
+}
+
+/// Create a [`StepHandler`] that delegates `step_type = "sub_flow"` steps to
+/// sub-flow execution via [`WorkflowStorage`](crate::storage::WorkflowStorage),
+/// forwarding all other steps to the given `inner` handler.
+///
+/// The step's `config` must contain `{"flow_name": "<name>"}` to identify the
+/// sub-flow. The sub-flow is executed with a fresh engine using the same config
+/// defaults and the provided `inner` handler.
+///
+/// Returns the sub-flow's [`FlowResult`] as JSON output on success.
+#[must_use]
+pub fn sub_flow_handler(
+    storage: Arc<dyn crate::storage::WorkflowStorage>,
+    inner: StepHandler,
+) -> StepHandler {
+    Arc::new(move |step: StepDef| {
+        let storage = storage.clone();
+        let inner = inner.clone();
+        Box::pin(async move {
+            if step.step_type.as_deref() != Some("sub_flow") {
+                return (inner)(step).await;
+            }
+
+            let flow_name = step
+                .config
+                .as_ref()
+                .and_then(|c| c.get("flow_name"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "sub_flow step requires config.flow_name".to_owned())?;
+
+            let flow = storage
+                .get_by_name(flow_name)
+                .ok_or_else(|| format!("sub-flow '{flow_name}' not found in storage"))?;
+
+            let engine = Engine::new(EngineConfig::default(), inner.clone());
+            let result = engine
+                .run(&flow)
+                .await
+                .map_err(|e| format!("sub-flow '{flow_name}' failed: {e}"))?;
+
+            if result.success {
+                serde_json::to_value(&result).map_err(|e| format!("serialize: {e}"))
+            } else {
+                Err(format!(
+                    "sub-flow '{flow_name}' failed: {} step(s) failed",
+                    result.failed_count()
+                ))
+            }
+        })
+    })
 }
 
 #[cfg(test)]
@@ -1055,5 +1220,238 @@ mod tests {
         let result = engine.run(&flow).await.unwrap();
         assert!(result.success);
         assert_eq!(result.completed_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn step_type_metrics_callback() {
+        use std::sync::Mutex;
+
+        let recorded: Arc<Mutex<Vec<(String, String, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let r = recorded.clone();
+        let metrics_fn: StepTypeMetricsFn = Some(Arc::new(move |st, status, dur| {
+            r.lock()
+                .unwrap()
+                .push((st.to_owned(), status.to_owned(), dur));
+        }));
+
+        let mut flow = FlowDef::new("typed", FlowMode::Sequential);
+        flow.add_step(StepDef::new("build").with_step_type("bash"));
+        flow.add_step(StepDef::new("deploy").with_step_type("http"));
+        flow.add_step(StepDef::new("notify")); // no step_type → "default"
+
+        let config = EngineConfig {
+            step_type_metrics: metrics_fn,
+            ..Default::default()
+        };
+        let engine = Engine::new(config, success_handler());
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+
+        let entries = recorded.lock().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].0, "bash");
+        assert_eq!(entries[0].1, "completed");
+        assert_eq!(entries[1].0, "http");
+        assert_eq!(entries[1].1, "completed");
+        assert_eq!(entries[2].0, "default");
+        assert_eq!(entries[2].1, "completed");
+    }
+
+    #[tokio::test]
+    async fn step_type_metrics_records_failure() {
+        use std::sync::Mutex;
+
+        let recorded: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let r = recorded.clone();
+        let metrics_fn: StepTypeMetricsFn = Some(Arc::new(move |st, status, _dur| {
+            r.lock().unwrap().push((st.to_owned(), status.to_owned()));
+        }));
+
+        let mut flow = FlowDef::new("fail", FlowMode::Sequential);
+        flow.add_step(StepDef::new("boom").with_step_type("webhook"));
+
+        let config = EngineConfig {
+            step_type_metrics: metrics_fn,
+            ..Default::default()
+        };
+        let engine = Engine::new(config, failing_handler());
+        let result = engine.run(&flow).await.unwrap();
+        assert!(!result.success);
+
+        let entries = recorded.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "webhook");
+        assert_eq!(entries[0].1, "failed");
+    }
+
+    #[tokio::test]
+    async fn progress_reporting() {
+        use std::sync::Mutex;
+
+        let progress_log: Arc<Mutex<Vec<StepProgress>>> = Arc::new(Mutex::new(Vec::new()));
+        let p = progress_log.clone();
+        let sink: Arc<dyn Fn(StepProgress) + Send + Sync> = Arc::new(move |evt| {
+            p.lock().unwrap().push(evt);
+        });
+
+        let handler = handler_fn_with_progress(sink.clone(), |step, reporter| async move {
+            reporter.report(serde_json::json!({"percent": 50}));
+            reporter.report(serde_json::json!({"percent": 100}));
+            Ok(serde_json::json!({"step": step.name}))
+        });
+
+        let mut flow = FlowDef::new("prog", FlowMode::Sequential);
+        flow.add_step(StepDef::new("upload"));
+
+        let config = EngineConfig {
+            progress_sink: Some(sink),
+            ..Default::default()
+        };
+        let engine = Engine::new(config, handler);
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+
+        let entries = progress_log.lock().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].step_name, "upload");
+        assert_eq!(entries[0].data["percent"], 50);
+        assert_eq!(entries[1].data["percent"], 100);
+    }
+
+    #[tokio::test]
+    async fn sub_flow_execution() {
+        use crate::storage::InMemoryStorage;
+
+        let storage = Arc::new(InMemoryStorage::new());
+
+        // Register a sub-flow
+        let mut sub = FlowDef::new("deploy-infra", FlowMode::Sequential);
+        sub.add_step(StepDef::new("provision"));
+        sub.add_step(StepDef::new("configure"));
+        storage.insert(sub);
+
+        let handler = sub_flow_handler(storage.clone(), success_handler());
+
+        // Main flow has a normal step and a sub_flow step
+        let mut flow = FlowDef::new("pipeline", FlowMode::Sequential);
+        flow.add_step(StepDef::new("build"));
+        flow.add_step(
+            StepDef::new("infra")
+                .with_step_type("sub_flow")
+                .with_config(serde_json::json!({"flow_name": "deploy-infra"})),
+        );
+        flow.add_step(StepDef::new("smoke-test"));
+
+        let engine = Engine::new(EngineConfig::default(), handler);
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.completed_count(), 3);
+
+        // The sub_flow step output should contain the FlowResult
+        let infra_result = &result.steps[1];
+        assert_eq!(infra_result.output["flow_name"], "deploy-infra");
+        assert_eq!(infra_result.output["success"], true);
+    }
+
+    #[tokio::test]
+    async fn sub_flow_missing_flow_name() {
+        use crate::storage::InMemoryStorage;
+
+        let storage = Arc::new(InMemoryStorage::new());
+        let handler = sub_flow_handler(storage, success_handler());
+
+        let mut flow = FlowDef::new("bad", FlowMode::Sequential);
+        flow.add_step(
+            StepDef::new("no-config")
+                .with_step_type("sub_flow")
+                .with_config(serde_json::json!({})),
+        );
+
+        let engine = Engine::new(EngineConfig::default(), handler);
+        let result = engine.run(&flow).await.unwrap();
+        assert!(!result.success);
+        assert!(
+            result.steps[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("flow_name")
+        );
+    }
+
+    #[tokio::test]
+    async fn sub_flow_not_found() {
+        use crate::storage::InMemoryStorage;
+
+        let storage = Arc::new(InMemoryStorage::new());
+        let handler = sub_flow_handler(storage, success_handler());
+
+        let mut flow = FlowDef::new("bad", FlowMode::Sequential);
+        flow.add_step(
+            StepDef::new("missing")
+                .with_step_type("sub_flow")
+                .with_config(serde_json::json!({"flow_name": "nonexistent"})),
+        );
+
+        let engine = Engine::new(EngineConfig::default(), handler);
+        let result = engine.run(&flow).await.unwrap();
+        assert!(!result.success);
+        assert!(
+            result.steps[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("not found")
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_store_persists_state() {
+        use crate::storage::{ExecutionStore, InMemoryExecutionStore};
+
+        let store = Arc::new(InMemoryExecutionStore::new());
+
+        let mut flow = FlowDef::new("persist-test", FlowMode::Sequential);
+        flow.add_step(StepDef::new("a"));
+        flow.add_step(StepDef::new("b"));
+
+        let config = EngineConfig {
+            execution_store: Some(store.clone()),
+            ..Default::default()
+        };
+        let engine = Engine::new(config, success_handler());
+        let result = engine.run(&flow).await.unwrap();
+        assert!(result.success);
+
+        // Execution record should exist with Completed state
+        let exec_id = flow.id.to_string();
+        let record = store.get(&exec_id).expect("execution record missing");
+        assert_eq!(record.flow_name, "persist-test");
+        assert_eq!(record.state, crate::state::WorkflowState::Completed);
+        assert!(record.result.is_some());
+        assert!(record.finished_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn execution_store_records_failure() {
+        use crate::storage::{ExecutionStore, InMemoryExecutionStore};
+
+        let store = Arc::new(InMemoryExecutionStore::new());
+
+        let mut flow = FlowDef::new("fail-test", FlowMode::Sequential);
+        flow.add_step(StepDef::new("boom"));
+
+        let config = EngineConfig {
+            execution_store: Some(store.clone()),
+            ..Default::default()
+        };
+        let engine = Engine::new(config, failing_handler());
+        let result = engine.run(&flow).await.unwrap();
+        assert!(!result.success);
+
+        let exec_id = flow.id.to_string();
+        let record = store.get(&exec_id).expect("execution record missing");
+        assert_eq!(record.state, crate::state::WorkflowState::Failed);
+        assert!(record.finished_at.is_some());
     }
 }

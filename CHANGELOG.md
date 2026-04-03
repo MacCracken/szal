@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-04-03
+
 ### Changed
 - Bump bote dependency from 0.50.0 to 0.92.0
 - Bump majra dependency from 1.0.1 to 1.0.4
@@ -23,8 +25,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Short-circuit evaluation in condition `&&`/`||` operators — `false && expr` now returns `false` without evaluating right side; `true || expr` returns `true` without evaluating right side
 
 ### Added
+- Condition DSL: comparison operators `>`, `>=`, `<`, `<=` for numeric and string ordering
+- Condition DSL: `!` (not) prefix operator for boolean negation
 - Tests for short-circuit evaluation (`and_short_circuits_on_false`, `or_short_circuits_on_true`)
 - Tests for Unicode in condition expressions and templates (`string_literal_with_unicode`, `render_template_with_unicode`, `render_template_with_unicode_literal_text`)
+- Tests for comparison operators (13 tests) and not operator (5 tests)
+- `StepTypeMetricsFn` callback type and `Engine::with_step_type_metrics()` builder for per-step-type duration histograms — works without `majra` feature, receives `(step_type, status, duration_ms)` after each step
+- `emit_step_type_metric` wired into all 4 execution modes (sequential, parallel, DAG, hierarchical) and queue runner
+- Tests for step-type metrics callback (success and failure paths)
+- `StepProgress` event struct, `ProgressSink` callback type, and `ProgressReporter` handle for streaming step output mid-execution
+- `Engine::with_progress_sink()` builder for attaching progress listeners
+- `handler_fn_with_progress()` convenience constructor — creates a `StepHandler` that injects a `ProgressReporter` so handlers can call `reporter.report(data)` to emit progress events
+- Progress reporting test (`progress_reporting`)
+- `sub_flow_handler()` — creates a `StepHandler` that intercepts `step_type = "sub_flow"` steps and executes sub-flows from `WorkflowStorage`. Config must specify `flow_name`. Non-sub_flow steps delegate to the inner handler
+- Tests for sub-flow execution (success, missing flow_name, flow not found)
+- `ExecutionStore` trait and `InMemoryExecutionStore` for persisting workflow execution state (execution ID, flow name, state, result, timestamps)
+- `ExecutionRecord` struct for execution state snapshots
+- `Engine::with_execution_store()` builder — engine saves `Running` state at start and `Completed`/`Failed`/`RolledBack` at end
+- Tests for execution store (save/get, list with filtering, remove, engine integration for success and failure)
 
 ## [1.0.1] — 2026-03-27
 

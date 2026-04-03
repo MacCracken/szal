@@ -2,7 +2,9 @@ use crate::SzalError;
 use crate::bus::WorkflowEvent;
 use crate::step::{StepDef, StepResult, StepStatus};
 
-use super::{EventSink, FlowCtx, StepHandler, emit};
+use super::{
+    EventSink, FlowCtx, ProgressSink, StepHandler, StepTypeMetricsFn, emit, emit_step_type_metric,
+};
 
 pub(crate) async fn execute_step_with_handler(
     step: &StepDef,
@@ -10,6 +12,8 @@ pub(crate) async fn execute_step_with_handler(
     event_sink: &EventSink,
     flow: FlowCtx<'_>,
     #[cfg(feature = "majra")] metrics: &crate::metrics::MetricsSink,
+    step_type_metrics: &StepTypeMetricsFn,
+    _progress_sink: &ProgressSink,
 ) -> StepResult {
     let max_attempts = step.max_retries + 1;
     let mut last_error = None;
@@ -76,6 +80,12 @@ pub(crate) async fn execute_step_with_handler(
                     metrics,
                     flow.name,
                     &step.name,
+                    "completed",
+                    duration_ms,
+                );
+                emit_step_type_metric(
+                    step_type_metrics,
+                    step.step_type.as_deref(),
                     "completed",
                     duration_ms,
                 );
@@ -148,6 +158,13 @@ pub(crate) async fn execute_step_with_handler(
         metrics,
         flow.name,
         &step.name,
+        "failed",
+        total_duration_ms,
+    );
+
+    emit_step_type_metric(
+        step_type_metrics,
+        step.step_type.as_deref(),
         "failed",
         total_duration_ms,
     );

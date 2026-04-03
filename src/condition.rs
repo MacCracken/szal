@@ -8,8 +8,8 @@
 //! expr     = or_expr
 //! or_expr  = and_expr ("||" and_expr)*
 //! and_expr = cmp_expr ("&&" cmp_expr)*
-//! cmp_expr = value (("==" | "!=") value)?
-//! value    = path | string_lit | number_lit | bool_lit | "(" expr ")"
+//! cmp_expr = value (("==" | "!=" | ">" | ">=" | "<" | "<=") value)?
+//! value    = "!" value | path | string_lit | number_lit | bool_lit | "(" expr ")"
 //! path     = ident ("." ident)*
 //! ident    = [a-zA-Z_][a-zA-Z0-9_-]*
 //! string_lit = "'" [^']* "'"
@@ -47,6 +47,11 @@ enum Token {
     BoolLit(bool),
     Eq,
     NotEq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    Not,
     And,
     Or,
     LParen,
@@ -85,6 +90,16 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     i += 2;
                     continue;
                 }
+                (b'>', b'=') => {
+                    tokens.push(Token::Gte);
+                    i += 2;
+                    continue;
+                }
+                (b'<', b'=') => {
+                    tokens.push(Token::Lte);
+                    i += 2;
+                    continue;
+                }
                 (b'&', b'&') => {
                     tokens.push(Token::And);
                     i += 2;
@@ -97,6 +112,23 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 }
                 _ => {}
             }
+        }
+
+        // Single-char operators: >, <, !
+        if b == b'>' {
+            tokens.push(Token::Gt);
+            i += 1;
+            continue;
+        }
+        if b == b'<' {
+            tokens.push(Token::Lt);
+            i += 1;
+            continue;
+        }
+        if b == b'!' {
+            tokens.push(Token::Not);
+            i += 1;
+            continue;
         }
 
         // Parentheses
@@ -189,6 +221,11 @@ enum Expr {
     Path(String),
     Eq(Box<Expr>, Box<Expr>),
     NotEq(Box<Expr>, Box<Expr>),
+    Gt(Box<Expr>, Box<Expr>),
+    Gte(Box<Expr>, Box<Expr>),
+    Lt(Box<Expr>, Box<Expr>),
+    Lte(Box<Expr>, Box<Expr>),
+    Not(Box<Expr>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
 }
@@ -258,11 +295,37 @@ impl Parser {
                 let right = self.parse_value()?;
                 Ok(Expr::NotEq(Box::new(left), Box::new(right)))
             }
+            Some(Token::Gt) => {
+                self.advance();
+                let right = self.parse_value()?;
+                Ok(Expr::Gt(Box::new(left), Box::new(right)))
+            }
+            Some(Token::Gte) => {
+                self.advance();
+                let right = self.parse_value()?;
+                Ok(Expr::Gte(Box::new(left), Box::new(right)))
+            }
+            Some(Token::Lt) => {
+                self.advance();
+                let right = self.parse_value()?;
+                Ok(Expr::Lt(Box::new(left), Box::new(right)))
+            }
+            Some(Token::Lte) => {
+                self.advance();
+                let right = self.parse_value()?;
+                Ok(Expr::Lte(Box::new(left), Box::new(right)))
+            }
             _ => Ok(left),
         }
     }
 
     fn parse_value(&mut self) -> Result<Expr, String> {
+        // Prefix `!` (not)
+        if self.peek() == Some(&Token::Not) {
+            self.advance();
+            let inner = self.parse_value()?;
+            return Ok(Expr::Not(Box::new(inner)));
+        }
         match self.peek().cloned() {
             Some(Token::StringLit(s)) => {
                 self.advance();
@@ -342,6 +405,40 @@ fn eval_expr(expr: &Expr, context: &Value) -> Result<Value, String> {
             let r = eval_expr(right, context)?;
             Ok(Value::Bool(!values_equal(&l, &r)))
         }
+        Expr::Gt(left, right) => {
+            let l = eval_expr(left, context)?;
+            let r = eval_expr(right, context)?;
+            Ok(Value::Bool(
+                values_compare(&l, &r) == Some(std::cmp::Ordering::Greater),
+            ))
+        }
+        Expr::Gte(left, right) => {
+            let l = eval_expr(left, context)?;
+            let r = eval_expr(right, context)?;
+            Ok(Value::Bool(matches!(
+                values_compare(&l, &r),
+                Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+            )))
+        }
+        Expr::Lt(left, right) => {
+            let l = eval_expr(left, context)?;
+            let r = eval_expr(right, context)?;
+            Ok(Value::Bool(
+                values_compare(&l, &r) == Some(std::cmp::Ordering::Less),
+            ))
+        }
+        Expr::Lte(left, right) => {
+            let l = eval_expr(left, context)?;
+            let r = eval_expr(right, context)?;
+            Ok(Value::Bool(matches!(
+                values_compare(&l, &r),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            )))
+        }
+        Expr::Not(inner) => {
+            let v = eval_expr(inner, context)?;
+            Ok(Value::Bool(!is_truthy(&v)))
+        }
         Expr::And(left, right) => {
             if !is_truthy(&eval_expr(left, context)?) {
                 return Ok(Value::Bool(false));
@@ -370,6 +467,24 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Null, Value::Null) => true,
         _ => false,
+    }
+}
+
+/// Compare two JSON values for ordering.
+///
+/// Numbers are compared numerically. Strings are compared lexicographically.
+/// Cross-type or non-orderable comparisons return `None`.
+#[inline]
+#[must_use]
+fn values_compare(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (Value::Number(a), Value::Number(b)) => {
+            let af = a.as_f64()?;
+            let bf = b.as_f64()?;
+            af.partial_cmp(&bf)
+        }
+        (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
+        _ => None,
     }
 }
 
@@ -859,5 +974,110 @@ mod tests {
     fn render_template_with_unicode_literal_text() {
         let ctx = json!({"x": "y"});
         assert_eq!(render_template("café {{x}}", &ctx), "café y");
+    }
+
+    // -- Comparison operators --
+
+    #[test]
+    fn greater_than() {
+        let ctx = json!({});
+        assert!(evaluate("10 > 5", &ctx).unwrap());
+        assert!(!evaluate("5 > 10", &ctx).unwrap());
+        assert!(!evaluate("5 > 5", &ctx).unwrap());
+    }
+
+    #[test]
+    fn greater_than_or_equal() {
+        let ctx = json!({});
+        assert!(evaluate("10 >= 5", &ctx).unwrap());
+        assert!(evaluate("5 >= 5", &ctx).unwrap());
+        assert!(!evaluate("4 >= 5", &ctx).unwrap());
+    }
+
+    #[test]
+    fn less_than() {
+        let ctx = json!({});
+        assert!(evaluate("5 < 10", &ctx).unwrap());
+        assert!(!evaluate("10 < 5", &ctx).unwrap());
+        assert!(!evaluate("5 < 5", &ctx).unwrap());
+    }
+
+    #[test]
+    fn less_than_or_equal() {
+        let ctx = json!({});
+        assert!(evaluate("5 <= 10", &ctx).unwrap());
+        assert!(evaluate("5 <= 5", &ctx).unwrap());
+        assert!(!evaluate("6 <= 5", &ctx).unwrap());
+    }
+
+    #[test]
+    fn comparison_with_paths() {
+        let ctx = json!({"a": 10, "b": 5});
+        assert!(evaluate("a > b", &ctx).unwrap());
+        assert!(!evaluate("b > a", &ctx).unwrap());
+        assert!(evaluate("a >= 10", &ctx).unwrap());
+        assert!(evaluate("b < a", &ctx).unwrap());
+    }
+
+    #[test]
+    fn comparison_with_floats() {
+        let ctx = json!({});
+        assert!(evaluate("3.14 > 2.71", &ctx).unwrap());
+        assert!(evaluate("2.71 < 3.14", &ctx).unwrap());
+        assert!(evaluate("3.14 >= 3.14", &ctx).unwrap());
+    }
+
+    #[test]
+    fn string_comparison_ordering() {
+        let ctx = json!({});
+        assert!(evaluate("'banana' > 'apple'", &ctx).unwrap());
+        assert!(evaluate("'apple' < 'banana'", &ctx).unwrap());
+        assert!(evaluate("'apple' <= 'apple'", &ctx).unwrap());
+    }
+
+    #[test]
+    fn cross_type_comparison_returns_false() {
+        let ctx = json!({});
+        assert!(!evaluate("42 > 'hello'", &ctx).unwrap());
+        assert!(!evaluate("'hello' < 42", &ctx).unwrap());
+    }
+
+    // -- Not operator --
+
+    #[test]
+    fn not_operator() {
+        let ctx = json!({});
+        assert!(!evaluate("!true", &ctx).unwrap());
+        assert!(evaluate("!false", &ctx).unwrap());
+    }
+
+    #[test]
+    fn not_with_path() {
+        let ctx = json!({"enabled": false, "missing": null});
+        assert!(evaluate("!enabled", &ctx).unwrap());
+        assert!(evaluate("!missing", &ctx).unwrap());
+    }
+
+    #[test]
+    fn not_with_comparison() {
+        let ctx = json!({});
+        assert!(evaluate("!(5 > 10)", &ctx).unwrap());
+        assert!(!evaluate("!(10 > 5)", &ctx).unwrap());
+    }
+
+    #[test]
+    fn double_not() {
+        let ctx = json!({});
+        assert!(evaluate("!!true", &ctx).unwrap());
+        assert!(!evaluate("!!false", &ctx).unwrap());
+    }
+
+    #[test]
+    fn not_in_compound_expression() {
+        let ctx = json!({"status": "failed"});
+        // ! binds tighter than ==, so use parens for negating a comparison
+        assert!(evaluate("!(status == 'completed') && status == 'failed'", &ctx).unwrap());
+        // Without parens: (!status) == 'completed' → false == 'completed' → false
+        assert!(!evaluate("!status == 'completed'", &ctx).unwrap());
     }
 }

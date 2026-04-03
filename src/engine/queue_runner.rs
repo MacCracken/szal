@@ -60,9 +60,16 @@ pub(crate) async fn run_queued(
         tracing::info!(step = %step.name, %task_id, "dequeued step for execution");
 
         // 4. Execute via the shared step handler.
-        let result =
-            execute_step_with_handler(step, ctx.handler, ctx.event_sink, ctx.flow, ctx.metrics)
-                .await;
+        let result = execute_step_with_handler(
+            step,
+            ctx.handler,
+            ctx.event_sink,
+            ctx.flow,
+            ctx.metrics,
+            ctx.step_type_metrics,
+            ctx.progress_sink,
+        )
+        .await;
 
         // 5/6. Mark complete or failed in the queue.
         match result.status {

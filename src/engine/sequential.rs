@@ -85,6 +85,8 @@ pub(crate) async fn run_sequential(
             ctx.flow,
             #[cfg(feature = "majra")]
             ctx.metrics,
+            ctx.step_type_metrics,
+            ctx.progress_sink,
         )
         .await;
         if result.status == StepStatus::Failed {

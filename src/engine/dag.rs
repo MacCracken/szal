@@ -147,6 +147,8 @@ pub(crate) async fn run_dag(
                 let fname = Arc::clone(&flow_name);
                 #[cfg(feature = "majra")]
                 let metrics = ctx.metrics.clone();
+                let stm = ctx.step_type_metrics.clone();
+                let psink = ctx.progress_sink.clone();
                 dag_step_ids.push(step.id);
                 handles.push(tokio::spawn(async move {
                     let _permit = match sem.acquire().await {
@@ -173,6 +175,8 @@ pub(crate) async fn run_dag(
                         flow,
                         #[cfg(feature = "majra")]
                         &metrics,
+                        &stm,
+                        &psink,
                     )
                     .await
                 }));

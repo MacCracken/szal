@@ -67,6 +67,8 @@ fn execute_tree<'a>(
                 ctx.flow,
                 #[cfg(feature = "majra")]
                 ctx.metrics,
+                ctx.step_type_metrics,
+                ctx.progress_sink,
             )
             .await;
             let succeeded = result.status == StepStatus::Completed;

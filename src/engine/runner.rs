@@ -96,6 +96,43 @@ impl Engine {
         self
     }
 
+    /// Attach an execution store for persisting workflow state.
+    ///
+    /// When set, the engine saves an [`ExecutionRecord`](crate::storage::ExecutionRecord)
+    /// at flow start (state `Running`) and flow end (state `Completed`, `Failed`, or `RolledBack`).
+    #[must_use]
+    pub fn with_execution_store(
+        mut self,
+        store: std::sync::Arc<dyn crate::storage::ExecutionStore>,
+    ) -> Self {
+        self.config.execution_store = Some(store);
+        self
+    }
+
+    /// Attach a progress sink for streaming step output.
+    ///
+    /// Step handlers use a [`ProgressReporter`](super::ProgressReporter) (passed
+    /// to [`handler_fn_with_progress`](super::handler_fn_with_progress)) to emit
+    /// progress events that flow to this sink.
+    #[must_use]
+    pub fn with_progress_sink(
+        mut self,
+        sink: std::sync::Arc<dyn Fn(super::StepProgress) + Send + Sync>,
+    ) -> Self {
+        self.config.progress_sink = Some(sink);
+        self
+    }
+
+    /// Attach a step-type metrics callback for per-type duration histograms.
+    ///
+    /// The callback receives `(step_type, status, duration_ms)` after each step.
+    /// `step_type` defaults to `"default"` when [`StepDef::step_type`] is `None`.
+    #[must_use]
+    pub fn with_step_type_metrics(mut self, f: super::StepTypeMetricsFn) -> Self {
+        self.config.step_type_metrics = f;
+        self
+    }
+
     /// Execute a flow and return the result.
     #[tracing::instrument(skip(self, flow), fields(flow = %flow.name, mode = %flow.mode))]
     pub async fn run(&self, flow: &FlowDef) -> crate::Result<FlowResult> {
@@ -111,6 +148,18 @@ impl Engine {
             &self.event_sink,
             crate::bus::WorkflowEvent::flow_started(&flow.name),
         );
+        let execution_id = flow.id.to_string();
+        let started_at = chrono::Utc::now().to_rfc3339();
+        if let Some(ref store) = self.config.execution_store {
+            store.save(crate::storage::ExecutionRecord {
+                execution_id: execution_id.clone(),
+                flow_name: flow.name.clone(),
+                state: crate::state::WorkflowState::Running,
+                result: None,
+                started_at: started_at.clone(),
+                finished_at: None,
+            });
+        }
         #[cfg(feature = "majra")]
         crate::metrics::metric_run_started(&self.config.metrics, &flow.name);
         #[cfg(feature = "majra")]
@@ -132,6 +181,8 @@ impl Engine {
             },
             #[cfg(feature = "majra")]
             metrics: &self.config.metrics,
+            step_type_metrics: &self.config.step_type_metrics,
+            progress_sink: &self.config.progress_sink,
         };
 
         // Queue-backed execution path: enqueue + dequeue instead of direct execution
@@ -259,13 +310,33 @@ impl Engine {
             );
         }
 
-        Ok(FlowResult {
+        let flow_result = FlowResult {
             flow_name: flow.name.clone(),
             steps: step_results,
             total_duration_ms,
             success: !has_failures,
             rolled_back,
-        })
+        };
+
+        if let Some(ref store) = self.config.execution_store {
+            let final_state = if rolled_back {
+                crate::state::WorkflowState::RolledBack
+            } else if has_failures {
+                crate::state::WorkflowState::Failed
+            } else {
+                crate::state::WorkflowState::Completed
+            };
+            store.save(crate::storage::ExecutionRecord {
+                execution_id: execution_id.clone(),
+                flow_name: flow.name.clone(),
+                state: final_state,
+                result: Some(flow_result.clone()),
+                started_at,
+                finished_at: Some(chrono::Utc::now().to_rfc3339()),
+            });
+        }
+
+        Ok(flow_result)
     }
 
     /// Execute a flow with cancellation support.
@@ -312,6 +383,8 @@ impl Engine {
             },
             #[cfg(feature = "majra")]
             metrics: &self.config.metrics,
+            step_type_metrics: &self.config.step_type_metrics,
+            progress_sink: &self.config.progress_sink,
         };
 
         let step_results = match flow.mode {

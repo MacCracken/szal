@@ -82,13 +82,8 @@ assert!(!state.is_terminal());
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
-| **0.22** | MCP protocol layer, majra integration, ai-hwaccel, examples, fuzz targets | Done |
-| **0.23** | Agent orchestration + LLM gateway (~200 tools) | Done |
-| **0.24** | Security/governance + integration tools (~350 tools) | Done |
-| **0.25** | Knowledge, training, simulation tools (~490 tools) | Done |
-| **0.26** | Consolidation, hardening, supply chain security | Done |
-| **1.0** | Stable API, `#[non_exhaustive]` enums, event bus, condition DSL, OTel adapter | Done |
-| **1.0.1** | bote 0.92, majra 1.0.4, ai-hwaccel 1.1, barrier/dag/fleet features | Current |
+| **1.1** | Persistent state, flow composition, streaming output, richer condition DSL | Current |
+| **1.2** | Persistent backends, flow versioning, distributed DAG, WebSocket streaming | Planned |
 
 ## License
 

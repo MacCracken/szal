@@ -64,6 +64,8 @@ pub(crate) async fn run_parallel(
         let fname = Arc::clone(&flow_name);
         #[cfg(feature = "majra")]
         let metrics = ctx.metrics.clone();
+        let stm = ctx.step_type_metrics.clone();
+        let psink = ctx.progress_sink.clone();
         handles.push(tokio::spawn(async move {
             let _permit = match sem.acquire().await {
                 Ok(p) => p,
@@ -89,6 +91,8 @@ pub(crate) async fn run_parallel(
                 flow,
                 #[cfg(feature = "majra")]
                 &metrics,
+                &stm,
+                &psink,
             )
             .await
         }));
