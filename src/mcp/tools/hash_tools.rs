@@ -4,6 +4,7 @@ use crate::mcp::{McpErrorCode, Tool, result_error_typed, result_ok, result_ok_js
 use bote::ToolDef as BoteToolDef;
 use serde_json::json;
 use sha2::Digest;
+use std::fmt::Write;
 use std::pin::Pin;
 
 /// Compute SHA-256 hash of a string or file.
@@ -51,7 +52,10 @@ impl Tool for Sha256 {
             };
 
             let hash = sha2::Sha256::digest(&data);
-            let hex = format!("{hash:x}");
+            let mut hex = String::with_capacity(64);
+            for b in hash.iter() {
+                write!(hex, "{b:02x}").unwrap();
+            }
             result_ok_json(&json!({
                 "algorithm": "sha256",
                 "hash": hex,
@@ -92,7 +96,10 @@ impl Tool for Md5 {
             };
 
             let hash = md5::Md5::digest(input.as_bytes());
-            let hex = format!("{hash:x}");
+            let mut hex = String::with_capacity(32);
+            for b in hash.iter() {
+                write!(hex, "{b:02x}").unwrap();
+            }
             result_ok_json(&json!({
                 "algorithm": "md5",
                 "hash": hex,

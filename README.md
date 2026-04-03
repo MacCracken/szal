@@ -12,7 +12,7 @@ Define steps, wire them into flows with branching, retry, and rollback — then 
 
 ```toml
 [dependencies]
-szal = "0.26"
+szal = "1"
 ```
 
 ### Sequential flow
@@ -78,7 +78,7 @@ assert!(!state.is_terminal());
 | `Dag` | Dependency graph with cycle detection (DFS) |
 | `Hierarchical` | Manager step delegates to sub-steps |
 
-## Roadmap to v1.0
+## Roadmap
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -86,8 +86,9 @@ assert!(!state.is_terminal());
 | **0.23** | Agent orchestration + LLM gateway (~200 tools) | Done |
 | **0.24** | Security/governance + integration tools (~350 tools) | Done |
 | **0.25** | Knowledge, training, simulation tools (~490 tools) | Done |
-| **0.26** | Consolidation, hardening, supply chain security | Current |
-| **1.0** | Stable unified MCP engine | — |
+| **0.26** | Consolidation, hardening, supply chain security | Done |
+| **1.0** | Stable API, `#[non_exhaustive]` enums, event bus, condition DSL, OTel adapter | Done |
+| **1.0.1** | bote 0.92, majra 1.0.4, ai-hwaccel 1.1, barrier/dag/fleet features | Current |
 
 ## License
 

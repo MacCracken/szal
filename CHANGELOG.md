@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Bump bote dependency from 0.50.0 to 0.92.0
+- Bump majra dependency from 1.0.1 to 1.0.4
+- Bump ai-hwaccel dependency from 0.23 to 1.1 (iterator-based device queries)
+- Bump sha2 dependency from 0.10 to 0.11 (const generics, drops generic-array)
+- Bump md-5 dependency from 0.10 to 0.11
+- Tokenizer in `condition.rs` rewritten from `Vec<char>` to byte-level iteration — fixes potential panic on multi-byte UTF-8 in string literals
+- `render_template` rewritten from `Vec<char>` to byte-level scanning with UTF-8 fallback — eliminates allocation
+- `dag.rs` and `parallel.rs` use `Arc<str>` for flow name sharing instead of per-step `String::clone`
+- `deny.toml` now allows GPL-3.0-only (AGNOS ecosystem license migration)
+- README updated: version `1`, roadmap reflects v1.0 release
+
+### Fixed
+- Short-circuit evaluation in condition `&&`/`||` operators — `false && expr` now returns `false` without evaluating right side; `true || expr` returns `true` without evaluating right side
+
+### Added
+- Tests for short-circuit evaluation (`and_short_circuits_on_false`, `or_short_circuits_on_true`)
+- Tests for Unicode in condition expressions and templates (`string_literal_with_unicode`, `render_template_with_unicode`, `render_template_with_unicode_literal_text`)
+
 ## [1.0.1] — 2026-03-27
 
 ### Changed

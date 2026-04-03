@@ -52,8 +52,8 @@ impl HardwareContext {
             if step.hardware == AcceleratorRequirement::None {
                 continue;
             }
-            let matching = reg.satisfying(&step.hardware);
-            if matching.is_empty() {
+            let matching_count = reg.satisfying(&step.hardware).count();
+            if matching_count == 0 {
                 return Err(SzalError::HardwareUnavailable {
                     step: step.name.clone(),
                     requirement: format!("{:?}", step.hardware),
@@ -88,11 +88,11 @@ impl HardwareContext {
         let mut limit = base_concurrency;
 
         if gpu_needed {
-            let gpu_count = reg.by_family(AcceleratorFamily::Gpu).len().max(1);
+            let gpu_count = reg.by_family(AcceleratorFamily::Gpu).count().max(1);
             limit = limit.min(gpu_count);
         }
         if tpu_needed {
-            let tpu_count = reg.by_family(AcceleratorFamily::Tpu).len().max(1);
+            let tpu_count = reg.by_family(AcceleratorFamily::Tpu).count().max(1);
             limit = limit.min(tpu_count);
         }
 
@@ -148,7 +148,7 @@ mod tests {
     fn effective_concurrency_caps_at_device_count() {
         let ctx = HardwareContext::detect();
         let reg = ctx.registry();
-        let gpu_count = reg.by_family(AcceleratorFamily::Gpu).len();
+        let gpu_count = reg.by_family(AcceleratorFamily::Gpu).count();
 
         if gpu_count > 0 && gpu_count < 16 {
             let steps = vec![

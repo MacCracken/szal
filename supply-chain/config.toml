@@ -6,10 +6,10 @@ version = "0.10"
 
 [[exemptions.aho-corasick]]
 version = "1.1.4"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.ai-hwaccel]]
-version = "0.23.3"
+version = "1.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.alloca]]
@@ -57,15 +57,11 @@ version = "2.11.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.block-buffer]]
-version = "0.10.4"
+version = "0.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.bote]]
-version = "0.22.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.bote]]
-version = "0.50.0"
+version = "0.92.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.bumpalo]]
@@ -116,24 +112,20 @@ criteria = "safe-to-run"
 version = "1.1.0"
 criteria = "safe-to-run"
 
+[[exemptions.const-oid]]
+version = "0.10.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.core-foundation-sys]]
 version = "0.8.7"
 criteria = "safe-to-deploy"
 
 [[exemptions.cpufeatures]]
-version = "0.2.17"
+version = "0.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.criterion]]
-version = "0.5.1"
-criteria = "safe-to-run"
-
-[[exemptions.criterion]]
 version = "0.8.2"
-criteria = "safe-to-run"
-
-[[exemptions.criterion-plot]]
-version = "0.5.0"
 criteria = "safe-to-run"
 
 [[exemptions.criterion-plot]]
@@ -157,7 +149,7 @@ version = "0.2.4"
 criteria = "safe-to-run"
 
 [[exemptions.crypto-common]]
-version = "0.1.7"
+version = "0.2.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.dashmap]]
@@ -165,7 +157,7 @@ version = "6.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.digest]]
-version = "0.10.7"
+version = "0.11.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.either]]
@@ -216,10 +208,6 @@ criteria = "safe-to-deploy"
 version = "0.3.32"
 criteria = "safe-to-deploy"
 
-[[exemptions.generic-array]]
-version = "0.14.7"
-criteria = "safe-to-deploy"
-
 [[exemptions.getrandom]]
 version = "0.3.4"
 criteria = "safe-to-run"
@@ -248,9 +236,9 @@ criteria = "safe-to-deploy"
 version = "0.5.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.hermit-abi]]
-version = "0.5.2"
-criteria = "safe-to-run"
+[[exemptions.hybrid-array]]
+version = "0.4.10"
+criteria = "safe-to-deploy"
 
 [[exemptions.iana-time-zone]]
 version = "0.1.65"
@@ -267,14 +255,6 @@ criteria = "safe-to-deploy"
 [[exemptions.indexmap]]
 version = "2.13.0"
 criteria = "safe-to-deploy"
-
-[[exemptions.is-terminal]]
-version = "0.4.17"
-criteria = "safe-to-run"
-
-[[exemptions.itertools]]
-version = "0.10.5"
-criteria = "safe-to-run"
 
 [[exemptions.itertools]]
 version = "0.13.0"
@@ -313,23 +293,11 @@ version = "0.4.29"
 criteria = "safe-to-deploy"
 
 [[exemptions.majra]]
-version = "0.22.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.majra]]
-version = "1.0.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.majra]]
-version = "1.0.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.matchers]]
-version = "0.2.0"
+version = "1.0.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.md-5]]
-version = "0.10.6"
+version = "0.11.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.memchr]]
@@ -462,11 +430,11 @@ criteria = "safe-to-run"
 
 [[exemptions.regex-automata]]
 version = "0.4.14"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.regex-syntax]]
 version = "0.8.10"
-criteria = "safe-to-deploy"
+criteria = "safe-to-run"
 
 [[exemptions.rustix]]
 version = "1.1.4"
@@ -509,7 +477,7 @@ version = "1.0.149"
 criteria = "safe-to-deploy"
 
 [[exemptions.sha2]]
-version = "0.10.9"
+version = "0.11.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.sharded-slab]]
@@ -600,14 +568,6 @@ criteria = "safe-to-deploy"
 version = "0.1.36"
 criteria = "safe-to-deploy"
 
-[[exemptions.tracing-log]]
-version = "0.2.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.tracing-serde]]
-version = "0.2.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.tracing-subscriber]]
 version = "0.3.23"
 criteria = "safe-to-deploy"
@@ -629,19 +589,7 @@ version = "0.2.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.uuid]]
-version = "1.22.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.uuid]]
 version = "1.23.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.valuable]]
-version = "0.1.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.version_check]]
-version = "0.9.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.wait-timeout]]
