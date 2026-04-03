@@ -47,7 +47,7 @@ pub(crate) async fn run_dag(
         .map(|s| s.id)
         .collect();
 
-    let flow_name_owned = ctx.flow.name.to_owned();
+    let flow_name: Arc<str> = ctx.flow.name.into();
     let flow_id = ctx.flow.id;
 
     while !ready.is_empty() {
@@ -144,7 +144,7 @@ pub(crate) async fn run_dag(
                 let handler = ctx.handler.clone();
                 let step = step.clone();
                 let sink = ctx.event_sink.clone();
-                let fname = flow_name_owned.clone();
+                let fname = Arc::clone(&flow_name);
                 #[cfg(feature = "majra")]
                 let metrics = ctx.metrics.clone();
                 dag_step_ids.push(step.id);

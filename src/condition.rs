@@ -59,37 +59,38 @@ enum Token {
 
 fn tokenize(input: &str) -> Result<Vec<Token>, String> {
     let mut tokens = Vec::new();
-    let chars: Vec<char> = input.chars().collect();
-    let len = chars.len();
+    let bytes = input.as_bytes();
+    let len = bytes.len();
     let mut i = 0;
 
     while i < len {
+        let b = bytes[i];
+
         // Skip whitespace
-        if chars[i].is_ascii_whitespace() {
+        if b.is_ascii_whitespace() {
             i += 1;
             continue;
         }
 
         // Two-char operators
         if i + 1 < len {
-            let two = &input[i..i + 2];
-            match two {
-                "==" => {
+            match (b, bytes[i + 1]) {
+                (b'=', b'=') => {
                     tokens.push(Token::Eq);
                     i += 2;
                     continue;
                 }
-                "!=" => {
+                (b'!', b'=') => {
                     tokens.push(Token::NotEq);
                     i += 2;
                     continue;
                 }
-                "&&" => {
+                (b'&', b'&') => {
                     tokens.push(Token::And);
                     i += 2;
                     continue;
                 }
-                "||" => {
+                (b'|', b'|') => {
                     tokens.push(Token::Or);
                     i += 2;
                     continue;
@@ -99,46 +100,46 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
         }
 
         // Parentheses
-        if chars[i] == '(' {
+        if b == b'(' {
             tokens.push(Token::LParen);
             i += 1;
             continue;
         }
-        if chars[i] == ')' {
+        if b == b')' {
             tokens.push(Token::RParen);
             i += 1;
             continue;
         }
 
         // String literal (single-quoted)
-        if chars[i] == '\'' {
+        if b == b'\'' {
             i += 1;
             let start = i;
-            while i < len && chars[i] != '\'' {
+            while i < len && bytes[i] != b'\'' {
                 i += 1;
             }
             if i >= len {
                 return Err("unterminated string literal".into());
             }
-            let s: String = chars[start..i].iter().collect();
-            tokens.push(Token::StringLit(s));
+            let s = &input[start..i];
+            tokens.push(Token::StringLit(s.to_owned()));
             i += 1; // skip closing quote
             continue;
         }
 
         // Number literal
-        if chars[i].is_ascii_digit() {
+        if b.is_ascii_digit() {
             let start = i;
-            while i < len && chars[i].is_ascii_digit() {
+            while i < len && bytes[i].is_ascii_digit() {
                 i += 1;
             }
-            if i < len && chars[i] == '.' && i + 1 < len && chars[i + 1].is_ascii_digit() {
+            if i < len && bytes[i] == b'.' && i + 1 < len && bytes[i + 1].is_ascii_digit() {
                 i += 1; // skip dot
-                while i < len && chars[i].is_ascii_digit() {
+                while i < len && bytes[i].is_ascii_digit() {
                     i += 1;
                 }
             }
-            let num_str: String = chars[start..i].iter().collect();
+            let num_str = &input[start..i];
             let val: f64 = num_str
                 .parse()
                 .map_err(|e| format!("invalid number '{num_str}': {e}"))?;
@@ -147,26 +148,32 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
         }
 
         // Identifier / path / bool literal
-        if chars[i].is_ascii_alphabetic() || chars[i] == '_' {
+        if b.is_ascii_alphabetic() || b == b'_' {
             let start = i;
             while i < len
-                && (chars[i].is_ascii_alphanumeric()
-                    || chars[i] == '_'
-                    || chars[i] == '-'
-                    || chars[i] == '.')
+                && (bytes[i].is_ascii_alphanumeric()
+                    || bytes[i] == b'_'
+                    || bytes[i] == b'-'
+                    || bytes[i] == b'.')
             {
                 i += 1;
             }
-            let word: String = chars[start..i].iter().collect();
-            match word.as_str() {
+            let word = &input[start..i];
+            match word {
                 "true" => tokens.push(Token::BoolLit(true)),
                 "false" => tokens.push(Token::BoolLit(false)),
-                _ => tokens.push(Token::Path(word)),
+                _ => tokens.push(Token::Path(word.to_owned())),
             }
             continue;
         }
 
-        return Err(format!("unexpected character '{}'", chars[i]));
+        // Safe conversion for error message — byte is not valid ASCII identifier
+        let ch = if b.is_ascii() {
+            b as char
+        } else {
+            return Err(format!("unexpected byte 0x{b:02x}"));
+        };
+        return Err(format!("unexpected character '{ch}'"));
     }
 
     Ok(tokens)
@@ -336,14 +343,16 @@ fn eval_expr(expr: &Expr, context: &Value) -> Result<Value, String> {
             Ok(Value::Bool(!values_equal(&l, &r)))
         }
         Expr::And(left, right) => {
-            let l = is_truthy(&eval_expr(left, context)?);
-            let r = is_truthy(&eval_expr(right, context)?);
-            Ok(Value::Bool(l && r))
+            if !is_truthy(&eval_expr(left, context)?) {
+                return Ok(Value::Bool(false));
+            }
+            Ok(Value::Bool(is_truthy(&eval_expr(right, context)?)))
         }
         Expr::Or(left, right) => {
-            let l = is_truthy(&eval_expr(left, context)?);
-            let r = is_truthy(&eval_expr(right, context)?);
-            Ok(Value::Bool(l || r))
+            if is_truthy(&eval_expr(left, context)?) {
+                return Ok(Value::Bool(true));
+            }
+            Ok(Value::Bool(is_truthy(&eval_expr(right, context)?)))
         }
     }
 }
@@ -435,12 +444,12 @@ pub fn evaluate(expr: &str, context: &Value) -> Result<bool, String> {
 #[must_use]
 pub fn render_template(template: &str, context: &Value) -> String {
     let mut result = String::with_capacity(template.len());
-    let chars: Vec<char> = template.chars().collect();
-    let len = chars.len();
+    let bytes = template.as_bytes();
+    let len = bytes.len();
     let mut i = 0;
 
     while i < len {
-        if i + 1 < len && chars[i] == '{' && chars[i + 1] == '{' {
+        if i + 1 < len && bytes[i] == b'{' && bytes[i + 1] == b'{' {
             // Find closing }}
             if let Some(end) = template[i + 2..].find("}}") {
                 let path = template[i + 2..i + 2 + end].trim();
@@ -457,8 +466,17 @@ pub fn render_template(template: &str, context: &Value) -> String {
                 continue;
             }
         }
-        result.push(chars[i]);
-        i += 1;
+        // Safe: we only branch on ASCII bytes above, so this is a valid char boundary
+        // for non-ASCII bytes, they fall through and we need to advance by char width
+        if bytes[i].is_ascii() {
+            result.push(bytes[i] as char);
+            i += 1;
+        } else {
+            // Multi-byte UTF-8: find the char at this byte offset
+            let ch = template[i..].chars().next().unwrap();
+            result.push(ch);
+            i += ch.len_utf8();
+        }
     }
 
     result
@@ -802,5 +820,44 @@ mod tests {
     fn trailing_tokens_are_error() {
         let ctx = json!({});
         assert!(evaluate("true true", &ctx).is_err());
+    }
+
+    // -- Short-circuit evaluation --
+
+    #[test]
+    fn and_short_circuits_on_false() {
+        let ctx = json!({});
+        // false && <anything> should return false without evaluating the right side
+        // Here, the right side resolves to null (falsy) — but the result should be
+        // false regardless, because the left side is false.
+        assert!(!evaluate("false && missing.path", &ctx).unwrap());
+    }
+
+    #[test]
+    fn or_short_circuits_on_true() {
+        let ctx = json!({});
+        // true || <anything> should return true without evaluating the right side
+        assert!(evaluate("true || missing.path", &ctx).unwrap());
+    }
+
+    // -- String literals with non-ASCII content --
+
+    #[test]
+    fn string_literal_with_unicode() {
+        let ctx = json!({"greeting": "héllo"});
+        assert!(evaluate("greeting == 'héllo'", &ctx).unwrap());
+        assert!(!evaluate("greeting == 'hello'", &ctx).unwrap());
+    }
+
+    #[test]
+    fn render_template_with_unicode() {
+        let ctx = json!({"name": "André"});
+        assert_eq!(render_template("Hello {{name}}!", &ctx), "Hello André!");
+    }
+
+    #[test]
+    fn render_template_with_unicode_literal_text() {
+        let ctx = json!({"x": "y"});
+        assert_eq!(render_template("café {{x}}", &ctx), "café y");
     }
 }

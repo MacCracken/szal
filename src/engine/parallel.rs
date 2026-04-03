@@ -23,7 +23,7 @@ pub(crate) async fn run_parallel(
 
     let mut step_ids = Vec::with_capacity(steps.len());
     let mut step_names: Vec<String> = Vec::with_capacity(steps.len());
-    let flow_name_owned = ctx.flow.name.to_owned();
+    let flow_name: Arc<str> = ctx.flow.name.into();
     let flow_id = ctx.flow.id;
     let mut pre_skipped: Vec<StepResult> = Vec::new();
     for step in steps {
@@ -61,7 +61,7 @@ pub(crate) async fn run_parallel(
         let handler = ctx.handler.clone();
         let step = step.clone();
         let sink = ctx.event_sink.clone();
-        let fname = flow_name_owned.clone();
+        let fname = Arc::clone(&flow_name);
         #[cfg(feature = "majra")]
         let metrics = ctx.metrics.clone();
         handles.push(tokio::spawn(async move {
