@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-06-10
+
+### Added
+- **Step-level condition caching** — `CompiledCondition` (parse a condition once, evaluate against many contexts) and `ConditionCache` (thread-safe, memoizes compiled ASTs and parse errors by source string). The `Engine` now holds a `ConditionCache`, so a flow's conditions parse once even across repeated runs. ~3× faster steady-state evaluation (see `benches/condition.rs`: uncached ~783ns → cached ~257ns → pre-compiled ~215ns)
+- **Flow versioning and migration** (`migration` module) — `FlowDef::version` (defaults to `1`; flows serialized before versioning deserialize to `1`) with `FlowDef::with_version()`. `FlowMigration` trait + `fn_migration()` closure constructor + `MigrationRegistry` to chain per-version upgrades. `migrate_to(target)` / `migrate_latest()` apply registered migrations in order; rejects downgrades and missing/overshooting paths
+- **Step output streaming over SSE / WebSocket** (`stream` module) — `ProgressHub` broadcast hub (`tokio::sync::broadcast`) fans `StepProgress` out to many subscribers; its `sink()` plugs into `EngineConfig::progress_sink`. `progress_to_sse()` / `sse_frame()` encode events as `text/event-stream` frames. Transport-agnostic: no web-server dependency pulled into the library
+- **Persistent execution store backends** (`sql_store` module, feature-gated) — durable, queryable `ExecutionStore` backed by sqlx. `sqlite` feature → `SqliteExecutionStore`, `postgres` feature → `PostgresExecutionStore`. Async API (`connect`/`migrate`/`save`/`get`/`list`/`remove`) plus `engine_sink()` which bridges to the synchronous `ExecutionStore` the engine consumes via an **ordered** background writer (a flow's `Running` save cannot overwrite its later `Completed` save) with an in-memory read mirror
+- **Distributed DAG execution across engine instances** — `Engine::run_distributed(flow, fleet)` (`fleet` feature) distributes a DAG's ready steps across the nodes of a `majra::fleet::FleetQueue`, unlocking dependents as results arrive and rebalancing toward idle nodes. Honors the same event sink, metrics, condition cache, and execution store as `run()`
+- `SzalError::MigrationFailed` variant
+- `benches/condition.rs` — uncached vs. cached vs. pre-compiled condition evaluation
+- Cargo features: `sqlite`, `postgres` (durable execution stores)
+
+### Changed
+- Bump `ai-hwaccel` dependency from `1.1` to `1.2`
+- Refresh all transitive dependencies to latest semver-compatible versions (`tokio` 1.50→1.52, `serde` 1.0.228, `uuid` 1.23.3, et al.)
+- `git_tools` blame author sort now uses `sort_by_key(Reverse(..))` (clippy lint under rustc 1.96)
+- `deny.toml` now allows the `Zlib` license (introduced transitively by sqlx via `foldhash`)
+
+### Fixed
+- Ordered durable writes in the sqlx `engine_sink` bridge — previously two fire-and-forget saves (start `Running`, end `Completed`) could land out of order and leave a stale `Running` row
+
 ## [1.1.0] — 2026-04-03
 
 ### Changed

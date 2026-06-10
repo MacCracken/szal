@@ -15,6 +15,8 @@ pub struct Engine {
     handler: StepHandler,
     rollback_handler: Option<RollbackHandler>,
     event_sink: EventSink,
+    /// Memoizes compiled step conditions across runs of this engine.
+    condition_cache: crate::condition::ConditionCache,
 }
 
 impl Engine {
@@ -26,6 +28,7 @@ impl Engine {
             handler,
             rollback_handler: None,
             event_sink: None,
+            condition_cache: crate::condition::ConditionCache::new(),
         }
     }
 
@@ -183,6 +186,7 @@ impl Engine {
             metrics: &self.config.metrics,
             step_type_metrics: &self.config.step_type_metrics,
             progress_sink: &self.config.progress_sink,
+            condition_cache: &self.condition_cache,
         };
 
         // Queue-backed execution path: enqueue + dequeue instead of direct execution
@@ -339,6 +343,177 @@ impl Engine {
         Ok(flow_result)
     }
 
+    /// Execute a DAG flow distributed across the nodes of a
+    /// [`majra::fleet::FleetQueue`].
+    ///
+    /// Each fleet node runs a worker that pulls ready steps from its local queue
+    /// and executes them with this engine's step handler; the coordinator unlocks
+    /// dependents as results arrive and rebalances work toward idle nodes. Nodes
+    /// model independent engine instances — register them with
+    /// [`FleetQueue::register_node`](majra::fleet::FleetQueue::register_node)
+    /// before calling.
+    ///
+    /// Requires [`FlowMode::Dag`]; other modes return [`SzalError::InvalidFlow`].
+    /// Honors the same event sink, metrics, condition cache, and execution store
+    /// as [`run`](Self::run).
+    #[cfg(feature = "fleet")]
+    #[tracing::instrument(skip(self, flow, fleet), fields(flow = %flow.name, nodes = fleet.node_count()))]
+    pub async fn run_distributed(
+        &self,
+        flow: &FlowDef,
+        fleet: std::sync::Arc<majra::fleet::FleetQueue<crate::step::StepDef>>,
+    ) -> crate::Result<FlowResult> {
+        flow.validate()?;
+        if flow.mode != FlowMode::Dag {
+            return Err(crate::SzalError::InvalidFlow(format!(
+                "run_distributed requires Dag mode, got {}",
+                flow.mode
+            )));
+        }
+
+        #[cfg(feature = "hardware")]
+        if let Some(ref hw) = self.config.hardware {
+            hw.check_requirements(&flow.steps)?;
+        }
+
+        tracing::info!(flow = %flow.name, steps = flow.steps.len(), nodes = fleet.node_count(), "starting distributed flow execution");
+        emit(
+            &self.event_sink,
+            crate::bus::WorkflowEvent::flow_started(&flow.name),
+        );
+        let execution_id = flow.id.to_string();
+        let started_at = chrono::Utc::now().to_rfc3339();
+        if let Some(ref store) = self.config.execution_store {
+            store.save(crate::storage::ExecutionRecord {
+                execution_id: execution_id.clone(),
+                flow_name: flow.name.clone(),
+                state: crate::state::WorkflowState::Running,
+                result: None,
+                started_at: started_at.clone(),
+                finished_at: None,
+            });
+        }
+        crate::metrics::metric_run_started(&self.config.metrics, &flow.name);
+
+        let timeout = self
+            .config
+            .global_timeout_ms
+            .or(flow.timeout_ms)
+            .unwrap_or(u64::MAX);
+        let start = std::time::Instant::now();
+        let exec = ExecCtx {
+            handler: &self.handler,
+            event_sink: &self.event_sink,
+            flow: FlowCtx {
+                name: &flow.name,
+                id: flow.id,
+            },
+            metrics: &self.config.metrics,
+            step_type_metrics: &self.config.step_type_metrics,
+            progress_sink: &self.config.progress_sink,
+            condition_cache: &self.condition_cache,
+        };
+
+        let step_results = super::distributed::run_distributed_dag(
+            &flow.steps,
+            &fleet,
+            timeout,
+            start,
+            None,
+            &exec,
+        )
+        .await;
+
+        self.finalize(flow, step_results, start, started_at, execution_id)
+            .await
+    }
+
+    /// Assemble a [`FlowResult`] from executed step results: rollback on failure,
+    /// emit terminal events/metrics, and persist final state to the execution
+    /// store. Shared by the distributed execution path.
+    #[cfg(feature = "fleet")]
+    async fn finalize(
+        &self,
+        flow: &FlowDef,
+        step_results: Vec<StepResult>,
+        start: std::time::Instant,
+        started_at: String,
+        execution_id: String,
+    ) -> crate::Result<FlowResult> {
+        let total_duration_ms = start.elapsed().as_millis() as u64;
+        let has_failures = step_results.iter().any(|r| r.status == StepStatus::Failed);
+        let mut rolled_back = false;
+
+        if has_failures && flow.rollback_on_failure {
+            rolled_back = self.rollback_completed_steps(flow, &step_results).await;
+        }
+
+        let result_status = if has_failures {
+            if rolled_back { "rolled_back" } else { "failed" }
+        } else {
+            "success"
+        };
+        tracing::info!(
+            flow = %flow.name,
+            duration_ms = total_duration_ms,
+            steps = step_results.len(),
+            result = result_status,
+            "distributed flow execution completed"
+        );
+
+        if has_failures {
+            if rolled_back {
+                emit(
+                    &self.event_sink,
+                    crate::bus::WorkflowEvent::flow_rolled_back(&flow.name),
+                );
+            }
+            emit(
+                &self.event_sink,
+                crate::bus::WorkflowEvent::flow_failed(&flow.name, result_status),
+            );
+            crate::metrics::metric_run_failed(&self.config.metrics, &flow.name, total_duration_ms);
+        } else {
+            emit(
+                &self.event_sink,
+                crate::bus::WorkflowEvent::flow_completed(&flow.name, total_duration_ms),
+            );
+            crate::metrics::metric_run_completed(
+                &self.config.metrics,
+                &flow.name,
+                total_duration_ms,
+            );
+        }
+
+        let flow_result = FlowResult {
+            flow_name: flow.name.clone(),
+            steps: step_results,
+            total_duration_ms,
+            success: !has_failures,
+            rolled_back,
+        };
+
+        if let Some(ref store) = self.config.execution_store {
+            let final_state = if rolled_back {
+                crate::state::WorkflowState::RolledBack
+            } else if has_failures {
+                crate::state::WorkflowState::Failed
+            } else {
+                crate::state::WorkflowState::Completed
+            };
+            store.save(crate::storage::ExecutionRecord {
+                execution_id,
+                flow_name: flow.name.clone(),
+                state: final_state,
+                result: Some(flow_result.clone()),
+                started_at,
+                finished_at: Some(chrono::Utc::now().to_rfc3339()),
+            });
+        }
+
+        Ok(flow_result)
+    }
+
     /// Execute a flow with cancellation support.
     ///
     /// Behaves identically to [`run`](Self::run) but checks the provided
@@ -385,6 +560,7 @@ impl Engine {
             metrics: &self.config.metrics,
             step_type_metrics: &self.config.step_type_metrics,
             progress_sink: &self.config.progress_sink,
+            condition_cache: &self.condition_cache,
         };
 
         let step_results = match flow.mode {

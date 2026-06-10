@@ -112,7 +112,8 @@ pub(crate) async fn run_dag(
 
                 // Condition evaluation
                 if let Some(ref _cond) = step.condition {
-                    match crate::engine::check_condition(step, &results, steps) {
+                    match crate::engine::check_condition(step, &results, steps, ctx.condition_cache)
+                    {
                         Ok(false) => {
                             emit(
                                 ctx.event_sink,
@@ -212,7 +213,7 @@ pub(crate) async fn run_dag(
     results
 }
 
-fn unlock_dependents(
+pub(crate) fn unlock_dependents(
     step_id: StepId,
     dependents: &HashMap<StepId, Vec<StepId>>,
     in_degree: &mut HashMap<StepId, usize>,

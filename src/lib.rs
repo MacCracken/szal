@@ -31,6 +31,8 @@
 //! - [`flow`] — Flow definitions: sequential, parallel, DAG, hierarchical
 //! - [`engine`] — Execution configuration and flow result aggregation
 //! - [`state`] — Workflow state machine with validated transitions
+//! - [`migration`] — Flow versioning and schema migration across definition versions
+//! - [`stream`] — Stream step progress to SSE / WebSocket clients via a broadcast hub
 
 pub mod bus;
 pub mod condition;
@@ -39,9 +41,13 @@ pub mod flow;
 pub mod mcp;
 #[cfg(feature = "majra")]
 pub mod metrics;
+pub mod migration;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub mod sql_store;
 pub mod state;
 pub mod step;
 pub mod storage;
+pub mod stream;
 
 mod error;
 pub use error::SzalError;

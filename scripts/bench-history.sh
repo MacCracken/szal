@@ -65,12 +65,12 @@ while IFS= read -r line; do
     # Normalize to nanoseconds
     case "$unit" in
       ns)  time_ns="$value" ;;
-      µs|us) time_ns=$(echo "$value * 1000" | bc -l) ;;
-      ms)  time_ns=$(echo "$value * 1000000" | bc -l) ;;
-      s)   time_ns=$(echo "$value * 1000000000" | bc -l) ;;
+      µs|us) time_ns=$(awk "BEGIN{print $value * 1000}") ;;
+      ms)  time_ns=$(awk "BEGIN{print $value * 1000000}") ;;
+      s)   time_ns=$(awk "BEGIN{print $value * 1000000000}") ;;
     esac
 
-    # Strip trailing zeros from bc output
+    # Normalize formatting
     time_ns=$(printf '%.2f' "$time_ns")
 
     echo "${TIMESTAMP},${VERSION},${COMMIT},${name},${time_ns},ns" >> "$HISTORY_FILE"

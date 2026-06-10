@@ -29,7 +29,7 @@ pub(crate) async fn run_parallel(
     for step in steps {
         // Condition evaluation (before spawning — no sibling results available)
         if let Some(ref _cond) = step.condition {
-            match crate::engine::check_condition(step, &pre_skipped, steps) {
+            match crate::engine::check_condition(step, &pre_skipped, steps, ctx.condition_cache) {
                 Ok(false) => {
                     emit(
                         ctx.event_sink,

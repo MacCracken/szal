@@ -76,6 +76,19 @@ pub struct FlowDef {
     pub rollback_on_failure: bool,
     /// Maximum total flow duration in milliseconds.
     pub timeout_ms: Option<u64>,
+    /// Definition version, used by [`migration`](crate::migration) to upgrade
+    /// older flow definitions to newer schemas. Defaults to `1`.
+    ///
+    /// Flows serialized before versioning was introduced deserialize to `1`.
+    #[serde(default = "default_flow_version")]
+    pub version: u32,
+}
+
+/// The default flow definition version (`1`) for flows lacking an explicit one.
+#[must_use]
+#[inline]
+pub(crate) fn default_flow_version() -> u32 {
+    1
 }
 
 impl FlowDef {
@@ -89,11 +102,19 @@ impl FlowDef {
             steps: Vec::new(),
             rollback_on_failure: false,
             timeout_ms: None,
+            version: default_flow_version(),
         }
     }
 
     pub fn add_step(&mut self, step: StepDef) {
         self.steps.push(step);
+    }
+
+    /// Set the definition version of this flow.
+    #[must_use]
+    pub fn with_version(mut self, version: u32) -> Self {
+        self.version = version;
+        self
     }
 
     #[must_use]
@@ -272,6 +293,40 @@ mod tests {
         flow.add_step(a);
         flow.add_step(b);
         assert!(flow.validate().is_err());
+    }
+
+    #[test]
+    fn flow_version_defaults_and_builder() {
+        let flow = FlowDef::new("v", FlowMode::Sequential);
+        assert_eq!(flow.version, 1);
+        let flow = flow.with_version(5);
+        assert_eq!(flow.version, 5);
+    }
+
+    #[test]
+    fn flow_deserializes_without_version_field() {
+        // Flows persisted before versioning was introduced lack the field and
+        // must deserialize to version 1.
+        let legacy = r#"{
+            "id": "00000000-0000-0000-0000-000000000000",
+            "name": "legacy",
+            "description": "",
+            "mode": "Sequential",
+            "steps": [],
+            "rollback_on_failure": false,
+            "timeout_ms": null
+        }"#;
+        let flow: FlowDef = serde_json::from_str(legacy).unwrap();
+        assert_eq!(flow.version, 1);
+        assert_eq!(flow.name, "legacy");
+    }
+
+    #[test]
+    fn flow_version_serde_roundtrip() {
+        let flow = FlowDef::new("v", FlowMode::Dag).with_version(7);
+        let json = serde_json::to_string(&flow).unwrap();
+        let back: FlowDef = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.version, 7);
     }
 
     #[test]

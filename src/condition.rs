@@ -524,24 +524,148 @@ fn is_truthy(v: &Value) -> bool {
 /// assert!(evaluate("", &ctx).unwrap());
 /// ```
 pub fn evaluate(expr: &str, context: &Value) -> Result<bool, String> {
-    let trimmed = expr.trim();
-    if trimmed.is_empty() {
-        return Ok(true);
+    CompiledCondition::compile(expr)?.evaluate(context)
+}
+
+// ---------------------------------------------------------------------------
+// Compilation + caching
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+/// A pre-compiled condition expression.
+///
+/// Tokenizing and parsing a condition string into an AST is the expensive part
+/// of evaluation; once compiled, a `CompiledCondition` evaluates against many
+/// contexts without re-parsing. Use [`ConditionCache`] to memoize compilation
+/// across repeated runs of the same flow.
+///
+/// ```
+/// use szal::condition::CompiledCondition;
+/// use serde_json::json;
+///
+/// let cond = CompiledCondition::compile("status == 'ok'").unwrap();
+/// assert!(cond.evaluate(&json!({"status": "ok"})).unwrap());
+/// assert!(!cond.evaluate(&json!({"status": "bad"})).unwrap());
+/// ```
+#[derive(Debug, Clone)]
+pub struct CompiledCondition {
+    source: String,
+    ast: Expr,
+}
+
+impl CompiledCondition {
+    /// Compile a condition expression into a reusable AST.
+    ///
+    /// An empty (or whitespace-only) expression compiles to a vacuously-true
+    /// condition. Returns `Err` if the expression is malformed.
+    pub fn compile(expr: &str) -> Result<Self, String> {
+        let trimmed = expr.trim();
+        if trimmed.is_empty() {
+            return Ok(Self {
+                source: String::new(),
+                ast: Expr::Literal(Value::Bool(true)),
+            });
+        }
+
+        let tokens = tokenize(trimmed)?;
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse_expr()?;
+
+        if parser.pos < parser.tokens.len() {
+            return Err(format!(
+                "unexpected trailing token: {:?}",
+                parser.tokens[parser.pos]
+            ));
+        }
+
+        Ok(Self {
+            source: trimmed.to_owned(),
+            ast,
+        })
     }
 
-    let tokens = tokenize(trimmed)?;
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse_expr()?;
-
-    if parser.pos < parser.tokens.len() {
-        return Err(format!(
-            "unexpected trailing token: {:?}",
-            parser.tokens[parser.pos]
-        ));
+    /// Evaluate the compiled condition against a JSON context.
+    #[inline]
+    pub fn evaluate(&self, context: &Value) -> Result<bool, String> {
+        Ok(is_truthy(&eval_expr(&self.ast, context)?))
     }
 
-    let result = eval_expr(&ast, context)?;
-    Ok(is_truthy(&result))
+    /// The original (trimmed) source expression.
+    #[inline]
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
+/// A thread-safe cache of compiled conditions, keyed by source expression.
+///
+/// Memoizes the parse step so repeated evaluation of the same condition string
+/// — e.g. across many runs of the same flow on a reused [`Engine`](crate::engine::Engine)
+/// — parses only once. Both successful compilations and parse errors are cached,
+/// so a malformed expression is not re-parsed on every encounter.
+///
+/// ```
+/// use szal::condition::ConditionCache;
+/// use serde_json::json;
+///
+/// let cache = ConditionCache::new();
+/// assert!(cache.evaluate("n > 5", &json!({"n": 10})).unwrap());
+/// assert!(!cache.evaluate("n > 5", &json!({"n": 3})).unwrap());
+/// assert_eq!(cache.len(), 1); // compiled once, evaluated twice
+/// ```
+#[derive(Debug, Default)]
+pub struct ConditionCache {
+    entries: RwLock<HashMap<String, Arc<Result<CompiledCondition, String>>>>,
+}
+
+impl ConditionCache {
+    /// Create an empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Evaluate `expr` against `context`, compiling and caching on first use.
+    pub fn evaluate(&self, expr: &str, context: &Value) -> Result<bool, String> {
+        match &*self.compiled(expr) {
+            Ok(c) => c.evaluate(context),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// Get (or compile and cache) the compiled form of `expr`.
+    fn compiled(&self, expr: &str) -> Arc<Result<CompiledCondition, String>> {
+        if let Some(hit) = self
+            .entries
+            .read()
+            .expect("condition cache poisoned")
+            .get(expr)
+        {
+            return hit.clone();
+        }
+        let compiled = Arc::new(CompiledCondition::compile(expr));
+        self.entries
+            .write()
+            .expect("condition cache poisoned")
+            .entry(expr.to_owned())
+            .or_insert_with(|| compiled.clone())
+            .clone()
+    }
+
+    /// Number of distinct expressions cached.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.read().expect("condition cache poisoned").len()
+    }
+
+    /// Whether the cache is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Render a template string by resolving `{{path}}` placeholders against a JSON context.
@@ -1079,5 +1203,68 @@ mod tests {
         assert!(evaluate("!(status == 'completed') && status == 'failed'", &ctx).unwrap());
         // Without parens: (!status) == 'completed' → false == 'completed' → false
         assert!(!evaluate("!status == 'completed'", &ctx).unwrap());
+    }
+
+    // -- Compiled conditions --
+
+    #[test]
+    fn compiled_condition_reuse() {
+        let cond = CompiledCondition::compile("n > 5").unwrap();
+        assert!(cond.evaluate(&json!({"n": 10})).unwrap());
+        assert!(!cond.evaluate(&json!({"n": 3})).unwrap());
+        assert_eq!(cond.source(), "n > 5");
+    }
+
+    #[test]
+    fn compiled_empty_is_true() {
+        let cond = CompiledCondition::compile("   ").unwrap();
+        assert!(cond.evaluate(&json!({})).unwrap());
+        assert_eq!(cond.source(), "");
+    }
+
+    #[test]
+    fn compiled_malformed_errors() {
+        assert!(CompiledCondition::compile("== 'x'").is_err());
+        assert!(CompiledCondition::compile("true true").is_err());
+        assert!(CompiledCondition::compile("'unterminated").is_err());
+    }
+
+    // -- Condition cache --
+
+    #[test]
+    fn cache_memoizes_compilation() {
+        let cache = ConditionCache::new();
+        assert!(cache.is_empty());
+        // Same expression evaluated against different contexts compiles once.
+        assert!(cache.evaluate("n > 5", &json!({"n": 10})).unwrap());
+        assert!(!cache.evaluate("n > 5", &json!({"n": 3})).unwrap());
+        assert!(cache.evaluate("n > 5", &json!({"n": 100})).unwrap());
+        assert_eq!(cache.len(), 1);
+
+        // A distinct expression adds a second entry.
+        assert!(cache.evaluate("n < 5", &json!({"n": 1})).unwrap());
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn cache_caches_errors() {
+        let cache = ConditionCache::new();
+        let ctx = json!({});
+        assert!(cache.evaluate("== bad", &ctx).is_err());
+        // Re-evaluating the same malformed expression returns the cached error
+        // without re-parsing, and does not add a second entry.
+        assert!(cache.evaluate("== bad", &ctx).is_err());
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn cache_matches_direct_evaluate() {
+        let cache = ConditionCache::new();
+        let ctx = json!({"steps": {"build": {"status": "completed"}}});
+        let expr = "steps.build.status == 'completed'";
+        assert_eq!(
+            cache.evaluate(expr, &ctx).unwrap(),
+            evaluate(expr, &ctx).unwrap()
+        );
     }
 }

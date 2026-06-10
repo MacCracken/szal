@@ -64,9 +64,14 @@ assert!(!state.is_terminal());
 | Module | Description |
 |--------|-------------|
 | `step` | Atomic workflow steps — timeout, retry, rollback, DAG dependencies |
-| `flow` | Flow composition — sequential, parallel, DAG (Kahn's), hierarchical |
-| `engine` | Execution config and flow result aggregation |
+| `flow` | Flow composition — sequential, parallel, DAG (Kahn's), hierarchical; versioned |
+| `engine` | Execution config, flow result aggregation, distributed DAG runner |
 | `state` | Workflow state machine with validated transitions |
+| `condition` | Condition DSL evaluator with compiled-AST caching |
+| `migration` | Flow versioning and schema migration across definition versions |
+| `storage` | `WorkflowStorage` + in-memory `ExecutionStore` |
+| `sql_store` | Durable `ExecutionStore` backends over sqlx (`sqlite`/`postgres` features) |
+| `stream` | Stream step progress to SSE / WebSocket clients via a broadcast hub |
 | `error` | Typed errors — step failure, timeout, retry exhaustion, cycle detection |
 
 ## Execution modes
@@ -78,12 +83,29 @@ assert!(!state.is_terminal());
 | `Dag` | Dependency graph with cycle detection (DFS) |
 | `Hierarchical` | Manager step delegates to sub-steps |
 
+DAG flows can also run distributed across a fleet of engine instances via
+`Engine::run_distributed` (the `fleet` feature).
+
+## Features
+
+| Feature | Enables |
+|---------|---------|
+| `sqlite` | `SqliteExecutionStore` — durable execution tracking via sqlx |
+| `postgres` | `PostgresExecutionStore` — durable execution tracking via sqlx |
+| `fleet` | `Engine::run_distributed` — work-stealing DAG across fleet nodes |
+| `majra` | Managed queue, metrics, heartbeat, rate limiting |
+| `hardware` | Accelerator-aware step scheduling |
+| `prometheus` / `barrier` / `dag` | Additional `majra` infrastructure |
+
+The default build pulls no database or infrastructure dependencies.
+
 ## Roadmap
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
-| **1.1** | Persistent state, flow composition, streaming output, richer condition DSL | Current |
-| **1.2** | Persistent backends, flow versioning, distributed DAG, WebSocket streaming | Planned |
+| **1.1** | Persistent state, flow composition, streaming output, richer condition DSL | Released |
+| **1.2** | Persistent SQL backends, flow versioning, distributed DAG, SSE streaming, condition caching | Released |
+| **1.3** | Crash recovery, Redis backend, cross-host fleet transport | Planned |
 
 ## License
 

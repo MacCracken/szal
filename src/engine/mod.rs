@@ -16,6 +16,8 @@
 //! ```
 
 mod dag;
+#[cfg(feature = "fleet")]
+mod distributed;
 #[cfg(feature = "hardware")]
 pub mod hardware;
 mod hierarchical;
@@ -53,6 +55,7 @@ pub(crate) struct ExecCtx<'a> {
     pub metrics: &'a crate::metrics::MetricsSink,
     pub step_type_metrics: &'a StepTypeMetricsFn,
     pub progress_sink: &'a ProgressSink,
+    pub condition_cache: &'a crate::condition::ConditionCache,
 }
 
 /// Optional event sink for workflow lifecycle events.
@@ -90,16 +93,20 @@ pub(crate) fn emit_step_type_metric(
 }
 
 /// Check if a step's condition passes. Returns true if no condition or condition evaluates true.
+///
+/// The `cache` memoizes compiled condition ASTs across calls, so a condition
+/// string is parsed only once even when the same flow runs many times.
 pub(crate) fn check_condition(
     step: &StepDef,
     results: &[crate::step::StepResult],
     all_steps: &[StepDef],
+    cache: &crate::condition::ConditionCache,
 ) -> Result<bool, String> {
     match &step.condition {
         None => Ok(true),
         Some(expr) => {
             let ctx = crate::condition::build_step_context(results, all_steps);
-            crate::condition::evaluate(expr, &ctx)
+            cache.evaluate(expr, &ctx)
         }
     }
 }

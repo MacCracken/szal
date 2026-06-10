@@ -326,7 +326,7 @@ impl Tool for GitBlame {
                     }
                     let total_lines = authors.values().sum::<usize>();
                     let mut author_list: Vec<_> = authors.into_iter().collect();
-                    author_list.sort_by(|a, b| b.1.cmp(&a.1));
+                    author_list.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
 
                     result_ok_json(&json!({
                         "file": file,

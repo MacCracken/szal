@@ -55,7 +55,7 @@ pub(crate) async fn run_sequential(
         }
         // Condition evaluation
         if let Some(ref _cond) = step.condition {
-            match super::check_condition(step, &results, steps) {
+            match super::check_condition(step, &results, steps, ctx.condition_cache) {
                 Ok(false) => {
                     let reason = "condition not met";
                     emit(

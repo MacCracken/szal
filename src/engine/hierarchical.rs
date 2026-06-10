@@ -49,7 +49,7 @@ fn execute_tree<'a>(
 
             // Condition evaluation
             if let Some(ref _cond) = step.condition {
-                match crate::engine::check_condition(step, results, steps) {
+                match crate::engine::check_condition(step, results, steps, ctx.condition_cache) {
                     Ok(false) => {
                         skip_step_and_children(step, "condition not met", ctx.event_sink, results);
                         continue;
