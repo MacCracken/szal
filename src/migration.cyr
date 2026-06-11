@@ -1,0 +1,261 @@
+# migration.cyr — flow versioning + migration registry
+#
+# Ports rust-old/src/migration.rs (FlowMigration trait, fn_migration, MigrationRegistry).
+# Flow definitions carry a version (flow.cyr FD_VERSION). As a flow's schema evolves, older
+# persisted definitions are brought forward by registering one migration per version step and
+# running them through a MigrationRegistry. Each migration upgrades a flow from version N to a
+# strictly greater version; the registry chains them, applying each in turn until the flow
+# reaches the requested target (or the latest registered version).
+#
+# Usage: include "src/migration.cyr"
+# Requires: lib/str.cyr (Str + builder), lib/vec.cyr, lib/hashmap.cyr (map_u64_*), lib/alloc.cyr
+#   (alloc_init before any constructor), lib/result.cyr (Ok/Err + is_ok/is_err_result),
+#   lib/fnptr.cyr (callptr is a compiler builtin; fnptr.cyr is the convention companion),
+#   src/error.cyr (SzalErr + szal_err), src/flow.cyr (flow_version/flow_name + FD_VERSION).
+# Naming: every public symbol is migration_/flow_migration-prefixed; no bare names that collide
+#   with vendored majra/bote. Internal helpers use the _ prefix.
+#
+# Rust's FlowMigration trait (source_version / target_version / migrate) collapses to a heap
+# blob carrying {from_version, to_version, fn_ptr}. The migrate(flow) trait method becomes an
+# indirect call through fn_ptr: the registered function has the ABI
+#   fn(flow_ptr) -> Result      (Ok(flow_ptr) on success, Err(code) on failure)
+# matching Rust's `Fn(FlowDef) -> Result<FlowDef, SzalError>`. The registry invokes it via
+# callptr(fp, flow). The transformed flow's version field is overwritten by the registry, so
+# migration functions need not set it (mirrors the Rust doc contract, migration.rs 56-60).
+
+# FlowMigration — heap blob. Mirrors the Rust FnMigration struct (migration.rs 76-80): a single
+# version-step upgrade from from_version to a strictly greater to_version, applied via fn_ptr.
+#
+# Byte layout (24 bytes):
+#   +0   from_version  (i64 u32, the source version this migration upgrades FROM)
+#   +8   to_version    (i64 u32, the target version, must be > from_version)
+#   +16  fn_ptr        (i64, fn(flow_ptr) -> Result; Ok(flow_ptr) or Err(code))
+enum FlowMigrationL {
+    FLOWMIGRATION_SIZE = 24;
+    FM_FROM = 0;
+    FM_TO = 8;
+    FM_FN = 16;
+}
+
+# --- FlowMigration accessors ---
+
+# Get the source version this migration upgrades FROM (i64 u32). Mirrors source_version()
+# (migration.rs 86-88).
+fn flow_migration_from(m) { return load64(m + FM_FROM); }
+
+# Get the target version this migration upgrades TO (i64 u32). Mirrors target_version()
+# (migration.rs 89-91).
+fn flow_migration_to(m) { return load64(m + FM_TO); }
+
+# Get the migration transform fn pointer (fn(flow_ptr) -> Result). Internal-ish accessor; the
+# registry calls it via callptr in migrate_to.
+fn flow_migration_fn(m) { return load64(m + FM_FN); }
+
+# Build a FlowMigration from a (from, to, fn_ptr) triple. Mirrors fn_migration (migration.rs
+# 64-74): the convenient closure-free constructor. fp is a fn(flow_ptr) -> Result. Returns 0 on
+# OOM. The registry (not this constructor) enforces to > from; here we just record the triple,
+# matching Rust (fn_migration itself does no validation — register does).
+fn fn_migration(from, to, fp) {
+    var m = alloc(FLOWMIGRATION_SIZE);
+    if (m == 0) { return 0; }
+    store64(m + FM_FROM, from);
+    store64(m + FM_TO, to);
+    store64(m + FM_FN, fp);
+    return m;
+}
+
+# MigrationRegistry — a registry of FlowMigrations chained to upgrade flows across versions. At
+# most one migration may be registered per source version. Mirrors MigrationRegistry
+# (migration.rs 102-106): a map from source_version to migration. We use a u64-keyed hashmap
+# (map_u64_*) keyed on the from_version (a small non-negative u32 stored as i64 — never the
+# MAP_U64_EMPTY=0 sentinel because Rust versions start at 1; see latest_version for the empty
+# case). The value is the FlowMigration* heap blob.
+#
+# Byte layout (8 bytes):
+#   +0   migrations  (i64, map_u64 handle: from_version -> FlowMigration*)
+enum MigrationRegistryL {
+    MIGRATIONREGISTRY_SIZE = 8;
+    MR_MIGRATIONS = 0;
+}
+
+# Create an empty MigrationRegistry. Mirrors MigrationRegistry::new / Default (migration.rs
+# 109-113). Returns 0 on OOM.
+fn migration_registry_new() {
+    var r = alloc(MIGRATIONREGISTRY_SIZE);
+    if (r == 0) { return 0; }
+    store64(r + MR_MIGRATIONS, map_u64_new());
+    return r;
+}
+
+# Get the underlying migrations map (u64 from_version -> FlowMigration*). Internal-ish accessor.
+fn migration_registry_map(r) { return load64(r + MR_MIGRATIONS); }
+
+# _migration_abort(msg) — print msg to stderr and exit nonzero. The documented programmer-error
+# abort path: Rust's register() panics (assert!) on a malformed migration set; a panic is a
+# process abort, so we mirror it with a stderr write + exit code 1. (migration.rs 117-145 Panics.)
+fn _migration_abort(msg) {
+    syscall(1, 2, str_data(msg), str_len(msg));
+    syscall(1, 2, "\n", 1);
+    syscall(60, 1);
+    return 0;
+}
+
+# Register a migration IN PLACE. Mirrors register (migration.rs 128-145).
+#
+# ABORTS (documented programmer-error abort path; Rust panics via assert!) if:
+#   - to_version <= from_version  (message contains "must be greater"), or
+#   - a migration is already registered for the same source version (message contains
+#     "already registered").
+# Migrations are part of program definition, so a malformed set is a programmer error caught at
+# setup. On success, inserts the migration keyed by its from_version. Returns 0.
+fn migration_register(reg, m) {
+    var from = flow_migration_from(m);
+    var to = flow_migration_to(m);
+    if (to <= from) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "migration target_version (");
+        str_builder_add_int(sb, to);
+        str_builder_add_cstr(sb, ") must be greater than source_version (");
+        str_builder_add_int(sb, from);
+        str_builder_add_cstr(sb, ")");
+        _migration_abort(str_builder_build(sb));
+    }
+    var map = migration_registry_map(reg);
+    if (map_u64_has(map, from) == 1) {
+        var sb2 = str_builder_new();
+        str_builder_add_cstr(sb2, "a migration is already registered for version ");
+        str_builder_add_int(sb2, from);
+        _migration_abort(str_builder_build(sb2));
+    }
+    map_u64_set(map, from, m);
+    return 0;
+}
+
+# Register a migration, returning reg for chaining. Mirrors with_migration (migration.rs
+# 122-126). Same abort semantics as migration_register (it delegates). Returns reg.
+fn migration_with(reg, m) {
+    migration_register(reg, m);
+    return reg;
+}
+
+# The highest target version reachable by registered migrations. Mirrors latest_version
+# (migration.rs 149-152): `self.migrations.values().map(|m| m.target_version()).max()`.
+# Rust returns Option<u32> (None when empty). Here we return (0 - 1) when the registry is empty
+# (Rust versions are >= 1, so 0 would be ambiguous; the sentinel (0-1) = i64::-1 unsigned-max
+# can never be a real to_version). Callers test with migration_latest_version_present.
+fn migration_latest_version(reg) {
+    var map = migration_registry_map(reg);
+    if (map_u64_size(map) == 0) {
+        return (0 - 1);
+    }
+    # Iterate the u64 map's raw slots (the cstr/Str map_keys/_values helpers do NOT work on
+    # u64 maps — see lib/hashmap.cyr header), tracking the maximum to_version.
+    var entries = load64(map);
+    var cap = load64(map + 8);
+    var best = 0;
+    var i = 0;
+    while (i < cap) {
+        var ep = entries + i * 16;
+        var k = load64(ep);
+        if (k != MAP_U64_EMPTY) {
+            if (k != MAP_U64_TOMB) {
+                var to = flow_migration_to(load64(ep + 8));
+                if (to > best) { best = to; }
+            }
+        }
+        i = i + 1;
+    }
+    return best;
+}
+
+# migration_latest_version_present(reg) -> 1 if the registry has at least one migration (Rust's
+# Option::is_some on latest_version), else 0. Companion to migration_latest_version's sentinel.
+fn migration_latest_version_present(reg) {
+    if (map_u64_size(migration_registry_map(reg)) == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+# Migrate flow up to target, applying the registry's migrations in order. Mirrors the Rust
+# method registry.migrate_to(flow, target) (migration.rs 159-192) — reg is the `self` receiver.
+# Returns Ok(flow) or Err(ERR_MIGRATION) with the detail in the szal last-error buffer.
+# Behaviour, in EXACT Rust order:
+#   - flow.version == target            -> Ok(flow) unchanged (no-op).
+#   - flow.version  > target            -> Err: downgrades are not supported.
+#   - loop while flow.version < target:
+#       * no migration registered from the current version -> Err: "no migration registered ...".
+#       * migration jumps past target (to > target)        -> Err: "... overshooting target ...".
+#       * else apply the migration via callptr; propagate a migration-fn Err unchanged; then
+#         STAMP flow.version = to for this hop and continue.
+fn migrate_to(reg, flow, target) {
+    var cur = flow_version(flow);
+    if (cur == target) {
+        return Ok(flow);
+    }
+    if (cur > target) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "flow '");
+        str_builder_add(sb, flow_name(flow));
+        str_builder_add_cstr(sb, "' is at version ");
+        str_builder_add_int(sb, cur);
+        str_builder_add_cstr(sb, " which is newer than target ");
+        str_builder_add_int(sb, target);
+        str_builder_add_cstr(sb, "; downgrades are not supported");
+        return szal_err(ERR_MIGRATION, str_builder_build(sb));
+    }
+    var map = migration_registry_map(reg);
+    while (flow_version(flow) < target) {
+        var current = flow_version(flow);
+        if (map_u64_has(map, current) == 0) {
+            var sb2 = str_builder_new();
+            str_builder_add_cstr(sb2, "no migration registered from version ");
+            str_builder_add_int(sb2, current);
+            str_builder_add_cstr(sb2, " (flow '");
+            str_builder_add(sb2, flow_name(flow));
+            str_builder_add_cstr(sb2, "', target ");
+            str_builder_add_int(sb2, target);
+            str_builder_add_cstr(sb2, ")");
+            return szal_err(ERR_MIGRATION, str_builder_build(sb2));
+        }
+        var m = map_u64_get(map, current);
+        var to = flow_migration_to(m);
+        if (to > target) {
+            var sb3 = str_builder_new();
+            str_builder_add_cstr(sb3, "migration from version ");
+            str_builder_add_int(sb3, current);
+            str_builder_add_cstr(sb3, " jumps to ");
+            str_builder_add_int(sb3, to);
+            str_builder_add_cstr(sb3, ", overshooting target ");
+            str_builder_add_int(sb3, target);
+            str_builder_add_cstr(sb3, " (flow '");
+            str_builder_add(sb3, flow_name(flow));
+            str_builder_add_cstr(sb3, "')");
+            return szal_err(ERR_MIGRATION, str_builder_build(sb3));
+        }
+        # Apply the migration transform: callptr(fp, flow) -> Result. Propagate an Err from the
+        # migration fn unchanged (migration.rs 186: `flow = migration.migrate(flow)?;`).
+        var res = callptr(flow_migration_fn(m), flow);
+        if (is_err_result(res) == 1) {
+            return res;
+        }
+        flow = result_unwrap(res);
+        # STAMP the hop's to_version (migration.rs 187: `flow.version = to;`).
+        flow_with_version(flow, to);
+    }
+    return Ok(flow);
+}
+
+# Migrate flow up to the latest registered version. Mirrors migrate_latest (migration.rs
+# 197-202): a no-op (Ok(flow)) if the registry is empty or the flow is already current,
+# otherwise migrate_to(reg, flow, latest). Returns Ok(flow) or Err(ERR_MIGRATION).
+fn migrate_latest(reg, flow) {
+    if (migration_latest_version_present(reg) == 0) {
+        return Ok(flow);
+    }
+    var target = migration_latest_version(reg);
+    if (target > flow_version(flow)) {
+        return migrate_to(reg, flow, target);
+    }
+    return Ok(flow);
+}

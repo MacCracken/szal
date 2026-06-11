@@ -1,0 +1,295 @@
+# szal_step.tcyr — StepDef / builders / backoff / StepStatus / StepResult / (de)serialization
+# parity tests for src/step.cyr.
+# Run: cyrius build --strict --no-deps tests/szal_step.tcyr build/test_step && ./build/test_step
+#
+# Ports the #[cfg(test)] assertions from rust-old/src/step.rs (step_builder, step_dependencies,
+# status_display, serde_roundtrip) and the proptest invariants (serde_roundtrip_any,
+# builder_preserves_id) as fixed-input checks, plus the brief's required coverage: defaults
+# (timeout 30000, retries 0, delay 1000), each builder, backoff math incl. overflow saturation,
+# to_json/from_json round-trip, and from_json with missing optionals -> defaults.
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "src/error.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+
+# Does Str s contain the cstr substring `needle`? Field-presence helper for JSON assertions.
+fn contains_cstr(s, needle) {
+    var data = str_data(s);
+    var slen = str_len(s);
+    var nlen = strlen(needle);
+    if (nlen == 0) { return 1; }
+    if (nlen > slen) { return 0; }
+    var i = 0;
+    while (i <= slen - nlen) {
+        var j = 0;
+        var ok = 1;
+        while (j < nlen) {
+            if (load8(data + i + j) != load8(needle + j)) { ok = 0; j = nlen; }
+            else { j = j + 1; }
+        }
+        if (ok == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("StepDef::new defaults");
+    var d = step_new(str_from("build"));
+    assert(str_eq_cstr(step_name(d), "build"), "default name");
+    assert(str_eq_cstr(step_description(d), ""), "default description empty");
+    assert_eq(step_timeout_ms(d), 30000, "default timeout_ms 30000");
+    assert_eq(step_max_retries(d), 0, "default max_retries 0");
+    assert_eq(step_retry_delay_ms(d), 1000, "default retry_delay_ms 1000");
+    assert_eq(step_backoff(d), BACKOFF_FIXED, "default backoff Fixed");
+    assert_eq(step_rollbackable(d), 0, "default not rollbackable");
+    assert_eq(step_step_type(d), 0, "default step_type None");
+    assert_eq(step_config(d), 0, "default config None");
+    assert_eq(step_condition(d), 0, "default condition None");
+    assert_eq(step_depends_on_len(d), 0, "default depends_on empty");
+    assert_eq(step_trigger_mode(d), TRIGGER_ALL, "default trigger_mode All");
+    assert_eq(step_sub_steps_len(d), 0, "default sub_steps empty");
+    assert_eq(step_hardware(d), REQ_NONE, "default hardware REQ_NONE");
+
+    test_group("step_builder (step.rs step_builder test)");
+    var b = step_with_rollback(step_with_retries(step_with_timeout(
+        step_new(str_from("deploy")), 60000), 3, 5000));
+    assert(str_eq_cstr(step_name(b), "deploy"), "builder name");
+    assert_eq(step_timeout_ms(b), 60000, "builder timeout_ms 60000");
+    assert_eq(step_max_retries(b), 3, "builder max_retries 3");
+    assert_eq(step_retry_delay_ms(b), 5000, "builder retry_delay_ms 5000");
+    assert_eq(step_rollbackable(b), 1, "builder rollbackable");
+
+    test_group("step_dependencies (step.rs step_dependencies test)");
+    var a = step_new(str_from("build"));
+    var t = step_depends_on_add(step_new(str_from("test")), step_id_hi(a), step_id_lo(a));
+    assert_eq(step_depends_on_len(t), 1, "one dependency");
+    assert_eq(step_depends_on_hi(t, 0), step_id_hi(a), "dependency id hi matches");
+    assert_eq(step_depends_on_lo(t, 0), step_id_lo(a), "dependency id lo matches");
+
+    test_group("builder_preserves_id (step.rs proptest)");
+    var p = step_new(str_from("x"));
+    var phi = step_id_hi(p);
+    var plo = step_id_lo(p);
+    p = step_with_rollback(step_with_retries(step_with_timeout(p, 5000), 2, 1000));
+    assert_eq(step_id_hi(p), phi, "id hi preserved through builders");
+    assert_eq(step_id_lo(p), plo, "id lo preserved through builders");
+
+    test_group("each builder mutates");
+    var e = step_new(str_from("e"));
+    assert_eq(step_backoff(step_with_backoff(e, BACKOFF_EXPONENTIAL)), BACKOFF_EXPONENTIAL,
+        "with_backoff sets Exponential");
+    assert(str_eq_cstr(step_step_type(step_with_step_type(e, str_from("http"))), "http"),
+        "with_step_type sets http");
+    assert(str_eq_cstr(step_condition(step_with_condition(e, str_from("x > 1"))), "x > 1"),
+        "with_condition sets expr");
+    assert_eq(step_trigger_mode(step_with_trigger_mode(e, TRIGGER_ANY)), TRIGGER_ANY,
+        "with_trigger_mode sets Any");
+    assert_eq(step_hardware(step_with_hardware(e, 7)), 7, "with_hardware sets req");
+    var cfg = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(cfg, str_from("url"), bayan_json_v_str_new(str_from("http://x")));
+    assert_eq(step_config(step_with_config(e, cfg)), cfg, "with_config sets json_v");
+    var sub = step_new(str_from("child"));
+    assert_eq(step_sub_steps_len(step_with_sub_step(e, sub)), 1, "with_sub_step appends");
+    assert(str_eq_cstr(step_name(step_sub_step_at(e, 0)), "child"), "sub_step name");
+
+    test_group("StepStatus Display (step.rs status_display test)");
+    assert_streq(step_status_display(STATUS_COMPLETED), "completed", "Completed -> completed");
+    assert_streq(step_status_display(STATUS_ROLLED_BACK), "rolled_back", "RolledBack -> rolled_back");
+    assert_streq(step_status_display(STATUS_PENDING), "pending", "Pending -> pending");
+    assert_streq(step_status_display(STATUS_RUNNING), "running", "Running -> running");
+    assert_streq(step_status_display(STATUS_FAILED), "failed", "Failed -> failed");
+    assert_streq(step_status_display(STATUS_SKIPPED), "skipped", "Skipped -> skipped");
+
+    test_group("StepStatus serde names (PascalCase)");
+    assert_streq(step_status_serde_name(STATUS_COMPLETED), "Completed", "serde Completed");
+    assert_streq(step_status_serde_name(STATUS_ROLLED_BACK), "RolledBack", "serde RolledBack");
+    assert_eq(step_status_from_name(str_from("RolledBack")), STATUS_ROLLED_BACK,
+        "parse RolledBack");
+    assert_eq(step_status_from_name(str_from("bogus")), STATUS_PENDING, "parse unknown -> Pending");
+
+    test_group("backoff names round-trip");
+    assert_streq(step_backoff_name(BACKOFF_FIXED), "Fixed", "Fixed name");
+    assert_streq(step_backoff_name(BACKOFF_LINEAR), "Linear", "Linear name");
+    assert_streq(step_backoff_name(BACKOFF_EXPONENTIAL), "Exponential", "Exponential name");
+    assert_eq(step_backoff_from_name(str_from("Linear")), BACKOFF_LINEAR, "parse Linear");
+    assert_eq(step_backoff_from_name(str_from("Exponential")), BACKOFF_EXPONENTIAL,
+        "parse Exponential");
+    assert_eq(step_backoff_from_name(str_from("nope")), BACKOFF_FIXED, "parse unknown -> Fixed");
+    assert_streq(step_trigger_name(TRIGGER_ALL), "All", "All name");
+    assert_streq(step_trigger_name(TRIGGER_ANY), "Any", "Any name");
+    assert_eq(step_trigger_from_name(str_from("Any")), TRIGGER_ANY, "parse Any");
+    assert_eq(step_trigger_from_name(str_from("nope")), TRIGGER_ALL, "parse unknown -> All");
+
+    test_group("backoff_delay_ms — Fixed");
+    assert_eq(step_backoff_delay_ms(BACKOFF_FIXED, 1000, 1), 1000, "fixed attempt 1");
+    assert_eq(step_backoff_delay_ms(BACKOFF_FIXED, 1000, 5), 1000, "fixed attempt 5 unchanged");
+
+    test_group("backoff_delay_ms — Linear (base*attempt)");
+    assert_eq(step_backoff_delay_ms(BACKOFF_LINEAR, 1000, 1), 1000, "linear attempt 1");
+    assert_eq(step_backoff_delay_ms(BACKOFF_LINEAR, 1000, 3), 3000, "linear attempt 3");
+    assert_eq(step_backoff_delay_ms(BACKOFF_LINEAR, 500, 4), 2000, "linear base 500 attempt 4");
+
+    test_group("backoff_delay_ms — Exponential (base*2^(attempt-1))");
+    assert_eq(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, 1000, 1), 1000, "exp attempt 1 -> 2^0");
+    assert_eq(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, 1000, 2), 2000, "exp attempt 2 -> 2^1");
+    assert_eq(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, 1000, 3), 4000, "exp attempt 3 -> 2^2");
+    assert_eq(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, 1000, 4), 8000, "exp attempt 4 -> 2^3");
+
+    test_group("backoff_delay_ms — overflow saturation");
+    # Linear: base * attempt overflows i64 -> clamps to STEP_I64_MAX (not wraps).
+    assert_eq(step_backoff_delay_ms(BACKOFF_LINEAR, STEP_I64_MAX, 2), STEP_I64_MAX,
+        "linear overflow saturates");
+    # Exponential: huge shift (attempt-1 >= 63) -> factor clamps -> product saturates.
+    assert_eq(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, 1000, 100), STEP_I64_MAX,
+        "exp huge attempt saturates");
+    assert_eq(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, STEP_I64_MAX, 5), STEP_I64_MAX,
+        "exp big base saturates");
+    # Exponential at the i64 shift boundary: attempt 63 -> shift 62 -> 2^62 fits; *1 stays.
+    assert_eq(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, 1, 63), 0x4000000000000000,
+        "exp attempt 63 -> 2^62 fits");
+    # attempt 64 -> shift 63 -> clamp factor.
+    assert_eq(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, 1, 64), STEP_I64_MAX,
+        "exp attempt 64 -> shift 63 clamps");
+
+    test_group("StepResult");
+    var ra = step_new(str_from("r"));
+    var out = bayan_json_v_int_new(42);
+    var res = step_result_new(step_id_hi(ra), step_id_lo(ra), STATUS_COMPLETED, out, 1234, 2);
+    assert_eq(step_result_status(res), STATUS_COMPLETED, "result status");
+    assert_eq(step_result_duration_ms(res), 1234, "result duration");
+    assert_eq(step_result_attempts(res), 2, "result attempts");
+    assert_eq(step_result_error(res), 0, "result error None by default");
+    assert_eq(bayan_json_v_int(step_result_output(res)), 42, "result output value");
+    step_result_set_error(res, str_from("boom"));
+    assert(str_eq_cstr(step_result_error(res), "boom"), "result error set");
+    var rjson = step_result_to_json(res);
+    assert_eq(contains_cstr(rjson, "\"status\":\"Completed\""), 1, "result json status PascalCase");
+    assert_eq(contains_cstr(rjson, "\"duration_ms\":1234"), 1, "result json duration");
+    assert_eq(contains_cstr(rjson, "\"attempts\":2"), 1, "result json attempts");
+    assert_eq(contains_cstr(rjson, "\"error\":\"boom\""), 1, "result json error");
+    var rnull = step_result_new(0, 0, STATUS_FAILED, 0, 0, 1);
+    var rnjson = step_result_to_json(rnull);
+    assert_eq(contains_cstr(rnjson, "\"error\":null"), 1, "result json error null when None");
+    assert_eq(contains_cstr(rnjson, "\"output\":null"), 1, "result json output null when absent");
+
+    test_group("step_to_json — field presence");
+    var sj = step_new(str_from("deploy"));
+    sj = step_with_rollback(step_with_retries(step_with_timeout(sj, 60000), 3, 5000));
+    sj = step_with_backoff(sj, BACKOFF_EXPONENTIAL);
+    sj = step_with_step_type(sj, str_from("bash"));
+    var js = step_to_json(sj);
+    assert_eq(contains_cstr(js, "\"name\":\"deploy\""), 1, "json name");
+    assert_eq(contains_cstr(js, "\"timeout_ms\":60000"), 1, "json timeout");
+    assert_eq(contains_cstr(js, "\"max_retries\":3"), 1, "json max_retries");
+    assert_eq(contains_cstr(js, "\"retry_delay_ms\":5000"), 1, "json retry_delay");
+    assert_eq(contains_cstr(js, "\"backoff\":\"Exponential\""), 1, "json backoff PascalCase");
+    assert_eq(contains_cstr(js, "\"rollbackable\":true"), 1, "json rollbackable true");
+    assert_eq(contains_cstr(js, "\"step_type\":\"bash\""), 1, "json step_type present");
+    assert_eq(contains_cstr(js, "\"trigger_mode\":\"All\""), 1, "json trigger_mode");
+    assert_eq(contains_cstr(js, "\"depends_on\":[]"), 1, "json depends_on empty array");
+
+    test_group("step_to_json — skip_serializing_if for None optionals");
+    var sk = step_new(str_from("plain"));
+    var skjs = step_to_json(sk);
+    assert_eq(contains_cstr(skjs, "step_type"), 0, "step_type omitted when None");
+    assert_eq(contains_cstr(skjs, "config"), 0, "config omitted when None");
+    assert_eq(contains_cstr(skjs, "condition"), 0, "condition omitted when None");
+    assert_eq(contains_cstr(skjs, "sub_steps"), 0, "sub_steps omitted when empty");
+
+    test_group("serde_roundtrip (step.rs serde_roundtrip test)");
+    var rt = step_new(str_from("test"));
+    var rtjson = step_to_json(rt);
+    var back = step_from_json(rtjson);
+    assert(back != 0, "round-trip parses");
+    assert(str_eq_cstr(step_name(back), "test"), "round-trip name preserved");
+    assert_eq(step_timeout_ms(back), 30000, "round-trip timeout preserved");
+    assert_eq(step_max_retries(back), 0, "round-trip retries preserved");
+    assert_eq(step_retry_delay_ms(back), 1000, "round-trip delay preserved");
+    assert_eq(step_id_hi(back), step_id_hi(rt), "round-trip id hi preserved");
+    assert_eq(step_id_lo(back), step_id_lo(rt), "round-trip id lo preserved");
+
+    test_group("serde_roundtrip_any (step.rs proptest, fixed inputs)");
+    var any = step_with_retries(step_with_timeout(step_new(str_from("my-step_1")), 600000), 7, 30000);
+    var anyback = step_from_json(step_to_json(any));
+    assert(str_eq_cstr(step_name(anyback), "my-step_1"), "any name");
+    assert_eq(step_timeout_ms(anyback), 600000, "any timeout");
+    assert_eq(step_max_retries(anyback), 7, "any retries");
+    assert_eq(step_retry_delay_ms(anyback), 30000, "any delay");
+
+    test_group("step_to_json/from_json — full field round-trip");
+    var full = step_new(str_from("full"));
+    full = step_with_backoff(full, BACKOFF_LINEAR);
+    full = step_with_trigger_mode(full, TRIGGER_ANY);
+    full = step_with_step_type(full, str_from("http"));
+    full = step_with_condition(full, str_from("ctx.ok == true"));
+    full = step_with_hardware(full, 3);
+    var dep = step_new(str_from("dep"));
+    full = step_depends_on_add(full, step_id_hi(dep), step_id_lo(dep));
+    var child = step_new(str_from("child1"));
+    full = step_with_sub_step(full, child);
+    var fcfg = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(fcfg, str_from("k"), bayan_json_v_int_new(9));
+    full = step_with_config(full, fcfg);
+    var fback = step_from_json(step_to_json(full));
+    assert(fback != 0, "full round-trip parses");
+    assert_eq(step_backoff(fback), BACKOFF_LINEAR, "full backoff preserved");
+    assert_eq(step_trigger_mode(fback), TRIGGER_ANY, "full trigger_mode preserved");
+    assert(str_eq_cstr(step_step_type(fback), "http"), "full step_type preserved");
+    assert(str_eq_cstr(step_condition(fback), "ctx.ok == true"), "full condition preserved");
+    assert_eq(step_hardware(fback), 3, "full hardware preserved");
+    assert_eq(step_depends_on_len(fback), 1, "full depends_on preserved");
+    assert_eq(step_depends_on_hi(fback, 0), step_id_hi(dep), "full dep id preserved");
+    assert_eq(step_sub_steps_len(fback), 1, "full sub_steps preserved");
+    assert(str_eq_cstr(step_name(step_sub_step_at(fback, 0)), "child1"), "full sub_step name");
+    assert(step_config(fback) != 0, "full config preserved");
+    assert_eq(bayan_json_v_int(bayan_json_v_obj_get(step_config(fback), "k")), 9,
+        "full config value preserved");
+
+    test_group("step_from_json — missing optionals default (serde-default semantics)");
+    var minimal = step_from_json(str_from("{\"name\":\"m\"}"));
+    assert(minimal != 0, "minimal json parses");
+    assert(str_eq_cstr(step_name(minimal), "m"), "minimal name");
+    assert_eq(step_timeout_ms(minimal), 30000, "missing timeout -> 30000 default");
+    assert_eq(step_max_retries(minimal), 0, "missing retries -> 0 default");
+    assert_eq(step_retry_delay_ms(minimal), 1000, "missing delay -> 1000 default");
+    assert_eq(step_backoff(minimal), BACKOFF_FIXED, "missing backoff -> Fixed default");
+    assert_eq(step_trigger_mode(minimal), TRIGGER_ALL, "missing trigger_mode -> All default");
+    assert_eq(step_sub_steps_len(minimal), 0, "missing sub_steps -> empty default");
+    assert_eq(step_depends_on_len(minimal), 0, "missing depends_on -> empty default");
+    assert_eq(step_step_type(minimal), 0, "missing step_type -> None");
+    assert_eq(step_config(minimal), 0, "missing config -> None");
+    assert_eq(step_condition(minimal), 0, "missing condition -> None");
+    assert_eq(step_hardware(minimal), REQ_NONE, "missing hardware -> REQ_NONE default");
+    assert_eq(step_rollbackable(minimal), 0, "missing rollbackable -> false default");
+
+    test_group("step_from_json — bogus enum strings default");
+    var bog = step_from_json(str_from("{\"name\":\"b\",\"backoff\":\"Nope\",\"trigger_mode\":\"Huh\"}"));
+    assert_eq(step_backoff(bog), BACKOFF_FIXED, "unknown backoff -> Fixed");
+    assert_eq(step_trigger_mode(bog), TRIGGER_ALL, "unknown trigger_mode -> All");
+
+    test_group("step_from_json — malformed input returns 0");
+    assert_eq(step_from_json(str_from("not json")), 0, "malformed json -> 0");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

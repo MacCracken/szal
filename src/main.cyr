@@ -1,12 +1,61 @@
-# szal — Cyrius port
-# Ported from 13172 lines of Rust
+# szal — Cyrius port (from 13172 lines of Rust, frozen at rust-old/, git tag 1.2.0)
+# Workflow engine: step/flow execution with branching, retry, rollback, DAG + parallel stages.
+#
+# Includes are explicit (cyrius 6.x: `cyrius lib sync` provisions ./lib/; the entry must
+# `include` what it uses). Order is single-pass dependency order — stdlib first, then szal
+# modules in the port-plan §4 topological order. Project modules are added as they land.
 
-# Stdlib auto-included via cyrius.cyml
+# --- Standard library (single-pass dependency order; proven by tests/szal_core.tcyr) ---
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+
+# --- szal foundation modules (port-plan §4 topological order) ---
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/migration.cyr"
 
 fn main() {
     alloc_init();
-    println("szal ready");
-    return 0;
+    # Route sakshi to its ring buffer so otel sink / log output never pollutes stdout.
+    sakshi_output_buffer();
+
+    # Smoke the composed foundation surface: build a 2-step linear DAG and validate it.
+    # (Proves every foundation module links into the entry TU; full assertions live in
+    # tests/szal_core.tcyr.)
+    var build = step_new(str_from("build"));
+    var deploy = step_new(str_from("deploy"));
+    step_depends_on_add(deploy, step_id_hi(build), step_id_lo(build));
+    var pipe = flow_new(str_from("pipeline"), FLOW_DAG);
+    flow_add_step(pipe, build);
+    flow_add_step(pipe, deploy);
+
+    if (is_ok(flow_validate(pipe))) {
+        println("szal ready");
+        return 0;
+    }
+    println("szal: foundation smoke failed");
+    return 1;
 }
 
 var r = main();

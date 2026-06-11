@@ -1,0 +1,458 @@
+# flow.cyr — flow definitions: how steps are wired together
+#
+# Ports rust-old/src/flow.rs (FlowDef + builders, FlowMode, validate / cycle check,
+# serde (de)serialization). FlowDef is a heap blob with an enum of byte-offset layout
+# constants and accessor fns (the majra heap-struct idiom). The flow id is a UUID carried
+# as two i64 halves (hi, lo) matching src/uuid.cyr; steps is a vec of StepDef* (src/step.cyr).
+#
+# Usage: include "src/flow.cyr"
+# Requires: lib/str.cyr (Str + builder), lib/vec.cyr, lib/hashmap.cyr, lib/alloc.cyr
+#   (alloc_init before any constructor), lib/result.cyr (Ok/Err), lib/bayan.cyr (json_v +
+#   flow_to_json/from_json; lib/io must be in scope before lib/bayan), src/error.cyr
+#   (SzalErr + szal_err), src/uuid.cyr (uuid_generate/uuid_to_str/uuid_parse), src/step.cyr
+#   (StepDef accessors + step_to_json/step_from_json).
+# Naming: every public symbol is flow_/FlowMode-prefixed; no bare names that collide with
+#   vendored majra/bote. Internal helpers use the _ prefix.
+
+# FlowMode — execution mode for a flow. Values are declaration order (0/1/2/3), matching the
+# Rust enum order (flow.rs 34-43). NOTE flow.rs has TWO distinct string forms: the Display
+# impl emits lowercase (flow_mode_display: "sequential"/"parallel"/"dag"/"hierarchical") while
+# the serde Serialize impl (derive, no rename_all) emits the PascalCase variant name
+# (flow_mode_serde_name: "Sequential"/...). FlowDef JSON carries the serde (PascalCase) form;
+# the lowercase Display form is what InvalidFlow error messages interpolate. (flow.rs 45-54.)
+enum FlowMode {
+    FLOW_SEQUENTIAL = 0;
+    FLOW_PARALLEL = 1;
+    FLOW_DAG = 2;
+    FLOW_HIERARCHICAL = 3;
+}
+
+# Map a FlowMode to its Display (lowercase) string (cstr). Mirrors the std::fmt::Display impl
+# (flow.rs 45-54). Used in InvalidFlow detail messages. Unknown -> "sequential".
+fn flow_mode_display(m) {
+    if (m == FLOW_SEQUENTIAL) { return "sequential"; }
+    if (m == FLOW_PARALLEL) { return "parallel"; }
+    if (m == FLOW_DAG) { return "dag"; }
+    if (m == FLOW_HIERARCHICAL) { return "hierarchical"; }
+    return "sequential";
+}
+
+# Map a FlowMode to its serde/Debug (PascalCase) name (cstr). This is what FlowDef JSON carries
+# (derive(Serialize), no rename_all). Unknown -> "Sequential".
+fn flow_mode_serde_name(m) {
+    if (m == FLOW_SEQUENTIAL) { return "Sequential"; }
+    if (m == FLOW_PARALLEL) { return "Parallel"; }
+    if (m == FLOW_DAG) { return "Dag"; }
+    if (m == FLOW_HIERARCHICAL) { return "Hierarchical"; }
+    return "Sequential";
+}
+
+# Parse a FlowMode from its serde PascalCase name (Str). Unknown/missing -> FLOW_SEQUENTIAL
+# (serde would error on an unknown variant; for serde-default parity on a malformed/missing
+# field we fall back to the first declared variant). Used by flow_from_json.
+fn flow_mode_from_name(s) {
+    if (s == 0) { return FLOW_SEQUENTIAL; }
+    if (str_eq_cstr(s, "Parallel") == 1) { return FLOW_PARALLEL; }
+    if (str_eq_cstr(s, "Dag") == 1) { return FLOW_DAG; }
+    if (str_eq_cstr(s, "Hierarchical") == 1) { return FLOW_HIERARCHICAL; }
+    return FLOW_SEQUENTIAL;
+}
+
+# The default flow definition version (1) for flows lacking an explicit one. Mirrors
+# default_flow_version (flow.rs 90-92): flows serialized before versioning deserialize to 1.
+fn flow_default_version() {
+    return 1;
+}
+
+# FlowDef — heap blob. Mirrors the Rust struct (flow.rs 68-85). id is two i64 UUID halves;
+# name/description are Str ptrs; mode is a FlowMode enum value; steps is a vec of StepDef*;
+# rollback_on_failure is 1/0; timeout_ms holds the Option<u64> as a present-flag + value pair
+# (Rust None -> flag 0; Some(ms) -> flag 1 + the ms); version defaults to 1.
+#
+# Byte layout (72 bytes):
+#   +0    id_hi              (i64, uuid hi half)
+#   +8    id_lo              (i64, uuid lo half)
+#   +16   name               (Str ptr)
+#   +24   description        (Str ptr)
+#   +32   mode               (i64 FlowMode, default FLOW_SEQUENTIAL via flow_new arg)
+#   +40   steps              (vec of StepDef ptrs)
+#   +48   rollback_on_failure(i64 1/0, default 0)
+#   +56   timeout_present    (i64 1/0; 0 = None, 1 = Some — Option<u64> flag)
+#   +64   timeout_ms         (i64, the Some value; meaningless when timeout_present == 0)
+#   +72   version            (i64 u32, default 1)
+enum FlowDefL {
+    FLOWDEF_SIZE = 80;
+    FD_ID_HI = 0;
+    FD_ID_LO = 8;
+    FD_NAME = 16;
+    FD_DESCRIPTION = 24;
+    FD_MODE = 32;
+    FD_STEPS = 40;
+    FD_ROLLBACK = 48;
+    FD_TIMEOUT_PRESENT = 56;
+    FD_TIMEOUT_MS = 64;
+    FD_VERSION = 72;
+}
+
+# --- FlowDef accessors ---
+
+# Get the flow id high half (i64).
+fn flow_id_hi(f) { return load64(f + FD_ID_HI); }
+
+# Get the flow id low half (i64).
+fn flow_id_lo(f) { return load64(f + FD_ID_LO); }
+
+# Get the flow name (Str ptr).
+fn flow_name(f) { return load64(f + FD_NAME); }
+
+# Get the flow description (Str ptr).
+fn flow_description(f) { return load64(f + FD_DESCRIPTION); }
+
+# Get the flow mode (FlowMode enum value).
+fn flow_mode(f) { return load64(f + FD_MODE); }
+
+# Get the steps vec (vec of StepDef ptrs).
+fn flow_steps(f) { return load64(f + FD_STEPS); }
+
+# Get the number of steps.
+fn flow_steps_len(f) { return vec_len(load64(f + FD_STEPS)); }
+
+# Get the i-th step (StepDef ptr).
+fn flow_step_at(f, i) { return vec_get(load64(f + FD_STEPS), i); }
+
+# Whether to rollback completed steps on failure (1/0).
+fn flow_rollback_on_failure(f) { return load64(f + FD_ROLLBACK); }
+
+# Is the timeout set (Option::is_some)? 1/0.
+fn flow_timeout_present(f) { return load64(f + FD_TIMEOUT_PRESENT); }
+
+# Get the timeout in milliseconds (i64; only meaningful when flow_timeout_present == 1).
+fn flow_timeout_ms(f) { return load64(f + FD_TIMEOUT_MS); }
+
+# Get the definition version (i64; default 1).
+fn flow_version(f) { return load64(f + FD_VERSION); }
+
+# --- Builders ---
+
+# Allocate a fresh FlowDef with the given name (Str) and mode (FlowMode) and flow.rs defaults:
+# a freshly generated v4 UUID id, empty description, empty steps, rollback_on_failure false,
+# timeout_ms None, version 1. Mirrors FlowDef::new (flow.rs 95-107). Returns 0 on OOM.
+fn flow_new(name, mode) {
+    var f = alloc(FLOWDEF_SIZE);
+    if (f == 0) { return 0; }
+    var hi, lo = uuid_generate();
+    store64(f + FD_ID_HI, hi);
+    store64(f + FD_ID_LO, lo);
+    store64(f + FD_NAME, name);
+    store64(f + FD_DESCRIPTION, str_from(""));
+    store64(f + FD_MODE, mode);
+    store64(f + FD_STEPS, vec_new());
+    store64(f + FD_ROLLBACK, 0);
+    store64(f + FD_TIMEOUT_PRESENT, 0);
+    store64(f + FD_TIMEOUT_MS, 0);
+    store64(f + FD_VERSION, flow_default_version());
+    return f;
+}
+
+# Append a step (mirrors add_step, flow.rs 109-111). step is a StepDef*. Returns f.
+fn flow_add_step(f, step) {
+    if (f == 0) { return 0; }
+    vec_push(load64(f + FD_STEPS), step);
+    return f;
+}
+
+# Set the definition version (mirrors with_version, flow.rs 114-118). Returns f.
+fn flow_with_version(f, version) {
+    if (f == 0) { return 0; }
+    store64(f + FD_VERSION, version);
+    return f;
+}
+
+# Mark the flow as rollback-on-failure (mirrors with_rollback, flow.rs 120-124). Returns f.
+fn flow_with_rollback(f) {
+    if (f == 0) { return 0; }
+    store64(f + FD_ROLLBACK, 1);
+    return f;
+}
+
+# Set the total flow timeout in ms (mirrors with_timeout, flow.rs 126-130). Sets the Option to
+# Some(ms). Returns f.
+fn flow_with_timeout(f, ms) {
+    if (f == 0) { return 0; }
+    store64(f + FD_TIMEOUT_PRESENT, 1);
+    store64(f + FD_TIMEOUT_MS, ms);
+    return f;
+}
+
+# --- Validation ---
+
+# Validate the flow. Mirrors FlowDef::validate (flow.rs 133-155). Returns Ok(0) on success or
+# Err(code) (with the detail set in the szal last-error buffer) on the first violation, in the
+# SAME ORDER as Rust:
+#   1. Dag      -> _flow_check_cycles (cycle check + non-existent-dep check).
+#      non-Dag  -> any step with a non-empty depends_on is invalid.
+#   2. Hierarchical -> _flow_validate_hierarchical (recursive: no depends_on anywhere).
+#   3. any step with trigger_mode Any AND empty depends_on is invalid.
+fn flow_validate(f) {
+    if (f == 0) {
+        return szal_err(ERR_FLOW_INVALID, str_from("flow is null"));
+    }
+    var mode = flow_mode(f);
+    if (mode == FLOW_DAG) {
+        _flow_check_cycles(f)?;
+    } elif (_flow_any_step_has_deps(f) == 1) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "steps have dependencies but flow mode is ");
+        str_builder_add_cstr(sb, flow_mode_display(mode));
+        str_builder_add_cstr(sb, " (use dag mode for dependencies)");
+        return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+    }
+    if (mode == FLOW_HIERARCHICAL) {
+        _flow_validate_hierarchical(flow_steps(f))?;
+    }
+    # Reject TriggerMode::Any with no dependencies
+    var n = flow_steps_len(f);
+    var i = 0;
+    while (i < n) {
+        var step = flow_step_at(f, i);
+        if ((step_trigger_mode(step) == TRIGGER_ANY) && (step_depends_on_len(step) == 0)) {
+            var sb2 = str_builder_new();
+            str_builder_add_cstr(sb2, "step '");
+            str_builder_add(sb2, step_name(step));
+            str_builder_add_cstr(sb2, "' has trigger_mode Any but no dependencies");
+            return szal_err(ERR_FLOW_INVALID, str_builder_build(sb2));
+        }
+        i = i + 1;
+    }
+    return Ok(0);
+}
+
+# _flow_any_step_has_deps(f) -> 1 if ANY top-level step has a non-empty depends_on, else 0.
+# Mirrors the `self.steps.iter().any(|s| !s.depends_on.is_empty())` guard (flow.rs 136). Internal.
+fn _flow_any_step_has_deps(f) {
+    var n = flow_steps_len(f);
+    var i = 0;
+    while (i < n) {
+        if (step_depends_on_len(flow_step_at(f, i)) != 0) {
+            return 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# _flow_validate_hierarchical(steps) -> Ok(0) or Err. Recursively rejects any step (at any depth
+# in the sub_steps tree) that has a non-empty depends_on. Mirrors validate_hierarchical
+# (flow.rs 157-168). steps is a vec of StepDef*. Internal.
+fn _flow_validate_hierarchical(steps) {
+    var n = vec_len(steps);
+    var i = 0;
+    while (i < n) {
+        var step = vec_get(steps, i);
+        if (step_depends_on_len(step) != 0) {
+            var sb = str_builder_new();
+            str_builder_add_cstr(sb, "step '");
+            str_builder_add(sb, step_name(step));
+            str_builder_add_cstr(sb, "' has depends_on in hierarchical mode (use sub_steps for nesting)");
+            return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+        }
+        _flow_validate_hierarchical(step_sub_steps(step))?;
+        i = i + 1;
+    }
+    return Ok(0);
+}
+
+# _flow_check_cycles(f) -> Ok(0) or Err. Mirrors check_cycles (flow.rs 170-220): a DFS three-
+# color cycle check over the depends_on edges, then a check that every depends_on target
+# references a known step. On a cycle: Err(ERR_CYCLE) with the FLOW NAME as the detail
+# (CycleDetected(self.name)). On an unknown dep: Err(ERR_FLOW_INVALID) with the per-step msg.
+#
+# UUIDs are 128-bit (two i64 halves); we index steps by a 32-char hex UUID-string key in cstr-
+# keyed hashmaps (id_set / visited / in_stack) and resolve a node's neighbor list (depends_on)
+# via the same key. This mirrors Rust's HashSet<Uuid>/HashMap<Uuid, &Vec<Uuid>> with a string
+# key as the i64-collapse-safe identity (a raw hi^lo i64 could collide; the 36-char string is
+# the exact identity uuid_to_str round-trips). Internal.
+fn _flow_check_cycles(f) {
+    var n = flow_steps_len(f);
+    # id_set : set of all step-id keys -> the step's own index (value unused, presence is the set).
+    var id_set = map_new();
+    # deps_map : step-id key -> the StepDef* (to read its depends_on neighbor list in dfs).
+    var deps_map = map_new();
+    var i = 0;
+    while (i < n) {
+        var step = flow_step_at(f, i);
+        var key = str_cstr(uuid_to_str(step_id_hi(step), step_id_lo(step)));
+        map_set(id_set, key, 1);
+        map_set(deps_map, key, step);
+        i = i + 1;
+    }
+    var visited = map_new();
+    var in_stack = map_new();
+    var i2 = 0;
+    while (i2 < n) {
+        var step2 = flow_step_at(f, i2);
+        var key2 = str_cstr(uuid_to_str(step_id_hi(step2), step_id_lo(step2)));
+        if (map_has(visited, key2) == 0) {
+            if (_flow_dfs(key2, deps_map, visited, in_stack) == 1) {
+                return szal_err(ERR_CYCLE, flow_name(f));
+            }
+        }
+        i2 = i2 + 1;
+    }
+    # Check for references to non-existent steps (flow.rs 207-217).
+    var i3 = 0;
+    while (i3 < n) {
+        var step3 = flow_step_at(f, i3);
+        var dn = step_depends_on_len(step3);
+        var j = 0;
+        while (j < dn) {
+            var dkey = str_cstr(uuid_to_str(step_depends_on_hi(step3, j),
+            step_depends_on_lo(step3, j)));
+            if (map_has(id_set, dkey) == 0) {
+                var sb = str_builder_new();
+                str_builder_add_cstr(sb, "step '");
+                str_builder_add(sb, step_name(step3));
+                str_builder_add_cstr(sb, "' depends on non-existent step");
+                return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+            }
+            j = j + 1;
+        }
+        i3 = i3 + 1;
+    }
+    return Ok(0);
+}
+
+# _flow_dfs(node_key, deps_map, visited, in_stack) -> 1 if a back-edge (cycle) is found from
+# node_key, else 0. Mirrors the inner dfs (flow.rs 178-199): mark visited + in_stack, recurse
+# into each neighbor (the node's depends_on targets); a neighbor already in_stack is a cycle.
+# node_key is a cstr UUID-string key; deps_map maps it to the StepDef*. Internal.
+fn _flow_dfs(node_key, deps_map, visited, in_stack) {
+    map_set(visited, node_key, 1);
+    map_set(in_stack, node_key, 1);
+    var step = map_get(deps_map, node_key);
+    if (step != 0) {
+        var dn = step_depends_on_len(step);
+        var k = 0;
+        while (k < dn) {
+            var nkey = str_cstr(uuid_to_str(step_depends_on_hi(step, k),
+            step_depends_on_lo(step, k)));
+            if (map_has(visited, nkey) == 0) {
+                if (_flow_dfs(nkey, deps_map, visited, in_stack) == 1) {
+                    return 1;
+                }
+            } elif (map_has(in_stack, nkey) == 1) {
+                return 1;
+            }
+            k = k + 1;
+        }
+    }
+    map_delete(in_stack, node_key);
+    return 0;
+}
+
+# --- JSON (de)serialization ---
+
+# Serialize a FlowDef to a JSON object Str. Field set + order matches the Rust serde Serialize
+# of FlowDef (flow.rs 68-85, derive(Serialize), no skip attributes): id (UUID string), name,
+# description, mode (PascalCase variant name), steps (array of StepDef objects), rollback_on_
+# failure, timeout_ms (null when None), version. (version has #[serde(default)] but is still
+# serialized.)
+fn flow_to_json(f) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("id"),
+    bayan_json_v_str_new(uuid_to_str(flow_id_hi(f), flow_id_lo(f))));
+    bayan_json_v_obj_set(o, str_from("name"), bayan_json_v_str_new(flow_name(f)));
+    bayan_json_v_obj_set(o, str_from("description"),
+    bayan_json_v_str_new(flow_description(f)));
+    bayan_json_v_obj_set(o, str_from("mode"),
+    bayan_json_v_str_new(str_from(flow_mode_serde_name(flow_mode(f)))));
+    var steps = bayan_json_v_arr_new();
+    var n = flow_steps_len(f);
+    var i = 0;
+    while (i < n) {
+        bayan_json_v_arr_push(steps, bayan_json_v_parse(step_to_json(flow_step_at(f, i))));
+        i = i + 1;
+    }
+    bayan_json_v_obj_set(o, str_from("steps"), steps);
+    bayan_json_v_obj_set(o, str_from("rollback_on_failure"),
+    bayan_json_v_bool_new(flow_rollback_on_failure(f)));
+    if (flow_timeout_present(f) == 1) {
+        bayan_json_v_obj_set(o, str_from("timeout_ms"),
+        bayan_json_v_int_new(flow_timeout_ms(f)));
+    } else {
+        bayan_json_v_obj_set(o, str_from("timeout_ms"), bayan_json_v_null());
+    }
+    bayan_json_v_obj_set(o, str_from("version"),
+    bayan_json_v_int_new(flow_version(f)));
+    return bayan_json_v_build(o);
+}
+
+# Build a FlowDef from a parsed json_v object with serde-default semantics: a missing version
+# field falls back to 1 (flow.rs #[serde(default = "default_flow_version")]); name/description
+# default to ""; mode defaults to Sequential; steps default to empty; rollback default false;
+# timeout_ms null/missing -> None. id parses from the UUID string (malformed -> a fresh id,
+# matching step_from_json). Internal — flow_from_json wraps the Str entry.
+fn _flow_from_v(o) {
+    if (o == 0) { return 0; }
+    var name_v = bayan_json_v_obj_get(o, "name");
+    var name = str_from("");
+    if (bayan_json_v_is_str(name_v) == 1) { name = bayan_json_v_str(name_v); }
+    var mode_v = bayan_json_v_obj_get(o, "mode");
+    var mode = FLOW_SEQUENTIAL;
+    if (bayan_json_v_is_str(mode_v) == 1) {
+        mode = flow_mode_from_name(bayan_json_v_str(mode_v));
+    }
+    var f = flow_new(name, mode);
+    if (f == 0) { return 0; }
+    # id (parse the UUID string; malformed -> keep the fresh generated id)
+    var id_v = bayan_json_v_obj_get(o, "id");
+    if (bayan_json_v_is_str(id_v) == 1) {
+        var hi, lo = uuid_parse(str_cstr(bayan_json_v_str(id_v)));
+        if (uuid_parse_ok(hi, lo) == 1) {
+            store64(f + FD_ID_HI, hi);
+            store64(f + FD_ID_LO, lo);
+        }
+    }
+    # description (default "")
+    var desc_v = bayan_json_v_obj_get(o, "description");
+    if (bayan_json_v_is_str(desc_v) == 1) {
+        store64(f + FD_DESCRIPTION, bayan_json_v_str(desc_v));
+    }
+    # steps (default empty; array of StepDef objects)
+    var steps_v = bayan_json_v_obj_get(o, "steps");
+    if (bayan_json_v_is_arr(steps_v) == 1) {
+        var sn = bayan_json_v_arr_len(steps_v);
+        var i = 0;
+        while (i < sn) {
+            var sub = _step_from_v(bayan_json_v_arr_get(steps_v, i));
+            if (sub != 0) { flow_add_step(f, sub); }
+            i = i + 1;
+        }
+    }
+    # rollback_on_failure (default false)
+    var rb_v = bayan_json_v_obj_get(o, "rollback_on_failure");
+    if (bayan_json_v_is_bool(rb_v) == 1) {
+        store64(f + FD_ROLLBACK, bayan_json_v_bool(rb_v));
+    }
+    # timeout_ms (Option<u64> -> None when missing/null)
+    var to_v = bayan_json_v_obj_get(o, "timeout_ms");
+    if (bayan_json_v_is_int(to_v) == 1) {
+        store64(f + FD_TIMEOUT_PRESENT, 1);
+        store64(f + FD_TIMEOUT_MS, bayan_json_v_int(to_v));
+    }
+    # version (#[serde(default = "default_flow_version")] -> 1 when missing)
+    var ver_v = bayan_json_v_obj_get(o, "version");
+    if (bayan_json_v_is_int(ver_v) == 1) {
+        store64(f + FD_VERSION, bayan_json_v_int(ver_v));
+    }
+    return f;
+}
+
+# Deserialize a FlowDef from a JSON object Str with serde-default semantics (missing version ->
+# 1, missing optionals default rather than fail). Returns 0 on parse failure. Mirrors
+# serde_json::from_str::<FlowDef>.
+fn flow_from_json(json) {
+    var o = bayan_json_v_parse(json);
+    if (o == 0) { return 0; }
+    return _flow_from_v(o);
+}

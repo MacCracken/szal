@@ -1,0 +1,343 @@
+# bus.cyr — workflow lifecycle event types (M1 scope)
+#
+# Ports rust-old/src/bus.rs (WorkflowEvent, EventType, constructors, topic(),
+# JSON serialization, otel_event_sink). The majra-pubsub-backed EventBus
+# (bus_new/bus_publish/bus_subscribe) is NOT ported here — majra is not vendored
+# until M3. See 'todo'.
+#
+# Usage: include "src/bus.cyr"
+# Requires: lib/str.cyr (Str + builder), lib/alloc.cyr (alloc_init before any
+# constructor), lib/chrono.cyr (clock_epoch_ns, iso8601), lib/sakshi.cyr +
+# lib/log.cyr (for otel_event_sink output routing).
+# Naming: every public symbol is event_/EventType-prefixed; the otel sink reuses
+# sakshi/log surfaces. No bare names that collide with vendored majra/bote.
+
+# EventType — the 11 workflow lifecycle event kinds. Values are arbitrary
+# (0-indexed declaration order). The wire/Display name (event_type_name) is the
+# snake_case string Rust's Display impl + serde(rename_all="snake_case") emit;
+# both agree, so one table covers serialization and topic building.
+enum EventType {
+    FLOW_STARTED = 0;
+    FLOW_COMPLETED = 1;
+    FLOW_FAILED = 2;
+    FLOW_ROLLED_BACK = 3;
+    STEP_STARTED = 4;
+    STEP_COMPLETED = 5;
+    STEP_FAILED = 6;
+    STEP_RETRY = 7;
+    STEP_ROLLBACK = 8;
+    STEP_SKIPPED = 9;
+    STEP_TIMEOUT = 10;
+}
+
+# Map an EventType to its snake_case wire name (cstr). Mirrors Rust's Display
+# impl exactly (bus.rs lines 57-73). Used by both event_topic and event_to_json.
+fn event_type_name(t) {
+    if (t == FLOW_STARTED) { return "flow_started"; }
+    if (t == FLOW_COMPLETED) { return "flow_completed"; }
+    if (t == FLOW_FAILED) { return "flow_failed"; }
+    if (t == FLOW_ROLLED_BACK) { return "flow_rolled_back"; }
+    if (t == STEP_STARTED) { return "step_started"; }
+    if (t == STEP_COMPLETED) { return "step_completed"; }
+    if (t == STEP_FAILED) { return "step_failed"; }
+    if (t == STEP_RETRY) { return "step_retry"; }
+    if (t == STEP_ROLLBACK) { return "step_rollback"; }
+    if (t == STEP_SKIPPED) { return "step_skipped"; }
+    if (t == STEP_TIMEOUT) { return "step_timeout"; }
+    return "unknown";
+}
+
+# WorkflowEvent — heap blob. Mirrors the Rust struct (bus.rs lines 28-37).
+# Optional fields (flow_name/step_name/step_id/error) hold a Str pointer when
+# present and 0 (Rust None) when absent. attempt/duration_ms are Rust
+# Option<u32>/Option<u64>: Some(0) is a legitimate value distinct from None, and
+# the Rust struct derives Serialize with NO skip_serializing_if, so serde emits
+# every field (None -> null, Some(v) -> v). A bare 0-sentinel cannot distinguish
+# Some(0) from None, so each carries an explicit *_SET presence flag for serde parity.
+#
+# Byte layout (80 bytes):
+#   +0   event_type    (i64 EventType)
+#   +8   flow_name     (Str ptr, 0 = None)
+#   +16  step_name     (Str ptr, 0 = None)
+#   +24  step_id       (Str ptr, 0 = None)
+#   +32  attempt       (i64 value; presence in attempt_set)
+#   +40  duration_ms   (i64 value; presence in duration_set)
+#   +48  error         (Str ptr, 0 = None)
+#   +56  timestamp     (i64 epoch nanoseconds, wall clock)
+#   +64  attempt_set   (i64 1/0 — was attempt explicitly set? serde parity)
+#   +72  duration_set  (i64 1/0 — was duration_ms explicitly set? serde parity)
+enum WorkflowEventL {
+    WE_SIZE = 80;
+    WE_EVENT_TYPE = 0;
+    WE_FLOW_NAME = 8;
+    WE_STEP_NAME = 16;
+    WE_STEP_ID = 24;
+    WE_ATTEMPT = 32;
+    WE_DURATION_MS = 40;
+    WE_ERROR = 48;
+    WE_TIMESTAMP = 56;
+    WE_ATTEMPT_SET = 64;
+    WE_DURATION_SET = 72;
+}
+
+# Get the event_type (EventType enum value).
+fn event_type(e) { return load64(e + WE_EVENT_TYPE); }
+
+# Get the flow_name (Str ptr, or 0 if absent).
+fn event_flow_name(e) { return load64(e + WE_FLOW_NAME); }
+
+# Get the step_name (Str ptr, or 0 if absent).
+fn event_step_name(e) { return load64(e + WE_STEP_NAME); }
+
+# Get the step_id (Str ptr, or 0 if absent).
+fn event_step_id(e) { return load64(e + WE_STEP_ID); }
+
+# Get the attempt count (i64; 0 if absent — see event_attempt_set).
+fn event_attempt(e) { return load64(e + WE_ATTEMPT); }
+
+# Was attempt explicitly set on this event? 1 = present, 0 = None.
+fn event_attempt_set(e) { return load64(e + WE_ATTEMPT_SET); }
+
+# Get the duration_ms (i64; 0 if absent — see event_duration_set).
+fn event_duration_ms(e) { return load64(e + WE_DURATION_MS); }
+
+# Was duration_ms explicitly set on this event? 1 = present, 0 = None.
+fn event_duration_set(e) { return load64(e + WE_DURATION_SET); }
+
+# Get the error/reason message (Str ptr, or 0 if absent).
+fn event_error(e) { return load64(e + WE_ERROR); }
+
+# Get the timestamp (epoch nanoseconds, i64, wall clock).
+fn event_timestamp(e) { return load64(e + WE_TIMESTAMP); }
+
+# Allocate a fresh WorkflowEvent with all optional fields absent and the
+# timestamp set to now (epoch ns). Mirrors WorkflowEvent::new (bus.rs 76-87).
+# Returns 0 on OOM.
+fn _event_new(event_type) {
+    var e = alloc(WE_SIZE);
+    if (e == 0) { return 0; }
+    store64(e + WE_EVENT_TYPE, event_type);
+    store64(e + WE_FLOW_NAME, 0);
+    store64(e + WE_STEP_NAME, 0);
+    store64(e + WE_STEP_ID, 0);
+    store64(e + WE_ATTEMPT, 0);
+    store64(e + WE_DURATION_MS, 0);
+    store64(e + WE_ERROR, 0);
+    store64(e + WE_TIMESTAMP, clock_epoch_ns());
+    store64(e + WE_ATTEMPT_SET, 0);
+    store64(e + WE_DURATION_SET, 0);
+    return e;
+}
+
+# Set flow_name (mirrors with_flow). name is a Str. Returns e.
+fn _event_with_flow(e, name) {
+    if (e == 0) { return 0; }
+    store64(e + WE_FLOW_NAME, name);
+    return e;
+}
+
+# Set step_name + step_id (mirrors with_step). Both are Str. Returns e.
+fn _event_with_step(e, name, id) {
+    if (e == 0) { return 0; }
+    store64(e + WE_STEP_NAME, name);
+    store64(e + WE_STEP_ID, id);
+    return e;
+}
+
+# Set duration_ms (mirrors with_duration). Marks duration as present. Returns e.
+fn _event_with_duration(e, ms) {
+    if (e == 0) { return 0; }
+    store64(e + WE_DURATION_MS, ms);
+    store64(e + WE_DURATION_SET, 1);
+    return e;
+}
+
+# Set attempt (mirrors with_attempt). Marks attempt as present. Returns e.
+fn _event_with_attempt(e, attempt) {
+    if (e == 0) { return 0; }
+    store64(e + WE_ATTEMPT, attempt);
+    store64(e + WE_ATTEMPT_SET, 1);
+    return e;
+}
+
+# Set error/reason (mirrors with_error). error is a Str. Returns e.
+fn _event_with_error(e, error) {
+    if (e == 0) { return 0; }
+    store64(e + WE_ERROR, error);
+    return e;
+}
+
+# Construct a FlowStarted event. flow_name is a Str. (bus.rs 121-123)
+fn event_flow_started(flow_name) {
+    return _event_with_flow(_event_new(FLOW_STARTED), flow_name);
+}
+
+# Construct a FlowCompleted event with duration. (bus.rs 126-130)
+fn event_flow_completed(flow_name, duration_ms) {
+    return _event_with_duration(_event_with_flow(_event_new(FLOW_COMPLETED), flow_name), duration_ms);
+}
+
+# Construct a FlowFailed event with an error message (Str). (bus.rs 133-137)
+fn event_flow_failed(flow_name, error) {
+    return _event_with_error(_event_with_flow(_event_new(FLOW_FAILED), flow_name), error);
+}
+
+# Construct a FlowRolledBack event. (bus.rs 140-142)
+fn event_flow_rolled_back(flow_name) {
+    return _event_with_flow(_event_new(FLOW_ROLLED_BACK), flow_name);
+}
+
+# Construct a StepStarted event. step_name + step_id are Str. (bus.rs 145-147)
+fn event_step_started(step_name, step_id) {
+    return _event_with_step(_event_new(STEP_STARTED), step_name, step_id);
+}
+
+# Construct a StepCompleted event with duration + attempt. (bus.rs 150-155)
+fn event_step_completed(step_name, step_id, duration_ms, attempt) {
+    var e = _event_with_step(_event_new(STEP_COMPLETED), step_name, step_id);
+    return _event_with_attempt(_event_with_duration(e, duration_ms), attempt);
+}
+
+# Construct a StepFailed event with error + attempt. (bus.rs 158-163)
+fn event_step_failed(step_name, step_id, error, attempt) {
+    var e = _event_with_step(_event_new(STEP_FAILED), step_name, step_id);
+    return _event_with_attempt(_event_with_error(e, error), attempt);
+}
+
+# Construct a StepRetry event with attempt. (bus.rs 166-170)
+fn event_step_retry(step_name, step_id, attempt) {
+    return _event_with_attempt(_event_with_step(_event_new(STEP_RETRY), step_name, step_id), attempt);
+}
+
+# Construct a StepSkipped event with a reason (stored in error). (bus.rs 173-177)
+fn event_step_skipped(step_name, step_id, reason) {
+    return _event_with_error(_event_with_step(_event_new(STEP_SKIPPED), step_name, step_id), reason);
+}
+
+# Construct a StepTimeout event with the timeout (stored in duration_ms).
+# (bus.rs 180-184)
+fn event_step_timeout(step_name, step_id, timeout_ms) {
+    return _event_with_duration(_event_with_step(_event_new(STEP_TIMEOUT), step_name, step_id), timeout_ms);
+}
+
+# Construct a StepRollback event. (bus.rs 187-189)
+fn event_step_rollback(step_name, step_id) {
+    return _event_with_step(_event_new(STEP_ROLLBACK), step_name, step_id);
+}
+
+# Is this a flow-scoped event? (the four Flow* variants). Mirrors the topic()
+# match arm split (bus.rs 195-201) — flow variants get szal/flow/..., the rest
+# get szal/step/... .
+fn _event_is_flow(t) {
+    if (t == FLOW_STARTED) { return 1; }
+    if (t == FLOW_COMPLETED) { return 1; }
+    if (t == FLOW_FAILED) { return 1; }
+    if (t == FLOW_ROLLED_BACK) { return 1; }
+    return 0;
+}
+
+# Build the topic string for this event (mirrors topic(), bus.rs 192-207).
+# Flow events: "szal/flow/{flow_name}/{type}". All other events:
+# "szal/step/{step_name}/{type}". A missing name renders as "unknown".
+fn event_topic(e) {
+    var t = event_type(e);
+    var sb = str_builder_new();
+    if (_event_is_flow(t) == 1) {
+        str_builder_add_cstr(sb, "szal/flow/");
+        var fname = event_flow_name(e);
+        if (fname == 0) { str_builder_add_cstr(sb, "unknown"); }
+        else { str_builder_add(sb, fname); }
+    } else {
+        str_builder_add_cstr(sb, "szal/step/");
+        var sname = event_step_name(e);
+        if (sname == 0) { str_builder_add_cstr(sb, "unknown"); }
+        else { str_builder_add(sb, sname); }
+    }
+    str_builder_putc(sb, 47);
+    str_builder_add_cstr(sb, event_type_name(t));
+    return str_builder_build(sb);
+}
+
+# Append a JSON "key":<Str-or-null> pair. Optional fields render null when the
+# value pointer is 0 (serde Option<String> None -> null). leading controls the
+# comma separator (0 = first field, no leading comma).
+fn _event_json_opt_str(sb, key, val, leading) {
+    if (leading == 1) { str_builder_putc(sb, 44); }
+    str_builder_add_json_str(sb, str_from(key));
+    str_builder_putc(sb, 58);
+    if (val == 0) { str_builder_add_cstr(sb, "null"); }
+    else { str_builder_add_json_str(sb, val); }
+    return 0;
+}
+
+# Append a JSON "key":<int-or-null> pair. present=0 renders null (serde
+# Option<u32>/Option<u64> None -> null).
+fn _event_json_opt_int(sb, key, val, present) {
+    str_builder_putc(sb, 44);
+    str_builder_add_json_str(sb, str_from(key));
+    str_builder_putc(sb, 58);
+    if (present == 0) { str_builder_add_cstr(sb, "null"); }
+    else { str_builder_add_int(sb, val); }
+    return 0;
+}
+
+# Serialize this event to a JSON object string (mirrors serde Serialize of
+# WorkflowEvent). Field set + order matches the Rust struct: event_type,
+# flow_name, step_name, step_id, attempt, duration_ms, error, timestamp.
+# Optional fields render null when absent. timestamp renders as an ISO-8601
+# string at SECOND precision via iso8601 (the epoch-ns is truncated to secs;
+# chrono cannot round-trip subsecond — accepted divergence, see parity_notes).
+fn event_to_json(e) {
+    var sb = str_builder_new();
+    str_builder_putc(sb, 123);
+    str_builder_add_json_str(sb, str_from("event_type"));
+    str_builder_putc(sb, 58);
+    str_builder_add_json_str(sb, str_from(event_type_name(event_type(e))));
+    _event_json_opt_str(sb, "flow_name", event_flow_name(e), 1);
+    _event_json_opt_str(sb, "step_name", event_step_name(e), 1);
+    _event_json_opt_str(sb, "step_id", event_step_id(e), 1);
+    _event_json_opt_int(sb, "attempt", event_attempt(e), event_attempt_set(e));
+    _event_json_opt_int(sb, "duration_ms", event_duration_ms(e), event_duration_set(e));
+    _event_json_opt_str(sb, "error", event_error(e), 1);
+    str_builder_putc(sb, 44);
+    str_builder_add_json_str(sb, str_from("timestamp"));
+    str_builder_putc(sb, 58);
+    var secs = event_timestamp(e) / 1000000000;
+    str_builder_add_json_str(sb, str_from(iso8601(secs)));
+    str_builder_putc(sb, 125);
+    return str_builder_build(sb);
+}
+
+# Map an event_type to its OTel-ish status string. Mirrors the status match in
+# otel_event_sink (bus.rs 276-282): completed -> "ok", failed/timeout ->
+# "error", skipped -> "skipped", rolled_back/rollback -> "rolled_back", else
+# "unset".
+fn event_status(t) {
+    if (t == FLOW_COMPLETED) { return "ok"; }
+    if (t == STEP_COMPLETED) { return "ok"; }
+    if (t == FLOW_FAILED) { return "error"; }
+    if (t == STEP_FAILED) { return "error"; }
+    if (t == STEP_TIMEOUT) { return "error"; }
+    if (t == STEP_SKIPPED) { return "skipped"; }
+    if (t == FLOW_ROLLED_BACK) { return "rolled_back"; }
+    if (t == STEP_ROLLBACK) { return "rolled_back"; }
+    return "unset";
+}
+
+# Emit a single event through the OTel-style sink (mirrors otel_event_sink,
+# bus.rs 270-313). Rust emits a structured tracing::info! event with
+# workflow.* fields; here we route the event's JSON (which carries the same
+# field set) through log_info, which delegates to sakshi. Returns 0.
+# Requires log_init/sakshi to have been set up by the caller (defaults to
+# stderr at INFO if not). Replaces the Arc<dyn Fn> closure with a plain fn —
+# Cyrius closures capture nothing (port-plan §1.2), so the sink is a named fn.
+fn otel_event_sink(e) {
+    var json = event_to_json(e);
+    # str_builder_build NUL-terminates its buffer (out + total), so str_data is a
+    # valid cstr here — log_info/sakshi strlen-scan it safely. Bind the cstr to a
+    # named local before the call: a bare `log_info(str_data(json))` tail-shaped
+    # call miscompiles the argument register here (CO-01 class, port-plan §1.8).
+    var data = str_data(json);
+    log_info(data);
+    return 0;
+}

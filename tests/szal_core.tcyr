@@ -1,0 +1,174 @@
+# szal_core.tcyr — single-pass composition smoke test for ALL szal foundation modules.
+# Run: cyrius build --strict --no-deps tests/szal_core.tcyr build/test_core && ./build/test_core
+#
+# This is an INTEGRATION test, not a per-module parity test: it proves the nine foundation
+# modules (error, state, uuid, md5, bus, step, condition, flow, migration) COMPOSE under one
+# single-pass build — catching include-order issues and cross-module symbol collisions that the
+# per-module tests cannot see. The cross-module smoke fn exercises at least two modules together:
+#   - flow + step + uuid: build a FlowDef with two StepDefs (one depends on the other) and DAG-
+#     validate it (flow_validate walks step depends_on ids produced by uuid).
+#   - condition + step + uuid: build a StepResult, turn results+steps into a JSON context via
+#     cond_build_step_context, then cond_evaluate a condition against it.
+#   - bus: build a WorkflowEvent and event_to_json round-trip (field presence).
+#   - migration: register a fn_migration and migrate_to a fresh flow (touches flow + step + error).
+#
+# Single-pass dependency order (the order that linked clean):
+#   stdlib: string, fmt, alloc, freelist, vec, str, hashmap, syscalls, tagged, result, fnptr,
+#           assert, io, bayan, chrono, sakshi, log
+#   szal:   error, state, uuid, md5, bus, step, condition, flow, migration
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/migration.cyr"
+
+# Parse a JSON cstr into a json_v context through a helper (calling bayan_json_v_parse inline in
+# main trips a 6.1.34 miscompile where the parser globals read stale — see szal_condition.tcyr).
+fn ctx_of(json) {
+    return bayan_json_v_parse(str_from(json));
+}
+
+# Does Str s contain the cstr substring `needle`? Field-presence helper for event_to_json.
+fn contains_cstr(s, needle) {
+    var data = str_data(s);
+    var slen = str_len(s);
+    var nlen = strlen(needle);
+    if (nlen == 0) { return 1; }
+    if (nlen > slen) { return 0; }
+    var i = 0;
+    while (i <= slen - nlen) {
+        var j = 0;
+        var ok = 1;
+        while (j < nlen) {
+            if (load8(data + i + j) != load8(needle + j)) { ok = 0; j = nlen; }
+            else { j = j + 1; }
+        }
+        if (ok == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Identity migration for the registry smoke (mirrors migration.rs Ok-closure ABI).
+fn mig_identity(flow) {
+    return Ok(flow);
+}
+
+fn main() {
+    alloc_init();
+    # Route sakshi to its ring buffer so otel sink / log output never pollutes stdout.
+    sakshi_output_buffer();
+
+    # --- sanity: a symbol from every module resolves in this single TU ---
+    test_group("cross-module: every module's surface is linkable");
+    assert_eq(ERR_CYCLE, 6, "error: ERR_CYCLE code");
+    assert(state_is_terminal(STATE_COMPLETED), "state: Completed terminal");
+    assert_streq(md5_hex("abc", 3), "900150983cd24fb0d6963f7d28e17f72", "md5: abc vector");
+
+    # --- flow + step + uuid composed: build a 2-step DAG and validate it ---
+    test_group("flow + step + uuid: linear DAG validates");
+    var build = step_new(str_from("build"));
+    var deploy = step_new(str_from("deploy"));
+    step_depends_on_add(deploy, step_id_hi(build), step_id_lo(build));
+    var pipe = flow_new(str_from("pipeline"), FLOW_DAG);
+    flow_add_step(pipe, build);
+    flow_add_step(pipe, deploy);
+    assert_eq(flow_steps_len(pipe), 2, "two steps in flow");
+    assert(is_ok(flow_validate(pipe)), "2-step linear DAG validates");
+    # the dependency edge survived (uuid ids matched across step + flow)
+    assert_eq(step_depends_on_len(flow_step_at(pipe, 1)), 1, "deploy keeps its dependency");
+    assert_eq(step_depends_on_hi(flow_step_at(pipe, 1), 0), step_id_hi(build), "dep hi matches build");
+
+    # --- flow + step: a cycle is rejected with ERR_CYCLE and the flow-name detail ---
+    test_group("flow + step: a<->b cycle is Err(ERR_CYCLE)");
+    var ca = step_new(str_from("a"));
+    var cb = step_new(str_from("b"));
+    step_depends_on_add(cb, step_id_hi(ca), step_id_lo(ca));
+    step_depends_on_add(ca, step_id_hi(cb), step_id_lo(cb));
+    var broken = flow_new(str_from("broken"), FLOW_DAG);
+    flow_add_step(broken, ca);
+    flow_add_step(broken, cb);
+    var cyc = flow_validate(broken);
+    assert(is_err_result(cyc), "cyclic dag is Err");
+    assert_eq(err_code_of(cyc), ERR_CYCLE, "cycle code is ERR_CYCLE");
+    assert(str_eq_cstr(szal_get_err_msg(), "broken"), "cycle detail is the flow name");
+
+    # --- condition + step + uuid: build a JSON step-context, then evaluate against it ---
+    test_group("condition + step: build_step_context then cond_evaluate");
+    var sbuild = step_new(str_from("build"));
+    var stest = step_new(str_from("test"));
+    var steps = vec_new();
+    vec_push(steps, sbuild);
+    vec_push(steps, stest);
+    var results = vec_new();
+    var out_build = ctx_of("{\"artifact\":\"build.tar.gz\"}");
+    var rb = step_result_new(step_id_hi(sbuild), step_id_lo(sbuild), STATUS_COMPLETED,
+        out_build, 1200, 1);
+    vec_push(results, rb);
+    var rt = step_result_new(step_id_hi(stest), step_id_lo(stest), STATUS_FAILED,
+        bayan_json_v_null(), 500, 2);
+    step_result_set_error(rt, str_from("assertion failed"));
+    vec_push(results, rt);
+    var bctx = cond_build_step_context(results, steps);
+    # cond_evaluate (Ok) sees the status written by step_result_new
+    var ev1 = cond_evaluate(str_from("steps.build.status == 'completed'"), bctx);
+    assert(is_ok(ev1), "cond_evaluate is Ok");
+    assert_eq(result_unwrap(ev1), 1, "build completed condition is true");
+    var ev2 = cond_evaluate(str_from("steps.test.status == 'failed'"), bctx);
+    assert_eq(result_unwrap(ev2), 1, "test failed condition is true");
+    var ev3 = cond_evaluate(str_from("steps.test.status == 'completed'"), bctx);
+    assert_eq(result_unwrap(ev3), 0, "test-not-completed condition is false");
+
+    # --- bus: build an event and event_to_json round-trip (field presence) ---
+    test_group("bus: event_to_json field presence");
+    var je = event_step_failed(str_from("deploy"), str_from("id-1"), str_from("timeout"), 3);
+    assert_eq(event_type(je), STEP_FAILED, "event_type is StepFailed");
+    assert(str_eq_cstr(event_topic(je), "szal/step/deploy/step_failed"), "event topic");
+    var js = event_to_json(je);
+    assert_eq(contains_cstr(js, "\"event_type\":\"step_failed\""), 1, "json event_type");
+    assert_eq(contains_cstr(js, "\"step_name\":\"deploy\""), 1, "json step_name");
+    assert_eq(contains_cstr(js, "\"error\":\"timeout\""), 1, "json error");
+    assert_eq(contains_cstr(js, "\"attempt\":3"), 1, "json attempt");
+    assert_eq(contains_cstr(js, "\"timestamp\":"), 1, "json timestamp present");
+    # otel sink (sakshi-backed) accepts the event without aborting
+    assert_eq(otel_event_sink(je), 0, "otel sink returns 0");
+
+    # --- migration + flow + step + error: register a hop and migrate a fresh flow ---
+    test_group("migration + flow: migrate_to stamps version");
+    var reg = migration_registry_new();
+    migration_with(reg, fn_migration(1, 2, &mig_identity));
+    var src = flow_new(str_from("pipeline"), FLOW_SEQUENTIAL);
+    flow_with_version(src, 1);
+    flow_add_step(src, step_new(str_from("deploy")));
+    var out = migrate_to(reg, src, 2);
+    assert(is_ok(out), "migrate_to is Ok");
+    assert_eq(flow_version(result_unwrap(out)), 2, "version stamped to 2");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

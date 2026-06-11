@@ -1,0 +1,179 @@
+# szal_bus.tcyr — WorkflowEvent / EventType / topic / JSON parity tests for src/bus.cyr
+# Run: cyrius build --strict --no-deps tests/szal_bus.tcyr build/test_bus && ./build/test_bus
+#
+# Ports the #[cfg(test)] assertions from rust-old/src/bus.rs (event_topic_flow,
+# event_topic_step, event_type_display, builder_*, flow_rolled_back_topic) plus
+# the brief's extra coverage (missing-name -> "unknown", to_json field presence,
+# constructor field population). The serde JSON round-trip test is adapted to a
+# field-presence check (no deserialize in M1 scope).
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/bus.cyr"
+
+# Does Str s contain the cstr substring `needle`? Small helper for to_json
+# field-presence assertions (avoids a full JSON parse in M1).
+fn contains_cstr(s, needle) {
+    var data = str_data(s);
+    var slen = str_len(s);
+    var nlen = strlen(needle);
+    if (nlen == 0) { return 1; }
+    if (nlen > slen) { return 0; }
+    var i = 0;
+    while (i <= slen - nlen) {
+        var j = 0;
+        var ok = 1;
+        while (j < nlen) {
+            if (load8(data + i + j) != load8(needle + j)) { ok = 0; j = nlen; }
+            else { j = j + 1; }
+        }
+        if (ok == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    # Route sakshi to its ring buffer so otel_event_sink output does not pollute
+    # the test's stdout.
+    sakshi_output_buffer();
+
+    test_group("EventType display names");
+    assert_streq(event_type_name(FLOW_STARTED), "flow_started", "FlowStarted display");
+    assert_streq(event_type_name(STEP_RETRY), "step_retry", "StepRetry display");
+    assert_streq(event_type_name(FLOW_COMPLETED), "flow_completed", "FlowCompleted display");
+    assert_streq(event_type_name(FLOW_FAILED), "flow_failed", "FlowFailed display");
+    assert_streq(event_type_name(FLOW_ROLLED_BACK), "flow_rolled_back", "FlowRolledBack display");
+    assert_streq(event_type_name(STEP_STARTED), "step_started", "StepStarted display");
+    assert_streq(event_type_name(STEP_COMPLETED), "step_completed", "StepCompleted display");
+    assert_streq(event_type_name(STEP_FAILED), "step_failed", "StepFailed display");
+    assert_streq(event_type_name(STEP_ROLLBACK), "step_rollback", "StepRollback display");
+    assert_streq(event_type_name(STEP_SKIPPED), "step_skipped", "StepSkipped display");
+    assert_streq(event_type_name(STEP_TIMEOUT), "step_timeout", "StepTimeout display");
+
+    test_group("event_topic — flow events");
+    var ef = event_flow_started(str_from("deploy"));
+    assert(str_eq_cstr(event_topic(ef), "szal/flow/deploy/flow_started"), "flow_started topic");
+    var erb = event_flow_rolled_back(str_from("deploy"));
+    assert(str_eq_cstr(event_topic(erb), "szal/flow/deploy/flow_rolled_back"), "flow_rolled_back topic");
+    var efc = event_flow_completed(str_from("deploy"), 500);
+    assert(str_eq_cstr(event_topic(efc), "szal/flow/deploy/flow_completed"), "flow_completed topic");
+    var eff = event_flow_failed(str_from("deploy"), str_from("oops"));
+    assert(str_eq_cstr(event_topic(eff), "szal/flow/deploy/flow_failed"), "flow_failed topic");
+
+    test_group("event_topic — step events");
+    var es = event_step_completed(str_from("build"), str_from("abc-123"), 500, 1);
+    assert(str_eq_cstr(event_topic(es), "szal/step/build/step_completed"), "step_completed topic");
+    var est = event_step_started(str_from("build"), str_from("id-1"));
+    assert(str_eq_cstr(event_topic(est), "szal/step/build/step_started"), "step_started topic");
+    var esr = event_step_retry(str_from("build"), str_from("id-1"), 2);
+    assert(str_eq_cstr(event_topic(esr), "szal/step/build/step_retry"), "step_retry topic");
+    var esk = event_step_skipped(str_from("build"), str_from("id-1"), str_from("cond false"));
+    assert(str_eq_cstr(event_topic(esk), "szal/step/build/step_skipped"), "step_skipped topic");
+    var eto = event_step_timeout(str_from("build"), str_from("id-1"), 1000);
+    assert(str_eq_cstr(event_topic(eto), "szal/step/build/step_timeout"), "step_timeout topic");
+    var erbk = event_step_rollback(str_from("build"), str_from("id-1"));
+    assert(str_eq_cstr(event_topic(erbk), "szal/step/build/step_rollback"), "step_rollback topic");
+
+    test_group("event_topic — missing name -> unknown");
+    var bare_flow = _event_new(FLOW_STARTED);
+    assert(str_eq_cstr(event_topic(bare_flow), "szal/flow/unknown/flow_started"), "missing flow_name -> unknown");
+    var bare_step = _event_new(STEP_STARTED);
+    assert(str_eq_cstr(event_topic(bare_step), "szal/step/unknown/step_started"), "missing step_name -> unknown");
+
+    test_group("constructor field population");
+    var bf = event_flow_started(str_from("deploy"));
+    assert_eq(event_type(bf), FLOW_STARTED, "flow_started event_type");
+    assert(str_eq_cstr(event_flow_name(bf), "deploy"), "flow_started flow_name");
+
+    var bs = event_step_started(str_from("build"), str_from("id-1"));
+    assert(str_eq_cstr(event_step_name(bs), "build"), "step_started step_name");
+    assert(str_eq_cstr(event_step_id(bs), "id-1"), "step_started step_id");
+
+    var bd = event_step_completed(str_from("s"), str_from("id"), 500, 1);
+    assert_eq(event_duration_ms(bd), 500, "step_completed duration_ms");
+    assert_eq(event_attempt(bd), 1, "step_completed attempt");
+
+    var br = event_step_retry(str_from("s"), str_from("id"), 3);
+    assert_eq(event_attempt(br), 3, "step_retry attempt");
+    assert_eq(event_attempt_set(br), 1, "step_retry attempt present");
+
+    var be = event_flow_failed(str_from("f"), str_from("oops"));
+    assert(str_eq_cstr(event_error(be), "oops"), "flow_failed error");
+
+    test_group("constructor chaining — step_failed");
+    var bc = event_step_failed(str_from("s"), str_from("id"), str_from("e"), 2);
+    assert_eq(event_type(bc), STEP_FAILED, "step_failed event_type");
+    assert(str_eq_cstr(event_step_name(bc), "s"), "step_failed step_name");
+    assert(str_eq_cstr(event_step_id(bc), "id"), "step_failed step_id");
+    assert(str_eq_cstr(event_error(bc), "e"), "step_failed error");
+    assert_eq(event_attempt(bc), 2, "step_failed attempt");
+
+    test_group("event_to_json — field presence");
+    var je = event_step_failed(str_from("deploy"), str_from("id-1"), str_from("timeout"), 3);
+    var js = event_to_json(je);
+    assert_eq(contains_cstr(js, "\"event_type\":\"step_failed\""), 1, "json event_type");
+    assert_eq(contains_cstr(js, "\"step_name\":\"deploy\""), 1, "json step_name");
+    assert_eq(contains_cstr(js, "\"step_id\":\"id-1\""), 1, "json step_id");
+    assert_eq(contains_cstr(js, "\"error\":\"timeout\""), 1, "json error");
+    assert_eq(contains_cstr(js, "\"attempt\":3"), 1, "json attempt");
+    assert_eq(contains_cstr(js, "\"flow_name\":null"), 1, "json flow_name null when absent");
+    assert_eq(contains_cstr(js, "\"timestamp\":"), 1, "json timestamp present");
+
+    test_group("event_to_json — flow event optional nulls");
+    var jf = event_flow_started(str_from("deploy"));
+    var jfs = event_flow_started(str_from("deploy"));
+    var jfjson = event_to_json(jfs);
+    assert_eq(contains_cstr(jfjson, "\"flow_name\":\"deploy\""), 1, "flow json flow_name");
+    assert_eq(contains_cstr(jfjson, "\"step_name\":null"), 1, "flow json step_name null");
+    assert_eq(contains_cstr(jfjson, "\"attempt\":null"), 1, "flow json attempt null");
+    assert_eq(contains_cstr(jfjson, "\"duration_ms\":null"), 1, "flow json duration_ms null");
+    assert_eq(contains_cstr(jfjson, "\"error\":null"), 1, "flow json error null");
+
+    # serde parity: Option<u64> Some(0) serializes as 0, NOT null. duration_ms explicitly set
+    # to 0 (a legal value) must render "duration_ms":0 — the presence flag distinguishes it from
+    # an absent (None) field. Regression for the 0-sentinel that rendered Some(0) as null.
+    test_group("event_to_json — duration_ms Some(0) renders 0 not null");
+    var jz = event_flow_completed(str_from("deploy"), 0);
+    var jzjson = event_to_json(jz);
+    assert_eq(contains_cstr(jzjson, "\"duration_ms\":0"), 1, "Some(0) duration_ms renders 0");
+    assert_eq(contains_cstr(jzjson, "\"duration_ms\":null"), 0, "Some(0) duration_ms is NOT null");
+    assert_eq(event_duration_set(jz), 1, "duration marked present after explicit 0");
+
+    test_group("event_status mapping");
+    assert_streq(event_status(FLOW_COMPLETED), "ok", "status flow_completed");
+    assert_streq(event_status(STEP_COMPLETED), "ok", "status step_completed");
+    assert_streq(event_status(FLOW_FAILED), "error", "status flow_failed");
+    assert_streq(event_status(STEP_FAILED), "error", "status step_failed");
+    assert_streq(event_status(STEP_TIMEOUT), "error", "status step_timeout");
+    assert_streq(event_status(STEP_SKIPPED), "skipped", "status step_skipped");
+    assert_streq(event_status(FLOW_ROLLED_BACK), "rolled_back", "status flow_rolled_back");
+    assert_streq(event_status(STEP_ROLLBACK), "rolled_back", "status step_rollback");
+    assert_streq(event_status(FLOW_STARTED), "unset", "status flow_started");
+    assert_streq(event_status(STEP_STARTED), "unset", "status step_started");
+    assert_streq(event_status(STEP_RETRY), "unset", "status step_retry");
+
+    test_group("otel_event_sink — smoke");
+    assert_eq(otel_event_sink(je), 0, "otel sink returns 0");
+    assert_eq(otel_event_sink(jf), 0, "otel sink flow event returns 0");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

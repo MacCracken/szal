@@ -1,0 +1,87 @@
+# error.cyr — szal error codes + last-error detail buffer
+#
+# Ports rust-old/src/error.rs (SzalError, a thiserror enum). Rust's rich per-variant
+# fields (step/reason/timeout_ms/attempts) flatten to: an integer code (this enum) plus a
+# formatted detail Str held in a process-global last-error buffer. On threaded engine paths
+# carry the detail in the per-step result struct instead — this buffer is last-error-wins
+# and NOT thread-safe (matches the majra src/error.cyr pattern).
+#
+# Usage: include "src/error.cyr"
+# Requires: lib/str.cyr (Str), lib/result.cyr (Err), lib/alloc.cyr (alloc_init before szal_err).
+# Naming: every symbol is szal_-prefixed — vendored majra defines bare set_err_msg/err_name
+# (port-plan §3.3); the szal_ prefix keeps both surfaces collision-free.
+
+# SzalError variants as integer codes. ERR_NONE=0 is the "no error" sentinel (Rust's enum
+# is always-an-error; ERR_NONE is the Cyrius convention for absence). The Rust hardware/majra
+# feature-gated variants are always present here (port-plan feature strategy: no #ifdef).
+enum SzalErr {
+    ERR_NONE = 0;
+    ERR_STEP_FAILED = 1;
+    ERR_STEP_TIMEOUT = 2;
+    ERR_FLOW_INVALID = 3;
+    ERR_RETRY_EXHAUSTED = 4;
+    ERR_ROLLBACK_FAILED = 5;
+    ERR_CYCLE = 6;
+    ERR_MIGRATION = 7;
+    ERR_HW_UNAVAILABLE = 8;
+    ERR_QUEUE = 9;
+    ERR_OTHER = 10;
+}
+
+# Detail buffer capacity (bytes). Enum constant so it is legal as a `var buf[N]` size.
+enum SzalErrBuf { SZAL_ERR_MSG_CAP = 512; }
+
+# Process-global last-error detail. STATIC data section — shared across all calls, not
+# thread-safe (see header). _szal_err_msg_len is the live byte length (<= cap).
+var _szal_err_msg_buf[SZAL_ERR_MSG_CAP];
+var _szal_err_msg_len = 0;
+
+# Map an error code to its snake_case name (cstr). Port-introduced convenience — Rust used
+# thiserror Display; the rich interpolated text lives in the detail buffer instead.
+fn szal_err_name(code) {
+    if (code == ERR_NONE) { return "none"; }
+    if (code == ERR_STEP_FAILED) { return "step_failed"; }
+    if (code == ERR_STEP_TIMEOUT) { return "step_timeout"; }
+    if (code == ERR_FLOW_INVALID) { return "flow_invalid"; }
+    if (code == ERR_RETRY_EXHAUSTED) { return "retry_exhausted"; }
+    if (code == ERR_ROLLBACK_FAILED) { return "rollback_failed"; }
+    if (code == ERR_CYCLE) { return "cycle_detected"; }
+    if (code == ERR_MIGRATION) { return "migration_failed"; }
+    if (code == ERR_HW_UNAVAILABLE) { return "hardware_unavailable"; }
+    if (code == ERR_QUEUE) { return "queue_error"; }
+    if (code == ERR_OTHER) { return "other"; }
+    return "unknown";
+}
+
+# Set the last-error detail message from a Str (copies up to SZAL_ERR_MSG_CAP bytes). Returns 0.
+fn szal_set_err_msg(msg) {
+    var len = str_len(msg);
+    if (len > SZAL_ERR_MSG_CAP) {
+        len = SZAL_ERR_MSG_CAP;
+    }
+    var src = str_data(msg);
+    var i = 0;
+    while (i < len) {
+        store8(&_szal_err_msg_buf + i, load8(src + i));
+        i = i + 1;
+    }
+    _szal_err_msg_len = len;
+    return 0;
+}
+
+# Get the current last-error detail as a Str (length-bounded; not NUL-terminated).
+fn szal_get_err_msg() {
+    return str_new(&_szal_err_msg_buf, _szal_err_msg_len);
+}
+
+# Clear the last-error detail. Returns 0.
+fn szal_clear_err_msg() {
+    _szal_err_msg_len = 0;
+    return 0;
+}
+
+# Set the detail message and return Err(code). Requires alloc_init() + lib/result.cyr.
+fn szal_err(code, msg) {
+    szal_set_err_msg(msg);
+    return Err(code);
+}

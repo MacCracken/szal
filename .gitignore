@@ -21,3 +21,6 @@ criterion/
 # Cyrius port
 /rust-old/target/
 /build/
+# stdlib snapshot + dep overlays provisioned by `cyrius lib sync` / `cyrius deps`.
+# cyrius.lock is committed (NOT ignored) per the dist contract.
+/lib/

@@ -1,0 +1,62 @@
+# szal_md5.tcyr — RFC 1321 MD5 parity tests for src/md5.cyr
+# Run: cyrius build --strict --no-deps tests/szal_md5.tcyr build/test_md5 && ./build/test_md5
+#
+# Vectors are the official RFC 1321 §A.5 "MD5 test suite" plus a 80-byte block-boundary case.
+# A cstr literal is itself a data pointer, so the literal is passed directly as `data`.
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "src/md5.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("md5_hex — RFC 1321 official vectors");
+    assert_streq(md5_hex("", 0), "d41d8cd98f00b204e9800998ecf8427e", "md5 empty string");
+    assert_streq(md5_hex("a", 1), "0cc175b9c0f1b6a831c399e269772661", "md5 'a'");
+    assert_streq(md5_hex("abc", 3), "900150983cd24fb0d6963f7d28e17f72", "md5 'abc'");
+    assert_streq(md5_hex("message digest", 14),
+        "f96b697d7cb7938d525a2f31aaf161d0", "md5 'message digest'");
+    assert_streq(md5_hex("abcdefghijklmnopqrstuvwxyz", 26),
+        "c3fcd3d76192e4007dfb496cca67e13b", "md5 lowercase alphabet");
+    assert_streq(
+        md5_hex("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 62),
+        "d174ab98d277d9f5a5611c2c9f419d9f", "md5 A-Za-z0-9 (62 chars)");
+    assert_streq(
+        md5_hex("12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+            80),
+        "57edf4a22be3c955ac49da2e2107b67a", "md5 80-byte digit string");
+
+    test_group("md5 — raw 16-byte digest");
+    # Spot-check the raw byte API against the first/last bytes of the 'abc' digest
+    # (900150983cd24fb0d6963f7d28e17f72): first byte 0x90, last byte 0x72.
+    var d = alloc(16);
+    assert_neq(d, 0, "digest buffer allocated");
+    var rc = md5("abc", 3, d);
+    assert_eq(rc, 0, "md5('abc') returns 0");
+    assert_eq(load8(d + 0), 0x90, "md5 'abc' first byte");
+    assert_eq(load8(d + 15), 0x72, "md5 'abc' last byte");
+
+    test_group("md5_hex — independence across calls");
+    # Each call allocs its own 33-byte buffer; an earlier result must not be clobbered.
+    var h1 = md5_hex("abc", 3);
+    var h2 = md5_hex("a", 1);
+    assert_streq(h1, "900150983cd24fb0d6963f7d28e17f72", "first hash still intact after second call");
+    assert_streq(h2, "0cc175b9c0f1b6a831c399e269772661", "second hash correct");
+
+    var r = assert_summary();
+    return r;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

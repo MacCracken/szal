@@ -1,0 +1,110 @@
+# szal_uuid.tcyr — RFC-4122 v4 UUID format / round-trip / parse parity tests for src/uuid.cyr
+# Run: cyrius build --strict --no-deps tests/szal_uuid.tcyr build/test_uuid && ./build/test_uuid
+#
+# Parity oracle: the `uuid` crate (no rust-old/src/uuid.rs). Assertions mirror the crate's
+# guarantees exercised by rust-old: Uuid::new_v4().to_string() is lowercase hyphenated 8-4-4-4-12
+# with version nibble '4' and variant in {8,9,a,b} (encoding_tools.rs uuid_single), parse_str
+# round-trips (storage.rs get_by_id, step_tools.rs depends_on), and the canonical fixed vector
+# re-emits unchanged.
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "src/uuid.cyr"
+
+# Lowercase-hex nibble value 0..15 for an ASCII byte, or (0 - 1). Local test helper.
+fn t_unhex(c) {
+    if ((c >= 48) && (c <= 57)) { return c - 48; }
+    if ((c >= 97) && (c <= 102)) { return (c - 97) + 10; }
+    return (0 - 1);
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("uuid_to_cstr format (fixed vector)");
+    # 550e8400-e29b-41d4-a716-446655440000 packs big-endian to these halves.
+    var hi = 0x550e8400e29b41d4;
+    var lo = 0xa716446655440000;
+    var s = uuid_to_cstr(hi, lo);
+    assert(s != 0, "uuid_to_cstr did not OOM");
+    assert_eq(strlen(s), 36, "fixed vector is 36 chars");
+    assert_streq(s, "550e8400-e29b-41d4-a716-446655440000", "fixed vector re-emits unchanged");
+    assert_eq(load8(s + 8), 45, "hyphen at index 8");
+    assert_eq(load8(s + 13), 45, "hyphen at index 13");
+    assert_eq(load8(s + 18), 45, "hyphen at index 18");
+    assert_eq(load8(s + 23), 45, "hyphen at index 23");
+    assert_eq(load8(s + 14), 52, "version nibble (index 14) is '4'");
+
+    test_group("uuid_parse fixed vector round-trips back to halves");
+    var phi, plo = uuid_parse("550e8400-e29b-41d4-a716-446655440000");
+    assert(uuid_parse_ok(phi, plo), "fixed vector parses ok");
+    assert_eq(phi, 0x550e8400e29b41d4, "parsed hi matches");
+    assert_eq(plo, 0xa716446655440000, "parsed lo matches");
+
+    test_group("uuid_parse accepts uppercase, normalizes to lowercase on re-emit");
+    var uhi, ulo = uuid_parse("550E8400-E29B-41D4-A716-446655440000");
+    assert(uuid_parse_ok(uhi, ulo), "uppercase form parses ok");
+    var us = uuid_to_cstr(uhi, ulo);
+    assert_streq(us, "550e8400-e29b-41d4-a716-446655440000", "uppercase re-emits lowercase");
+
+    test_group("uuid_parse rejects malformed input (sentinel)");
+    var bhi, blo = uuid_parse("not-a-uuid");
+    assert_eq(uuid_parse_ok(bhi, blo), 0, "too-short string rejected");
+    var thi, tlo = uuid_parse("550e8400e29b41d4a716446655440000");
+    assert_eq(uuid_parse_ok(thi, tlo), 0, "no-hyphen 32-char string rejected");
+    var ghi, glo = uuid_parse("550e8400-e29b-41d4-a716-44665544000z");
+    assert_eq(uuid_parse_ok(ghi, glo), 0, "non-hex digit rejected");
+    var nhi, nlo = uuid_parse("550e8400-e29b-41d4-a716_446655440000");
+    assert_eq(uuid_parse_ok(nhi, nlo), 0, "wrong separator rejected");
+    var zhi, zlo = uuid_parse(0);
+    assert_eq(uuid_parse_ok(zhi, zlo), 0, "null pointer rejected");
+
+    test_group("uuid_generate produces a structurally valid v4 UUID");
+    var ghi2, glo2 = uuid_generate();
+    var gs = uuid_to_cstr(ghi2, glo2);
+    assert(gs != 0, "generate did not OOM");
+    assert_eq(strlen(gs), 36, "generated string is 36 chars");
+    assert_eq(load8(gs + 8), 45, "gen hyphen at 8");
+    assert_eq(load8(gs + 13), 45, "gen hyphen at 13");
+    assert_eq(load8(gs + 18), 45, "gen hyphen at 18");
+    assert_eq(load8(gs + 23), 45, "gen hyphen at 23");
+    assert_eq(load8(gs + 14), 52, "gen version nibble (index 14) is '4'");
+    # variant nibble is at string index 19 (first char of group 4) -> must be 8, 9, a, or b.
+    var variant = t_unhex(load8(gs + 19));
+    assert(((variant == 8) || (variant == 9)) || ((variant == 10) || (variant == 11)),
+        "gen variant nibble in {8,9,a,b}");
+
+    test_group("uuid_generate -> parse -> format round-trips");
+    var rhi, rlo = uuid_parse(gs);
+    assert(uuid_parse_ok(rhi, rlo), "generated UUID parses ok");
+    assert_eq(rhi, ghi2, "round-trip hi matches");
+    assert_eq(rlo, glo2, "round-trip lo matches");
+    var rs = uuid_to_cstr(rhi, rlo);
+    assert_streq(rs, gs, "round-trip re-emit matches original");
+
+    test_group("two generates differ");
+    var ahi, alo = uuid_generate();
+    var chi, clo = uuid_generate();
+    assert(((ahi != chi) || (alo != clo)), "two generated UUIDs differ");
+
+    test_group("uuid_to_str (Str wrapper) matches cstr form");
+    var wstr = uuid_to_str(hi, lo);
+    assert_eq(str_len(wstr), 36, "uuid_to_str length is 36");
+    assert(str_eq_cstr(wstr, "550e8400-e29b-41d4-a716-446655440000"), "uuid_to_str content");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

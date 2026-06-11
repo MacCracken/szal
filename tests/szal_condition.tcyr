@@ -1,0 +1,345 @@
+# szal_condition.tcyr — parity tests for src/condition.cyr (condition DSL)
+# Run: cyrius build --strict --no-deps tests/szal_condition.tcyr build/test_condition
+#      ./build/test_condition
+# Ports the full rust-old/src/condition.rs #[cfg(test)] suite plus the doctests.
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "src/error.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+
+# Parse a JSON cstr into a json_v context. NOTE: JSON parsing MUST go through a helper fn like
+# this — calling bayan_json_v_parse inline in main() trips a toolchain miscompile (6.1.34) where
+# the parser globals read stale and every parse returns 0 (see gotchas).
+fn ctx_of(json) {
+    return bayan_json_v_parse(str_from(json));
+}
+
+# Allocate a JSON null value (helper to keep call sites uniform).
+fn jnull() {
+    return bayan_json_v_null();
+}
+
+# Evaluate an expr cstr against a context, asserting it is Ok; returns the bool result (1/0).
+fn ev(expr, context) {
+    var r = cond_evaluate(str_from(expr), context);
+    assert(is_ok(r) == 1, "cond_evaluate should be Ok");
+    return result_unwrap(r);
+}
+
+# True if evaluating expr cstr yields an Err.
+fn ev_is_err(expr, context) {
+    var r = cond_evaluate(str_from(expr), context);
+    return is_err_result(r);
+}
+
+fn main() {
+    alloc_init();
+
+    var empty = ctx_of("{}");
+
+    test_group("path resolution");
+    var ctx_pr = ctx_of("{\"steps\":{\"build\":{\"status\":\"completed\"}}}");
+    assert(ev("steps.build.status == 'completed'", ctx_pr) == 1, "path resolves + eq true");
+
+    test_group("missing path returns null");
+    assert(ev("steps.build.status == 'completed'", empty) == 0, "null != 'completed'");
+    assert(ev("steps.build.status", empty) == 0, "bare missing path is falsy");
+
+    test_group("string comparison");
+    assert(ev("'completed' == 'completed'", empty) == 1, "string eq");
+    assert(ev("'completed' == 'failed'", empty) == 0, "string neq");
+
+    test_group("number comparison");
+    assert(ev("42 == 42", empty) == 1, "42 == 42");
+    assert(ev("42 == 43", empty) == 0, "42 == 43");
+
+    test_group("float number comparison");
+    assert(ev("3.14 == 3.14", empty) == 1, "3.14 == 3.14");
+    assert(ev("3.14 == 3.15", empty) == 0, "3.14 == 3.15");
+
+    test_group("boolean literals");
+    assert(ev("true", empty) == 1, "true");
+    assert(ev("false", empty) == 0, "false");
+
+    test_group("and operator");
+    assert(ev("true && true", empty) == 1, "T && T");
+    assert(ev("true && false", empty) == 0, "T && F");
+    assert(ev("false && true", empty) == 0, "F && T");
+    assert(ev("false && false", empty) == 0, "F && F");
+
+    test_group("or operator");
+    assert(ev("true || true", empty) == 1, "T || T");
+    assert(ev("true || false", empty) == 1, "T || F");
+    assert(ev("false || true", empty) == 1, "F || T");
+    assert(ev("false || false", empty) == 0, "F || F");
+
+    test_group("not equal");
+    assert(ev("'a' != 'b'", empty) == 1, "'a' != 'b'");
+    assert(ev("'a' != 'a'", empty) == 0, "'a' != 'a'");
+
+    test_group("parentheses");
+    assert(ev("(true || false) && true", empty) == 1, "(T||F)&&T");
+    assert(ev("(true || false) && false", empty) == 0, "(T||F)&&F");
+    assert(ev("true || (false && false)", empty) == 1, "T||(F&&F)");
+
+    test_group("complex step conditions");
+    var ctx_cx = ctx_of("{\"steps\":{\"build\":{\"status\":\"completed\"},\"test\":{\"status\":\"completed\"}}}");
+    assert(ev("steps.build.status == 'completed' && steps.test.status == 'completed'", ctx_cx) == 1,
+        "both completed");
+    var ctx_cf = ctx_of("{\"steps\":{\"build\":{\"status\":\"completed\"},\"test\":{\"status\":\"failed\"}}}");
+    assert(ev("steps.build.status == 'completed' && steps.test.status == 'completed'", ctx_cf) == 0,
+        "test failed");
+
+    test_group("missing step");
+    var ctx_ms = ctx_of("{\"steps\":{\"build\":{\"status\":\"completed\"}}}");
+    assert(ev("steps.missing.status == 'completed'", ctx_ms) == 0, "missing step is false");
+
+    test_group("error cases");
+    assert(ev_is_err("== 'foo'", empty) == 1, "malformed expression is Err");
+    assert(ev_is_err("'unterminated", empty) == 1, "unterminated string is Err");
+    assert(ev_is_err("(true", empty) == 1, "unmatched paren is Err");
+
+    test_group("empty expression is true");
+    assert(ev("", empty) == 1, "empty is true");
+    assert(ev("   ", empty) == 1, "whitespace is true");
+
+    test_group("cross-type comparison is false");
+    assert(ev("42 == 'forty-two'", empty) == 0, "num != str");
+    assert(ev("true == 'true'", empty) == 0, "bool != str");
+    assert(ev("true == 1", empty) == 0, "bool != num");
+
+    test_group("null equals null");
+    assert(ev("missing.a == missing.b", empty) == 1, "null == null");
+
+    test_group("operator precedence (and tighter than or)");
+    assert(ev("false || true && true", empty) == 1, "F||T&&T");
+    assert(ev("true || true && false", empty) == 1, "T||T&&F");
+    assert(ev("false || false && true", empty) == 0, "F||F&&T");
+
+    test_group("trailing tokens are error");
+    assert(ev_is_err("true true", empty) == 1, "trailing token is Err");
+
+    test_group("short-circuit evaluation");
+    assert(ev("false && missing.path", empty) == 0, "&& short-circuits false");
+    assert(ev("true || missing.path", empty) == 1, "|| short-circuits true");
+
+    test_group("string literal with unicode");
+    var ctx_uni = ctx_of("{\"greeting\":\"héllo\"}");
+    assert(ev("greeting == 'héllo'", ctx_uni) == 1, "unicode string eq");
+    assert(ev("greeting == 'hello'", ctx_uni) == 0, "unicode string neq");
+
+    test_group("comparison operators");
+    assert(ev("10 > 5", empty) == 1, "10 > 5");
+    assert(ev("5 > 10", empty) == 0, "5 > 10");
+    assert(ev("5 > 5", empty) == 0, "5 > 5");
+    assert(ev("10 >= 5", empty) == 1, "10 >= 5");
+    assert(ev("5 >= 5", empty) == 1, "5 >= 5");
+    assert(ev("4 >= 5", empty) == 0, "4 >= 5");
+    assert(ev("5 < 10", empty) == 1, "5 < 10");
+    assert(ev("10 < 5", empty) == 0, "10 < 5");
+    assert(ev("5 < 5", empty) == 0, "5 < 5");
+    assert(ev("5 <= 10", empty) == 1, "5 <= 10");
+    assert(ev("5 <= 5", empty) == 1, "5 <= 5");
+    assert(ev("6 <= 5", empty) == 0, "6 <= 5");
+
+    test_group("comparison with paths");
+    var ctx_ab = ctx_of("{\"a\":10,\"b\":5}");
+    assert(ev("a > b", ctx_ab) == 1, "a > b");
+    assert(ev("b > a", ctx_ab) == 0, "b > a");
+    assert(ev("a >= 10", ctx_ab) == 1, "a >= 10");
+    assert(ev("b < a", ctx_ab) == 1, "b < a");
+
+    test_group("comparison with floats");
+    assert(ev("3.14 > 2.71", empty) == 1, "3.14 > 2.71");
+    assert(ev("2.71 < 3.14", empty) == 1, "2.71 < 3.14");
+    assert(ev("3.14 >= 3.14", empty) == 1, "3.14 >= 3.14");
+
+    test_group("string comparison ordering");
+    assert(ev("'banana' > 'apple'", empty) == 1, "banana > apple");
+    assert(ev("'apple' < 'banana'", empty) == 1, "apple < banana");
+    assert(ev("'apple' <= 'apple'", empty) == 1, "apple <= apple");
+
+    test_group("cross-type comparison returns false");
+    assert(ev("42 > 'hello'", empty) == 0, "num > str false");
+    assert(ev("'hello' < 42", empty) == 0, "str < num false");
+
+    test_group("not operator");
+    assert(ev("!true", empty) == 0, "!true");
+    assert(ev("!false", empty) == 1, "!false");
+
+    test_group("not with path");
+    var ctx_nb = ctx_of("{\"enabled\":false,\"missing\":null}");
+    assert(ev("!enabled", ctx_nb) == 1, "!enabled (false)");
+    assert(ev("!missing", ctx_nb) == 1, "!missing (null)");
+
+    test_group("not with comparison");
+    assert(ev("!(5 > 10)", empty) == 1, "!(5>10)");
+    assert(ev("!(10 > 5)", empty) == 0, "!(10>5)");
+
+    test_group("double not");
+    assert(ev("!!true", empty) == 1, "!!true");
+    assert(ev("!!false", empty) == 0, "!!false");
+
+    test_group("not in compound expression");
+    var ctx_nf = ctx_of("{\"status\":\"failed\"}");
+    assert(ev("!(status == 'completed') && status == 'failed'", ctx_nf) == 1, "!(==) && ==");
+    assert(ev("!status == 'completed'", ctx_nf) == 0, "(!status)=='completed' false");
+
+    test_group("compiled condition reuse");
+    var ccr = compiled_compile(str_from("n > 5"));
+    assert(is_ok(ccr) == 1, "compile n>5 ok");
+    var cc = result_unwrap(ccr);
+    var r10 = compiled_evaluate(cc, ctx_of("{\"n\":10}"));
+    assert(is_ok(r10) == 1, "eval ok");
+    assert(result_unwrap(r10) == 1, "n=10 > 5");
+    var r3 = compiled_evaluate(cc, ctx_of("{\"n\":3}"));
+    assert(result_unwrap(r3) == 0, "n=3 not > 5");
+    assert(str_eq_cstr(compiled_source(cc), "n > 5") == 1, "source preserved");
+
+    test_group("compiled empty is true");
+    var cer = compiled_compile(str_from("   "));
+    assert(is_ok(cer) == 1, "compile blank ok");
+    var ce = result_unwrap(cer);
+    var rce = compiled_evaluate(ce, empty);
+    assert(result_unwrap(rce) == 1, "blank compiles to true");
+    assert(str_eq_cstr(compiled_source(ce), "") == 1, "blank source is empty");
+
+    test_group("compiled malformed errors");
+    assert(is_err_result(compiled_compile(str_from("== 'x'"))) == 1, "== 'x' err");
+    assert(is_err_result(compiled_compile(str_from("true true"))) == 1, "true true err");
+    assert(is_err_result(compiled_compile(str_from("'unterminated"))) == 1, "unterminated err");
+
+    test_group("cache memoizes compilation");
+    var cache = cache_new();
+    assert(cache_is_empty(cache) == 1, "cache starts empty");
+    assert(result_unwrap(cache_evaluate(cache, str_from("n > 5"), ctx_of("{\"n\":10}"))) == 1,
+        "cache n>5 with 10");
+    assert(result_unwrap(cache_evaluate(cache, str_from("n > 5"), ctx_of("{\"n\":3}"))) == 0,
+        "cache n>5 with 3");
+    assert(result_unwrap(cache_evaluate(cache, str_from("n > 5"), ctx_of("{\"n\":100}"))) == 1,
+        "cache n>5 with 100");
+    assert_eq(cache_len(cache), 1, "compiled once for n>5");
+    assert(result_unwrap(cache_evaluate(cache, str_from("n < 5"), ctx_of("{\"n\":1}"))) == 1,
+        "cache n<5 with 1");
+    assert_eq(cache_len(cache), 2, "two distinct exprs cached");
+
+    test_group("cache caches errors");
+    var cache2 = cache_new();
+    assert(is_err_result(cache_evaluate(cache2, str_from("== bad"), empty)) == 1, "err first time");
+    assert(is_err_result(cache_evaluate(cache2, str_from("== bad"), empty)) == 1, "err cached");
+    assert_eq(cache_len(cache2), 1, "error cached, one entry");
+
+    test_group("cache matches direct evaluate");
+    var cache3 = cache_new();
+    var ctx_cm = ctx_of("{\"steps\":{\"build\":{\"status\":\"completed\"}}}");
+    var via_cache = result_unwrap(cache_evaluate(cache3, str_from("steps.build.status == 'completed'"), ctx_cm));
+    var via_direct = ev("steps.build.status == 'completed'", ctx_cm);
+    assert_eq(via_cache, via_direct, "cache matches direct evaluate");
+
+    test_group("render_template basic");
+    var ctx_t = ctx_of("{\"name\":\"Alice\",\"meta\":{\"role\":\"admin\"}}");
+    var t1 = cond_render_template(str_from("Hello {{name}}, role={{meta.role}}"), ctx_t);
+    assert(str_eq_cstr(t1, "Hello Alice, role=admin") == 1, "render Alice/admin");
+
+    test_group("render_template missing path empty");
+    var t2 = cond_render_template(str_from("x={{a.b.c}}!"), empty);
+    assert(str_eq_cstr(t2, "x=!") == 1, "missing path renders empty");
+
+    test_group("render_template non-string value");
+    var ctx_n = ctx_of("{\"count\":42,\"flag\":true}");
+    var t3 = cond_render_template(str_from("c={{count}} f={{flag}}"), ctx_n);
+    assert(str_eq_cstr(t3, "c=42 f=true") == 1, "non-string JSON serialized");
+
+    test_group("render_template unicode");
+    var ctx_u2 = ctx_of("{\"name\":\"André\"}");
+    var tu = cond_render_template(str_from("Hello {{name}}!"), ctx_u2);
+    assert(str_eq_cstr(tu, "Hello André!") == 1, "unicode value passthrough");
+    var ctx_u3 = ctx_of("{\"x\":\"y\"}");
+    var tu2 = cond_render_template(str_from("café {{x}}"), ctx_u3);
+    assert(str_eq_cstr(tu2, "café y") == 1, "unicode literal text");
+
+    test_group("render_template no placeholder");
+    var t4 = cond_render_template(str_from("plain text"), empty);
+    assert(str_eq_cstr(t4, "plain text") == 1, "plain passthrough");
+
+    test_group("resolve_path direct");
+    var ctx_rp = ctx_of("{\"steps\":{\"build\":{\"output\":{\"url\":\"https://example.com\"}}}}");
+    var rv = cond_resolve_path(str_from("steps.build.output.url"), ctx_rp);
+    assert(bayan_json_v_is_str(rv) == 1, "resolved is string");
+    assert(str_eq_cstr(bayan_json_v_str(rv), "https://example.com") == 1, "resolved url");
+    var rmiss = cond_resolve_path(str_from("steps.missing.field"), ctx_rp);
+    assert(bayan_json_v_is_null(rmiss) == 1, "missing resolves to null");
+
+    test_group("build_step_context structure");
+    var build = step_new(str_from("build"));
+    var test_step = step_new(str_from("test"));
+    var steps = vec_new();
+    vec_push(steps, build);
+    vec_push(steps, test_step);
+    var results = vec_new();
+    var out_build = ctx_of("{\"artifact\":\"build.tar.gz\"}");
+    var rb = step_result_new(step_id_hi(build), step_id_lo(build), STATUS_COMPLETED, out_build, 1200, 1);
+    vec_push(results, rb);
+    var rt = step_result_new(step_id_hi(test_step), step_id_lo(test_step), STATUS_FAILED,
+        jnull(), 500, 2);
+    step_result_set_error(rt, str_from("assertion failed"));
+    vec_push(results, rt);
+    var bctx = cond_build_step_context(results, steps);
+
+    # status build = completed
+    var bstatus = cond_resolve_path(str_from("steps.build.status"), bctx);
+    assert(str_eq_cstr(bayan_json_v_str(bstatus), "completed") == 1, "build status completed");
+    var bartifact = cond_resolve_path(str_from("steps.build.output.artifact"), bctx);
+    assert(str_eq_cstr(bayan_json_v_str(bartifact), "build.tar.gz") == 1, "build artifact");
+    var berror = cond_resolve_path(str_from("steps.build.error"), bctx);
+    assert(bayan_json_v_is_null(berror) == 1, "build error null");
+    var tstatus = cond_resolve_path(str_from("steps.test.status"), bctx);
+    assert(str_eq_cstr(bayan_json_v_str(tstatus), "failed") == 1, "test status failed");
+    var terror = cond_resolve_path(str_from("steps.test.error"), bctx);
+    assert(str_eq_cstr(bayan_json_v_str(terror), "assertion failed") == 1, "test error msg");
+
+    # use with evaluate
+    assert(ev("steps.build.status == 'completed'", bctx) == 1, "ctx eval build completed");
+    assert(ev("steps.test.status == 'completed'", bctx) == 0, "ctx eval test not completed");
+    assert(ev("steps.test.status == 'failed'", bctx) == 1, "ctx eval test failed");
+
+    test_group("build_step_context skips unknown step ids");
+    var build2 = step_new(str_from("build"));
+    var steps2 = vec_new();
+    vec_push(steps2, build2);
+    var results2 = vec_new();
+    var r2a = step_result_new(step_id_hi(build2), step_id_lo(build2), STATUS_COMPLETED,
+        jnull(), 100, 1);
+    vec_push(results2, r2a);
+    # unknown id (use a fresh generated uuid not in steps2)
+    var uhi, ulo = uuid_generate();
+    var r2b = step_result_new(uhi, ulo, STATUS_FAILED, jnull(), 0, 1);
+    step_result_set_error(r2b, str_from("orphan"));
+    vec_push(results2, r2b);
+    var bctx2 = cond_build_step_context(results2, steps2);
+    var b2status = cond_resolve_path(str_from("steps.build.status"), bctx2);
+    assert(str_eq_cstr(bayan_json_v_str(b2status), "completed") == 1, "known step present");
+    var stepsobj = cond_resolve_path(str_from("steps"), bctx2);
+    assert_eq(bayan_json_v_obj_len(stepsobj), 1, "only known step in object");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

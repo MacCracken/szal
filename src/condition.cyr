@@ -1,0 +1,893 @@
+# condition.cyr — workflow step condition DSL: tokenizer, parser, evaluator, cache, templates
+#
+# Ports rust-old/src/condition.rs (the condition expression evaluator). Evaluates predicate
+# expressions against a JSON context (bayan json_v tree) built from step results.
+#
+# Grammar (low -> high precedence):
+#   expr     = or_expr
+#   or_expr  = and_expr ("||" and_expr)*
+#   and_expr = cmp_expr ("&&" cmp_expr)*
+#   cmp_expr = value (("==" | "!=" | ">" | ">=" | "<" | "<=") value)?
+#   value    = "!" value | path | string_lit | number_lit | bool_lit | "(" expr ")"
+#   path     = ident ("." ident)*
+#   ident    = [a-zA-Z_][a-zA-Z0-9_-]*
+#   string_lit = "'" [^']* "'"
+#   number_lit = [0-9]+ ("." [0-9]+)?
+#   bool_lit = "true" | "false"
+#
+# Usage: include "src/condition.cyr"
+# Requires: lib/str.cyr (Str + builder), lib/vec.cyr, lib/hashmap.cyr (map_new cstr keys),
+#   lib/alloc.cyr (alloc_init before any constructor), lib/result.cyr (Ok/Err + helpers),
+#   lib/bayan.cyr (json_v tree; lib/io must precede lib/bayan), src/error.cyr (SzalErr),
+#   src/uuid.cyr + src/step.cyr (StepResult/StepDef accessors for build_step_context).
+# Naming: every public symbol is cond_/tok_/expr_/compiled_/cache_-prefixed; internals use _.
+#
+# Error model: Rust returned Result<_, String> with rich messages. Here a parse/compile error is
+# Err(ERR_FLOW_INVALID) with the human message in the szal global last-error buffer (szal_err).
+# This is the engine-wide flatten (port-plan §1.6); the message text matches Rust verbatim where
+# a fixed string, and is formatted with str_builder where Rust interpolated.
+
+# ---------------------------------------------------------------------------
+# Tokens
+# ---------------------------------------------------------------------------
+
+# Token kinds. The Rust Token enum variants flatten to these integer kinds. A token is a heap
+# blob {kind@0, payload@8}: for TOK_PATH / TOK_STRING the payload is a Str ptr; for TOK_NUMBER
+# the payload is an f64 bit pattern; for TOK_BOOL the payload is 1/0; for operators the payload
+# is unused (0).
+enum CondTok {
+    TOK_PATH = 0;
+    TOK_STRING = 1;
+    TOK_NUMBER = 2;
+    TOK_BOOL = 3;
+    TOK_EQ = 4;
+    TOK_NEQ = 5;
+    TOK_GT = 6;
+    TOK_GTE = 7;
+    TOK_LT = 8;
+    TOK_LTE = 9;
+    TOK_NOT = 10;
+    TOK_AND = 11;
+    TOK_OR = 12;
+    TOK_LPAREN = 13;
+    TOK_RPAREN = 14;
+}
+
+# Token byte layout (16 bytes): kind@0, payload@8.
+enum CondTokL { TOKEN_SIZE = 16; TK_KIND = 0; TK_PAYLOAD = 8; }
+
+# Allocate a token blob with the given kind and payload. Returns 0 on OOM. Internal.
+fn _tok_new(kind, payload) {
+    var t = alloc(TOKEN_SIZE);
+    if (t == 0) { return 0; }
+    store64(t + TK_KIND, kind);
+    store64(t + TK_PAYLOAD, payload);
+    return t;
+}
+
+# Get a token's kind (CondTok value).
+fn tok_kind(t) { return load64(t + TK_KIND); }
+
+# Get a token's payload (Str ptr / f64 bits / bool / 0 depending on kind).
+fn tok_payload(t) { return load64(t + TK_PAYLOAD); }
+
+# ---------------------------------------------------------------------------
+# Tokenizer
+# ---------------------------------------------------------------------------
+
+# True if byte b is ASCII whitespace (space, tab, LF, CR, FF, VT) — Rust is_ascii_whitespace.
+fn _cond_is_ws(b) {
+    if (b == 32) { return 1; }
+    if (b == 9) { return 1; }
+    if (b == 10) { return 1; }
+    if (b == 13) { return 1; }
+    if (b == 12) { return 1; }
+    if (b == 11) { return 1; }
+    return 0;
+}
+
+# True if byte b is an ASCII digit '0'..'9'.
+fn _cond_is_digit(b) {
+    if ((b >= 48) && (b <= 57)) { return 1; }
+    return 0;
+}
+
+# True if byte b is ASCII alphabetic A-Z / a-z.
+fn _cond_is_alpha(b) {
+    if ((b >= 65) && (b <= 90)) { return 1; }
+    if ((b >= 97) && (b <= 122)) { return 1; }
+    return 0;
+}
+
+# True if byte b is alphanumeric (Rust is_ascii_alphanumeric).
+fn _cond_is_alnum(b) {
+    if (_cond_is_alpha(b) == 1) { return 1; }
+    if (_cond_is_digit(b) == 1) { return 1; }
+    return 0;
+}
+
+# True if byte b < 128 (Rust is_ascii).
+fn _cond_is_ascii(b) {
+    if ((b >= 0) && (b < 128)) { return 1; }
+    return 0;
+}
+
+# Emit a two-hex-digit lowercase byte (e.g. 0x0a) into a str_builder. Internal — used to mirror
+# Rust's `unexpected byte 0x{b:02x}` message for non-ASCII bytes.
+fn _cond_emit_hex2(sb, b) {
+    var hi = (b >> 4) & 15;
+    var lo = b & 15;
+    if (hi < 10) { str_builder_add_byte(sb, 48 + hi); }
+    else { str_builder_add_byte(sb, 87 + hi); }
+    if (lo < 10) { str_builder_add_byte(sb, 48 + lo); }
+    else { str_builder_add_byte(sb, 87 + lo); }
+    return 0;
+}
+
+# Parse the digits-with-optional-fraction byte range [start, end) into an f64 bit pattern. The
+# tokenizer guarantees the range matches [0-9]+ ("." [0-9]+)? (no sign, no exponent), so a plain
+# integer-part + fractional-part f64 accumulation matches Rust's f64 parse for this grammar.
+# Uses only the f64 arithmetic builtins (no math.cyr dependency). Internal.
+fn _cond_parse_num(bytes, start, end) {
+    var result = f64_from(0);
+    var ten = f64_from(10);
+    var i = start;
+    while (i < end) {
+        var c = load8(bytes + i);
+        if (c == 46) {
+            i = i + 1;
+            var scale = f64_from(1);
+            while (i < end) {
+                var fc = load8(bytes + i);
+                scale = f64_div(scale, ten);
+                result = f64_add(result, f64_mul(f64_from(fc - 48), scale));
+                i = i + 1;
+            }
+            return result;
+        }
+        result = f64_add(f64_mul(result, ten), f64_from(c - 48));
+        i = i + 1;
+    }
+    return result;
+}
+
+# Tokenize an input Str into a vec of token blobs. On success returns Ok(vec). On a lexical error
+# returns Err(ERR_FLOW_INVALID) with the message set in the szal last-error buffer (matching the
+# Rust error strings: "unterminated string literal", "invalid number '...': ...",
+# "unexpected character '...'", "unexpected byte 0x..").
+fn _cond_tokenize(input) {
+    var tokens = vec_new();
+    var bytes = str_data(input);
+    var len = str_len(input);
+    var i = 0;
+    while (i < len) {
+        var b = load8(bytes + i);
+        # Whitespace
+        if (_cond_is_ws(b) == 1) {
+            i = i + 1;
+            continue;
+        }
+        # Two-char operators
+        if (i + 1 < len) {
+            var b2 = load8(bytes + i + 1);
+            if ((b == 61) && (b2 == 61)) { vec_push(tokens, _tok_new(TOK_EQ, 0)); i = i + 2; continue; }
+            if ((b == 33) && (b2 == 61)) { vec_push(tokens, _tok_new(TOK_NEQ, 0)); i = i + 2; continue; }
+            if ((b == 62) && (b2 == 61)) { vec_push(tokens, _tok_new(TOK_GTE, 0)); i = i + 2; continue; }
+            if ((b == 60) && (b2 == 61)) { vec_push(tokens, _tok_new(TOK_LTE, 0)); i = i + 2; continue; }
+            if ((b == 38) && (b2 == 38)) { vec_push(tokens, _tok_new(TOK_AND, 0)); i = i + 2; continue; }
+            if ((b == 124) && (b2 == 124)) { vec_push(tokens, _tok_new(TOK_OR, 0)); i = i + 2; continue; }
+        }
+        # Single-char operators: >, <, !
+        if (b == 62) { vec_push(tokens, _tok_new(TOK_GT, 0)); i = i + 1; continue; }
+        if (b == 60) { vec_push(tokens, _tok_new(TOK_LT, 0)); i = i + 1; continue; }
+        if (b == 33) { vec_push(tokens, _tok_new(TOK_NOT, 0)); i = i + 1; continue; }
+        # Parentheses
+        if (b == 40) { vec_push(tokens, _tok_new(TOK_LPAREN, 0)); i = i + 1; continue; }
+        if (b == 41) { vec_push(tokens, _tok_new(TOK_RPAREN, 0)); i = i + 1; continue; }
+        # String literal (single-quoted)
+        if (b == 39) {
+            i = i + 1;
+            var start = i;
+            while ((i < len) && (load8(bytes + i) != 39)) {
+                i = i + 1;
+            }
+            if (i >= len) {
+                return szal_err(ERR_FLOW_INVALID, str_from("unterminated string literal"));
+            }
+            var s = str_new(bytes + start, i - start);
+            vec_push(tokens, _tok_new(TOK_STRING, s));
+            i = i + 1;
+            continue;
+        }
+        # Number literal
+        if (_cond_is_digit(b) == 1) {
+            var nstart = i;
+            while ((i < len) && (_cond_is_digit(load8(bytes + i)) == 1)) {
+                i = i + 1;
+            }
+            if ((i < len) && (load8(bytes + i) == 46) && (i + 1 < len)
+            && (_cond_is_digit(load8(bytes + i + 1)) == 1)) {
+                i = i + 1;
+                while ((i < len) && (_cond_is_digit(load8(bytes + i)) == 1)) {
+                    i = i + 1;
+                }
+            }
+            var fbits = _cond_parse_num(bytes, nstart, i);
+            vec_push(tokens, _tok_new(TOK_NUMBER, fbits));
+            continue;
+        }
+        # Identifier / path / bool literal
+        if ((_cond_is_alpha(b) == 1) || (b == 95)) {
+            var wstart = i;
+            while (i < len) {
+                var wb = load8(bytes + i);
+                if ((_cond_is_alnum(wb) == 1) || (wb == 95) || (wb == 45) || (wb == 46)) {
+                    i = i + 1;
+                } else {
+                    break;
+                }
+            }
+            var word = str_new(bytes + wstart, i - wstart);
+            if (str_eq_cstr(word, "true") == 1) {
+                vec_push(tokens, _tok_new(TOK_BOOL, 1));
+            } elif (str_eq_cstr(word, "false") == 1) {
+                vec_push(tokens, _tok_new(TOK_BOOL, 0));
+            } else {
+                vec_push(tokens, _tok_new(TOK_PATH, word));
+            }
+            continue;
+        }
+        # Unexpected byte
+        if (_cond_is_ascii(b) == 1) {
+            var sbc = str_builder_new();
+            str_builder_add_cstr(sbc, "unexpected character '");
+            str_builder_add_byte(sbc, b);
+            str_builder_add_cstr(sbc, "'");
+            return szal_err(ERR_FLOW_INVALID, str_builder_build(sbc));
+        }
+        var sbx = str_builder_new();
+        str_builder_add_cstr(sbx, "unexpected byte 0x");
+        _cond_emit_hex2(sbx, b);
+        return szal_err(ERR_FLOW_INVALID, str_builder_build(sbx));
+    }
+    return Ok(tokens);
+}
+
+# ---------------------------------------------------------------------------
+# AST
+# ---------------------------------------------------------------------------
+
+# Expr kinds. The Rust Expr enum flattens to these integer kinds. An Expr is a heap blob
+# {kind@0, a@8, b@16}: for EXPR_LITERAL a = json_v ptr; for EXPR_PATH a = Str ptr (the path);
+# for binary ops a/b = child Expr ptrs; for EXPR_NOT a = the single child Expr ptr.
+enum CondExpr {
+    EXPR_LITERAL = 0;
+    EXPR_PATH = 1;
+    EXPR_EQ = 2;
+    EXPR_NEQ = 3;
+    EXPR_GT = 4;
+    EXPR_GTE = 5;
+    EXPR_LT = 6;
+    EXPR_LTE = 7;
+    EXPR_NOT = 8;
+    EXPR_AND = 9;
+    EXPR_OR = 10;
+}
+
+# Expr byte layout (24 bytes): kind@0, a@8, b@16.
+enum CondExprL { EXPR_SIZE = 24; EX_KIND = 0; EX_A = 8; EX_B = 16; }
+
+# Allocate an Expr blob. Returns 0 on OOM. Internal.
+fn _expr_new(kind, a, b) {
+    var e = alloc(EXPR_SIZE);
+    if (e == 0) { return 0; }
+    store64(e + EX_KIND, kind);
+    store64(e + EX_A, a);
+    store64(e + EX_B, b);
+    return e;
+}
+
+# Get an Expr's kind (CondExpr value).
+fn expr_kind(e) { return load64(e + EX_KIND); }
+
+# Get an Expr's first child / payload (json_v / Str / Expr ptr depending on kind).
+fn expr_a(e) { return load64(e + EX_A); }
+
+# Get an Expr's second child (Expr ptr; only meaningful for binary ops).
+fn expr_b(e) { return load64(e + EX_B); }
+
+# ---------------------------------------------------------------------------
+# Parser
+# ---------------------------------------------------------------------------
+
+# Parser state — a heap blob {tokens@0 (vec), pos@8}. Mirrors the Rust Parser struct.
+enum CondParserL { PARSER_SIZE = 16; PS_TOKENS = 0; PS_POS = 8; }
+
+# Allocate a parser over a token vec. Internal.
+fn _parser_new(tokens) {
+    var p = alloc(PARSER_SIZE);
+    if (p == 0) { return 0; }
+    store64(p + PS_TOKENS, tokens);
+    store64(p + PS_POS, 0);
+    return p;
+}
+
+# Peek at the current token, or 0 if at end. Internal.
+fn _parser_peek(p) {
+    var tokens = load64(p + PS_TOKENS);
+    var pos = load64(p + PS_POS);
+    if (pos < vec_len(tokens)) {
+        return vec_get(tokens, pos);
+    }
+    return 0;
+}
+
+# Return the kind of the current token, or (0 - 1) if at end. Internal.
+fn _parser_peek_kind(p) {
+    var t = _parser_peek(p);
+    if (t == 0) { return (0 - 1); }
+    return tok_kind(t);
+}
+
+# Advance past the current token, returning it (or 0 if at end). Internal.
+fn _parser_advance(p) {
+    var tokens = load64(p + PS_TOKENS);
+    var pos = load64(p + PS_POS);
+    if (pos < vec_len(tokens)) {
+        var t = vec_get(tokens, pos);
+        store64(p + PS_POS, pos + 1);
+        return t;
+    }
+    return 0;
+}
+
+# parse_or — lowest precedence. Returns Ok(Expr) or Err. Internal.
+fn _parse_or(p) {
+    var left = _parse_and(p)?;
+    while (_parser_peek_kind(p) == TOK_OR) {
+        _parser_advance(p);
+        var right = _parse_and(p)?;
+        left = _expr_new(EXPR_OR, left, right);
+    }
+    return Ok(left);
+}
+
+# parse_and — binds tighter than OR. Returns Ok(Expr) or Err. Internal.
+fn _parse_and(p) {
+    var left = _parse_cmp(p)?;
+    while (_parser_peek_kind(p) == TOK_AND) {
+        _parser_advance(p);
+        var right = _parse_cmp(p)?;
+        left = _expr_new(EXPR_AND, left, right);
+    }
+    return Ok(left);
+}
+
+# parse_cmp — a single optional comparison between two values. Returns Ok(Expr) or Err. Internal.
+fn _parse_cmp(p) {
+    var left = _parse_value(p)?;
+    var k = _parser_peek_kind(p);
+    if (k == TOK_EQ) {
+        _parser_advance(p);
+        var r = _parse_value(p)?;
+        return Ok(_expr_new(EXPR_EQ, left, r));
+    }
+    if (k == TOK_NEQ) {
+        _parser_advance(p);
+        var r2 = _parse_value(p)?;
+        return Ok(_expr_new(EXPR_NEQ, left, r2));
+    }
+    if (k == TOK_GT) {
+        _parser_advance(p);
+        var r3 = _parse_value(p)?;
+        return Ok(_expr_new(EXPR_GT, left, r3));
+    }
+    if (k == TOK_GTE) {
+        _parser_advance(p);
+        var r4 = _parse_value(p)?;
+        return Ok(_expr_new(EXPR_GTE, left, r4));
+    }
+    if (k == TOK_LT) {
+        _parser_advance(p);
+        var r5 = _parse_value(p)?;
+        return Ok(_expr_new(EXPR_LT, left, r5));
+    }
+    if (k == TOK_LTE) {
+        _parser_advance(p);
+        var r6 = _parse_value(p)?;
+        return Ok(_expr_new(EXPR_LTE, left, r6));
+    }
+    return Ok(left);
+}
+
+# parse_value — unary not, literals, paths, parens. Returns Ok(Expr) or Err. Internal.
+fn _parse_value(p) {
+    # Prefix `!` (not)
+    if (_parser_peek_kind(p) == TOK_NOT) {
+        _parser_advance(p);
+        var inner = _parse_value(p)?;
+        return Ok(_expr_new(EXPR_NOT, inner, 0));
+    }
+    var t = _parser_peek(p);
+    if (t == 0) {
+        return szal_err(ERR_FLOW_INVALID, str_from("unexpected end of expression"));
+    }
+    var k = tok_kind(t);
+    if (k == TOK_STRING) {
+        _parser_advance(p);
+        return Ok(_expr_new(EXPR_LITERAL, bayan_json_v_str_new(tok_payload(t)), 0));
+    }
+    if (k == TOK_NUMBER) {
+        _parser_advance(p);
+        return Ok(_expr_new(EXPR_LITERAL, bayan_json_v_float_new(tok_payload(t)), 0));
+    }
+    if (k == TOK_BOOL) {
+        _parser_advance(p);
+        return Ok(_expr_new(EXPR_LITERAL, bayan_json_v_bool_new(tok_payload(t)), 0));
+    }
+    if (k == TOK_PATH) {
+        _parser_advance(p);
+        return Ok(_expr_new(EXPR_PATH, tok_payload(t), 0));
+    }
+    if (k == TOK_LPAREN) {
+        _parser_advance(p);
+        var e = _parse_or(p)?;
+        var nxt = _parser_advance(p);
+        if ((nxt != 0) && (tok_kind(nxt) == TOK_RPAREN)) {
+            return Ok(e);
+        }
+        return szal_err(ERR_FLOW_INVALID, str_from("expected ')'"));
+    }
+    # Unexpected token. Rust prints "unexpected token: <Debug>"; we name the kind.
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "unexpected token: ");
+    str_builder_add_cstr(sb, _cond_tok_name(k));
+    return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+}
+
+# Map a token kind to a human name for error messages (port-introduced; Rust used {tok:?}).
+fn _cond_tok_name(k) {
+    if (k == TOK_PATH) { return "path"; }
+    if (k == TOK_STRING) { return "string"; }
+    if (k == TOK_NUMBER) { return "number"; }
+    if (k == TOK_BOOL) { return "bool"; }
+    if (k == TOK_EQ) { return "=="; }
+    if (k == TOK_NEQ) { return "!="; }
+    if (k == TOK_GT) { return ">"; }
+    if (k == TOK_GTE) { return ">="; }
+    if (k == TOK_LT) { return "<"; }
+    if (k == TOK_LTE) { return "<="; }
+    if (k == TOK_NOT) { return "!"; }
+    if (k == TOK_AND) { return "&&"; }
+    if (k == TOK_OR) { return "||"; }
+    if (k == TOK_LPAREN) { return "("; }
+    if (k == TOK_RPAREN) { return ")"; }
+    return "?";
+}
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+# resolve_path(path, context) -> json_v. Walks the JSON tree segment by segment splitting on
+# '.'. Returns a JSON null value (a fresh JTAG_NULL) if any segment is missing or a segment
+# walks into a non-object. Mirrors Rust resolve_path (returns &Value::Null on miss).
+fn cond_resolve_path(path, context) {
+    var current = context;
+    var data = str_data(path);
+    var len = str_len(path);
+    var seg_start = 0;
+    var i = 0;
+    while (i <= len) {
+        if ((i == len) || (load8(data + i) == 46)) {
+            # segment is [seg_start, i)
+            var seg = str_new(data + seg_start, i - seg_start);
+            var nxt = bayan_json_v_obj_get(current, str_cstr(seg));
+            if (nxt == 0) {
+                return bayan_json_v_null();
+            }
+            current = nxt;
+            seg_start = i + 1;
+        }
+        i = i + 1;
+    }
+    return current;
+}
+
+# Compare two json_v values for equality. Same-type comparisons use structural equality; numbers
+# compare numerically as f64 (see parity_notes). Cross-type comparisons return 0. Mirrors Rust
+# values_equal. Internal.
+fn _cond_values_equal(a, b) {
+    if (bayan_json_v_is_str(a) == 1) {
+        if (bayan_json_v_is_str(b) == 1) {
+            return str_eq(bayan_json_v_str(a), bayan_json_v_str(b));
+        }
+        return 0;
+    }
+    if (_cond_is_number(a) == 1) {
+        if (_cond_is_number(b) == 1) {
+            return f64_eq(bayan_json_v_float(a), bayan_json_v_float(b));
+        }
+        return 0;
+    }
+    if (bayan_json_v_is_bool(a) == 1) {
+        if (bayan_json_v_is_bool(b) == 1) {
+            if (bayan_json_v_bool(a) == bayan_json_v_bool(b)) { return 1; }
+            return 0;
+        }
+        return 0;
+    }
+    if (bayan_json_v_is_null(a) == 1) {
+        if (bayan_json_v_is_null(b) == 1) { return 1; }
+        return 0;
+    }
+    return 0;
+}
+
+# True if v is a JSON number (int or float tag). Internal.
+fn _cond_is_number(v) {
+    if (bayan_json_v_is_int(v) == 1) { return 1; }
+    if (bayan_json_v_is_float(v) == 1) { return 1; }
+    return 0;
+}
+
+# Compare two json_v values for ordering. Returns (0 - 2) for "incomparable" (Rust None), else
+# (0 - 1)/0/1 for Less/Equal/Greater. Numbers compare numerically; strings lexicographically.
+# Cross-type returns incomparable. Mirrors Rust values_compare. Internal.
+fn _cond_values_compare(a, b) {
+    if ((_cond_is_number(a) == 1) && (_cond_is_number(b) == 1)) {
+        var af = bayan_json_v_float(a);
+        var bf = bayan_json_v_float(b);
+        if (f64_lt(af, bf) == 1) { return (0 - 1); }
+        if (f64_gt(af, bf) == 1) { return 1; }
+        if (f64_eq(af, bf) == 1) { return 0; }
+        return (0 - 2);
+    }
+    if ((bayan_json_v_is_str(a) == 1) && (bayan_json_v_is_str(b) == 1)) {
+        return _cond_str_cmp(bayan_json_v_str(a), bayan_json_v_str(b));
+    }
+    return (0 - 2);
+}
+
+# Lexicographic byte comparison of two Strs: (0 - 1)/0/1. Mirrors Rust str Ord (byte order).
+# Internal.
+fn _cond_str_cmp(a, b) {
+    var ad = str_data(a);
+    var al = str_len(a);
+    var bd = str_data(b);
+    var bl = str_len(b);
+    var n = al;
+    if (bl < n) { n = bl; }
+    var i = 0;
+    while (i < n) {
+        var ca = load8(ad + i);
+        var cb = load8(bd + i);
+        if (ca < cb) { return (0 - 1); }
+        if (ca > cb) { return 1; }
+        i = i + 1;
+    }
+    if (al < bl) { return (0 - 1); }
+    if (al > bl) { return 1; }
+    return 0;
+}
+
+# Determine the truthiness of a json_v value. Mirrors Rust is_truthy: bool -> itself; null ->
+# false; string -> non-empty; number -> != 0.0; array -> non-empty; object -> non-empty.
+fn cond_is_truthy(v) {
+    if (v == 0) { return 0; }
+    if (bayan_json_v_is_bool(v) == 1) { return bayan_json_v_bool(v); }
+    if (bayan_json_v_is_null(v) == 1) { return 0; }
+    if (bayan_json_v_is_str(v) == 1) {
+        if (str_len(bayan_json_v_str(v)) > 0) { return 1; }
+        return 0;
+    }
+    if (_cond_is_number(v) == 1) {
+        if (f64_eq(bayan_json_v_float(v), f64_from(0)) == 1) { return 0; }
+        return 1;
+    }
+    if (bayan_json_v_is_arr(v) == 1) {
+        if (bayan_json_v_arr_len(v) > 0) { return 1; }
+        return 0;
+    }
+    if (bayan_json_v_is_obj(v) == 1) {
+        if (bayan_json_v_obj_len(v) > 0) { return 1; }
+        return 0;
+    }
+    return 0;
+}
+
+# Evaluate an Expr against a json_v context, returning a json_v value (never errors — Rust's
+# eval_expr is infallible once the AST is built). Mirrors Rust eval_expr. Internal.
+fn _cond_eval(e, context) {
+    var k = expr_kind(e);
+    if (k == EXPR_LITERAL) {
+        return expr_a(e);
+    }
+    if (k == EXPR_PATH) {
+        return cond_resolve_path(expr_a(e), context);
+    }
+    if (k == EXPR_EQ) {
+        var l = _cond_eval(expr_a(e), context);
+        var r = _cond_eval(expr_b(e), context);
+        return bayan_json_v_bool_new(_cond_values_equal(l, r));
+    }
+    if (k == EXPR_NEQ) {
+        var l2 = _cond_eval(expr_a(e), context);
+        var r2 = _cond_eval(expr_b(e), context);
+        if (_cond_values_equal(l2, r2) == 1) { return bayan_json_v_bool_new(0); }
+        return bayan_json_v_bool_new(1);
+    }
+    if (k == EXPR_GT) {
+        var lg = _cond_eval(expr_a(e), context);
+        var rg = _cond_eval(expr_b(e), context);
+        if (_cond_values_compare(lg, rg) == 1) { return bayan_json_v_bool_new(1); }
+        return bayan_json_v_bool_new(0);
+    }
+    if (k == EXPR_GTE) {
+        var lge = _cond_eval(expr_a(e), context);
+        var rge = _cond_eval(expr_b(e), context);
+        var cge = _cond_values_compare(lge, rge);
+        if ((cge == 1) || (cge == 0)) { return bayan_json_v_bool_new(1); }
+        return bayan_json_v_bool_new(0);
+    }
+    if (k == EXPR_LT) {
+        var lt = _cond_eval(expr_a(e), context);
+        var rt = _cond_eval(expr_b(e), context);
+        if (_cond_values_compare(lt, rt) == (0 - 1)) { return bayan_json_v_bool_new(1); }
+        return bayan_json_v_bool_new(0);
+    }
+    if (k == EXPR_LTE) {
+        var lle = _cond_eval(expr_a(e), context);
+        var rle = _cond_eval(expr_b(e), context);
+        var cle = _cond_values_compare(lle, rle);
+        if ((cle == (0 - 1)) || (cle == 0)) { return bayan_json_v_bool_new(1); }
+        return bayan_json_v_bool_new(0);
+    }
+    if (k == EXPR_NOT) {
+        var v = _cond_eval(expr_a(e), context);
+        if (cond_is_truthy(v) == 1) { return bayan_json_v_bool_new(0); }
+        return bayan_json_v_bool_new(1);
+    }
+    if (k == EXPR_AND) {
+        if (cond_is_truthy(_cond_eval(expr_a(e), context)) == 0) {
+            return bayan_json_v_bool_new(0);
+        }
+        return bayan_json_v_bool_new(cond_is_truthy(_cond_eval(expr_b(e), context)));
+    }
+    if (k == EXPR_OR) {
+        if (cond_is_truthy(_cond_eval(expr_a(e), context)) == 1) {
+            return bayan_json_v_bool_new(1);
+        }
+        return bayan_json_v_bool_new(cond_is_truthy(_cond_eval(expr_b(e), context)));
+    }
+    return bayan_json_v_null();
+}
+
+# ---------------------------------------------------------------------------
+# Compilation
+# ---------------------------------------------------------------------------
+
+# CompiledCondition — heap blob {source@0 (Str), ast@8 (Expr ptr)}. Mirrors the Rust struct.
+enum CondCompiledL { COMPILED_SIZE = 16; CC_SOURCE = 0; CC_AST = 8; }
+
+# Get the compiled condition's (trimmed) source Str.
+fn compiled_source(c) { return load64(c + CC_SOURCE); }
+
+# Get the compiled condition's AST Expr ptr.
+fn compiled_ast(c) { return load64(c + CC_AST); }
+
+# Compile a condition expression (Str) into a reusable CompiledCondition. An empty or
+# whitespace-only expression compiles to a vacuously-true literal with an empty source. Returns
+# Err(ERR_FLOW_INVALID) (message in the szal last-error buffer) on a malformed expression or
+# trailing tokens. Mirrors Rust CompiledCondition::compile.
+fn compiled_compile(expr) {
+    var trimmed = str_trim(expr);
+    if (str_len(trimmed) == 0) {
+        var c0 = alloc(COMPILED_SIZE);
+        if (c0 == 0) { return szal_err(ERR_OTHER, str_from("out of memory")); }
+        store64(c0 + CC_SOURCE, str_from(""));
+        store64(c0 + CC_AST, _expr_new(EXPR_LITERAL, bayan_json_v_bool_new(1), 0));
+        return Ok(c0);
+    }
+    var tokens = _cond_tokenize(trimmed)?;
+    var p = _parser_new(tokens);
+    var ast = _parse_or(p)?;
+    var pos = load64(p + PS_POS);
+    if (pos < vec_len(tokens)) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "unexpected trailing token: ");
+        str_builder_add_cstr(sb, _cond_tok_name(tok_kind(vec_get(tokens, pos))));
+        return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+    }
+    var c = alloc(COMPILED_SIZE);
+    if (c == 0) { return szal_err(ERR_OTHER, str_from("out of memory")); }
+    store64(c + CC_SOURCE, trimmed);
+    store64(c + CC_AST, ast);
+    return Ok(c);
+}
+
+# Evaluate a compiled condition against a json_v context. Returns Ok(1)/Ok(0). Never errors once
+# compiled. Mirrors Rust CompiledCondition::evaluate.
+fn compiled_evaluate(c, context) {
+    return Ok(cond_is_truthy(_cond_eval(compiled_ast(c), context)));
+}
+
+# Evaluate a condition expression (Str) against a json_v context. Compiles then evaluates. An
+# empty expression is vacuously true. Returns Ok(1)/Ok(0) or Err. Mirrors Rust evaluate().
+fn cond_evaluate(expr, context) {
+    var c = compiled_compile(expr)?;
+    return compiled_evaluate(c, context);
+}
+
+# ---------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------
+
+# A cache entry — heap blob {is_err@0, payload@8}: is_err 0 -> payload is a CompiledCondition;
+# is_err 1 -> payload is the error message Str. Mirrors Rust Arc<Result<CompiledCondition,String>>.
+enum CondCacheEntryL { CACHE_ENTRY_SIZE = 16; CE_IS_ERR = 0; CE_PAYLOAD = 8; }
+
+# ConditionCache — heap blob {map@0}. The map is cstr-keyed (map_new) by ORIGINAL (untrimmed)
+# expression, matching Rust which keyed by `expr.to_owned()`. Caches both successful compilations
+# and parse errors. NOTE: single-threaded for M1 — must be mutex-guarded once engine threads
+# share it (Rust used RwLock; see todo).
+enum CondCacheL { CACHE_SIZE = 8; CACHE_MAP = 0; }
+
+# Create an empty condition cache. Returns 0 on OOM. Mirrors ConditionCache::new.
+fn cache_new() {
+    var c = alloc(CACHE_SIZE);
+    if (c == 0) { return 0; }
+    store64(c + CACHE_MAP, map_new());
+    return c;
+}
+
+# Get (or compile + cache) the entry for expr (Str). Returns a cache-entry blob. Internal.
+fn _cache_compiled(cache, expr) {
+    var m = load64(cache + CACHE_MAP);
+    var key = str_cstr(expr);
+    var hit = map_get(m, key);
+    if (hit != 0) {
+        return hit;
+    }
+    var entry = alloc(CACHE_ENTRY_SIZE);
+    if (entry == 0) { return 0; }
+    var r = compiled_compile(expr);
+    if (is_err_result(r) == 1) {
+        store64(entry + CE_IS_ERR, 1);
+        store64(entry + CE_PAYLOAD, szal_get_err_msg());
+    } else {
+        store64(entry + CE_IS_ERR, 0);
+        store64(entry + CE_PAYLOAD, result_unwrap(r));
+    }
+    map_set(m, key, entry);
+    return entry;
+}
+
+# Evaluate expr (Str) against a json_v context using the cache, compiling + caching on first use.
+# Returns Ok(1)/Ok(0) or re-raises the cached Err (re-setting the last-error buffer from the
+# cached message). Mirrors Rust ConditionCache::evaluate.
+fn cache_evaluate(cache, expr, context) {
+    var entry = _cache_compiled(cache, expr);
+    if (entry == 0) { return szal_err(ERR_OTHER, str_from("out of memory")); }
+    if (load64(entry + CE_IS_ERR) == 1) {
+        return szal_err(ERR_FLOW_INVALID, load64(entry + CE_PAYLOAD));
+    }
+    return compiled_evaluate(load64(entry + CE_PAYLOAD), context);
+}
+
+# Number of distinct expressions cached. Mirrors ConditionCache::len.
+fn cache_len(cache) {
+    return map_count(load64(cache + CACHE_MAP));
+}
+
+# Whether the cache is empty (1/0). Mirrors ConditionCache::is_empty.
+fn cache_is_empty(cache) {
+    if (cache_len(cache) == 0) { return 1; }
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# Template rendering
+# ---------------------------------------------------------------------------
+
+# Render a template Str by resolving {{dot.path}} placeholders against a json_v context. Missing
+# paths -> empty string; a string value -> its raw content; any other JSON value -> its JSON
+# serialization. Literal text (including non-ASCII bytes) is copied verbatim. Mirrors Rust
+# render_template.
+fn cond_render_template(template, context) {
+    var sb = str_builder_new();
+    var bytes = str_data(template);
+    var len = str_len(template);
+    var i = 0;
+    while (i < len) {
+        if ((i + 1 < len) && (load8(bytes + i) == 123) && (load8(bytes + i + 1) == 123)) {
+            # find closing }} starting at i+2
+            var end = _cond_find_close(bytes, i + 2, len);
+            if (end != (0 - 1)) {
+                # path is bytes[i+2 .. end], trimmed
+                var raw = str_new(bytes + i + 2, end - (i + 2));
+                var path = str_trim(raw);
+                var resolved = cond_resolve_path(path, context);
+                if (bayan_json_v_is_null(resolved) == 1) {
+                    # missing path -> empty (append nothing)
+                } elif (bayan_json_v_is_str(resolved) == 1) {
+                    str_builder_add(sb, bayan_json_v_str(resolved));
+                } else {
+                    str_builder_add(sb, bayan_json_v_build(resolved));
+                }
+                i = end + 2;
+                continue;
+            }
+        }
+        str_builder_add_byte(sb, load8(bytes + i));
+        i = i + 1;
+    }
+    return str_builder_build(sb);
+}
+
+# Find the byte offset of the next "}}" at or after `from`, scanning up to `len`. Returns the
+# offset of the first '}' of the pair, or (0 - 1) if not found. Internal.
+fn _cond_find_close(bytes, from, len) {
+    var i = from;
+    while (i + 1 < len) {
+        if ((load8(bytes + i) == 125) && (load8(bytes + i + 1) == 125)) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return (0 - 1);
+}
+
+# ---------------------------------------------------------------------------
+# Step context builder
+# ---------------------------------------------------------------------------
+
+# Build a step-result context json_v for condition evaluation, shaped:
+#   { "steps": { "<name>": { "status": "<display>", "output": <value>, "error": <str|null> } } }
+# Maps each StepResult's step_id back to its name via the StepDef slice; results referencing an
+# unknown step id are skipped. `results` and `steps` are vecs of StepResult / StepDef ptrs.
+# status is the Display (snake_case) form (matches Rust result.status.to_string()). Mirrors Rust
+# build_step_context.
+fn cond_build_step_context(results, steps) {
+    var steps_obj = bayan_json_v_obj_new();
+    var nres = vec_len(results);
+    var i = 0;
+    while (i < nres) {
+        var r = vec_get(results, i);
+        var name = _cond_name_for_id(steps, step_result_id_hi(r), step_result_id_lo(r));
+        if (name != 0) {
+            var entry = bayan_json_v_obj_new();
+            bayan_json_v_obj_set(entry, str_from("status"),
+            bayan_json_v_str_new(str_from(step_status_display(step_result_status(r)))));
+            var out = step_result_output(r);
+            if (out == 0) { out = bayan_json_v_null(); }
+            bayan_json_v_obj_set(entry, str_from("output"), out);
+            var err = step_result_error(r);
+            if (err == 0) {
+                bayan_json_v_obj_set(entry, str_from("error"), bayan_json_v_null());
+            } else {
+                bayan_json_v_obj_set(entry, str_from("error"), bayan_json_v_str_new(err));
+            }
+            bayan_json_v_obj_set(steps_obj, str_clone(name), entry);
+        }
+        i = i + 1;
+    }
+    var root = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(root, str_from("steps"), steps_obj);
+    return root;
+}
+
+# Find the StepDef name (Str) matching the given id halves in the steps vec, or 0 if none.
+# Internal — mirrors the id_to_name HashMap lookup in Rust build_step_context.
+fn _cond_name_for_id(steps, hi, lo) {
+    var n = vec_len(steps);
+    var i = 0;
+    while (i < n) {
+        var s = vec_get(steps, i);
+        if ((step_id_hi(s) == hi) && (step_id_lo(s) == lo)) {
+            return step_name(s);
+        }
+        i = i + 1;
+    }
+    return 0;
+}

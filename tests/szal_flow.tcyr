@@ -1,0 +1,224 @@
+# szal_flow.tcyr — FlowDef + builders + flow_validate + (de)serialization parity tests
+# Run: cyrius build --strict --no-deps tests/szal_flow.tcyr build/test_flow && ./build/test_flow
+#
+# Ports rust-old/src/flow.rs #[cfg(test)] assertions (and the proptest invariants as fixed
+# cases): sequential build, dag-valid, dag-cycle, mode display, builder, non-dag-rejects-deps,
+# version default + builder, deserialize-without-version, version roundtrip, serde roundtrip,
+# plus the brief's extra cases (unknown-dep, hierarchical, Any+empty-deps).
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "src/error.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+include "src/flow.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("FlowMode display / serde names");
+    assert_streq(flow_mode_display(FLOW_SEQUENTIAL), "sequential", "display Sequential");
+    assert_streq(flow_mode_display(FLOW_PARALLEL), "parallel", "display Parallel");
+    assert_streq(flow_mode_display(FLOW_DAG), "dag", "display Dag");
+    assert_streq(flow_mode_display(FLOW_HIERARCHICAL), "hierarchical", "display Hierarchical");
+    assert_streq(flow_mode_serde_name(FLOW_SEQUENTIAL), "Sequential", "serde Sequential");
+    assert_streq(flow_mode_serde_name(FLOW_DAG), "Dag", "serde Dag");
+
+    test_group("flow_sequential: build + mode");
+    var seq = flow_new(str_from("deploy"), FLOW_SEQUENTIAL);
+    flow_add_step(seq, step_new(str_from("build")));
+    flow_add_step(seq, step_new(str_from("test")));
+    flow_add_step(seq, step_new(str_from("deploy")));
+    assert_eq(flow_steps_len(seq), 3, "sequential has 3 steps");
+    assert_eq(flow_mode(seq), FLOW_SEQUENTIAL, "mode is Sequential");
+    assert(is_ok(flow_validate(seq)), "sequential validate ok");
+
+    test_group("flow_dag_valid: linear chain validates");
+    var build = step_new(str_from("build"));
+    var test = step_new(str_from("test"));
+    step_depends_on_add(test, step_id_hi(build), step_id_lo(build));
+    var deploy = step_new(str_from("deploy"));
+    step_depends_on_add(deploy, step_id_hi(test), step_id_lo(test));
+    var pipe = flow_new(str_from("pipeline"), FLOW_DAG);
+    flow_add_step(pipe, build);
+    flow_add_step(pipe, test);
+    flow_add_step(pipe, deploy);
+    assert(is_ok(flow_validate(pipe)), "dag linear validate ok");
+
+    test_group("flow_dag_cycle_detected: a<->b cycle is Err(ERR_CYCLE)");
+    var ca = step_new(str_from("a"));
+    var cb = step_new(str_from("b"));
+    step_depends_on_add(cb, step_id_hi(ca), step_id_lo(ca));
+    step_depends_on_add(ca, step_id_hi(cb), step_id_lo(cb));
+    var broken = flow_new(str_from("broken"), FLOW_DAG);
+    flow_add_step(broken, ca);
+    flow_add_step(broken, cb);
+    var cyc = flow_validate(broken);
+    assert(is_err_result(cyc), "cyclic dag is Err");
+    assert_eq(err_code_of(cyc), ERR_CYCLE, "cycle Err code is ERR_CYCLE");
+    assert(str_eq_cstr(szal_get_err_msg(), "broken"), "cycle detail is the flow name");
+
+    test_group("flow_dag_unknown_dep: dep on non-existent step is invalid");
+    var ud = flow_new(str_from("uflow"), FLOW_DAG);
+    var only = step_new(str_from("only"));
+    # depend on a fresh id that is NOT in the flow
+    var ghost = step_new(str_from("ghost"));
+    step_depends_on_add(only, step_id_hi(ghost), step_id_lo(ghost));
+    flow_add_step(ud, only);
+    var udr = flow_validate(ud);
+    assert(is_err_result(udr), "unknown-dep dag is Err");
+    assert_eq(err_code_of(udr), ERR_FLOW_INVALID, "unknown-dep code is ERR_FLOW_INVALID");
+    assert(str_eq_cstr(szal_get_err_msg(), "step 'only' depends on non-existent step"),
+        "unknown-dep detail message");
+
+    test_group("flow_sequential_rejects_depends_on");
+    var sa = step_new(str_from("a"));
+    var sb = step_new(str_from("b"));
+    step_depends_on_add(sb, step_id_hi(sa), step_id_lo(sa));
+    var seqbad = flow_new(str_from("bad"), FLOW_SEQUENTIAL);
+    flow_add_step(seqbad, sa);
+    flow_add_step(seqbad, sb);
+    var seqr = flow_validate(seqbad);
+    assert(is_err_result(seqr), "sequential-with-deps is Err");
+    assert_eq(err_code_of(seqr), ERR_FLOW_INVALID, "sequential-with-deps code");
+    assert(str_eq_cstr(szal_get_err_msg(),
+        "steps have dependencies but flow mode is sequential (use dag mode for dependencies)"),
+        "non-dag-with-deps detail (lowercase mode interpolated)");
+
+    test_group("flow_parallel_rejects_depends_on");
+    var pa = step_new(str_from("a"));
+    var pb = step_new(str_from("b"));
+    step_depends_on_add(pb, step_id_hi(pa), step_id_lo(pa));
+    var parbad = flow_new(str_from("bad"), FLOW_PARALLEL);
+    flow_add_step(parbad, pa);
+    flow_add_step(parbad, pb);
+    assert(is_err_result(flow_validate(parbad)), "parallel-with-deps is Err");
+
+    test_group("hierarchical: nested deps rejected, clean nesting ok");
+    # clean: a manager with a sub-step that has NO deps validates
+    var mgr = step_new(str_from("mgr"));
+    var leaf = step_new(str_from("leaf"));
+    step_with_sub_step(mgr, leaf);
+    var hok = flow_new(str_from("hflow"), FLOW_HIERARCHICAL);
+    flow_add_step(hok, mgr);
+    assert(is_ok(flow_validate(hok)), "hierarchical clean nesting ok");
+    # bad: a sub-step that itself has a depends_on is rejected recursively
+    var mgr2 = step_new(str_from("mgr2"));
+    var dep_leaf = step_new(str_from("dep_leaf"));
+    var some = step_new(str_from("some"));
+    step_depends_on_add(dep_leaf, step_id_hi(some), step_id_lo(some));
+    step_with_sub_step(mgr2, dep_leaf);
+    var hbad = flow_new(str_from("hbad"), FLOW_HIERARCHICAL);
+    flow_add_step(hbad, mgr2);
+    var hbadr = flow_validate(hbad);
+    assert(is_err_result(hbadr), "hierarchical nested dep is Err");
+    assert_eq(err_code_of(hbadr), ERR_FLOW_INVALID, "hierarchical nested dep code");
+    assert(str_eq_cstr(szal_get_err_msg(),
+        "step 'dep_leaf' has depends_on in hierarchical mode (use sub_steps for nesting)"),
+        "hierarchical nested dep detail");
+
+    test_group("TriggerMode Any with empty deps is invalid");
+    var anyflow = flow_new(str_from("aflow"), FLOW_SEQUENTIAL);
+    var anystep = step_new(str_from("orphan"));
+    step_with_trigger_mode(anystep, TRIGGER_ANY);
+    flow_add_step(anyflow, anystep);
+    var anyr = flow_validate(anyflow);
+    assert(is_err_result(anyr), "Any + empty deps is Err");
+    assert_eq(err_code_of(anyr), ERR_FLOW_INVALID, "Any + empty deps code");
+    assert(str_eq_cstr(szal_get_err_msg(),
+        "step 'orphan' has trigger_mode Any but no dependencies"),
+        "Any + empty deps detail");
+
+    test_group("flow_builder: rollback + timeout");
+    var bf = flow_with_timeout(flow_with_rollback(flow_new(str_from("t"), FLOW_PARALLEL)), 120000);
+    assert_eq(flow_rollback_on_failure(bf), 1, "rollback flag set");
+    assert_eq(flow_timeout_present(bf), 1, "timeout is Some");
+    assert_eq(flow_timeout_ms(bf), 120000, "timeout_ms is 120000");
+
+    test_group("flow_version: default + with_version");
+    var vf = flow_new(str_from("v"), FLOW_SEQUENTIAL);
+    assert_eq(flow_version(vf), 1, "version defaults to 1");
+    flow_with_version(vf, 5);
+    assert_eq(flow_version(vf), 5, "with_version(5) sets 5");
+
+    test_group("flow_deserializes_without_version_field (legacy -> version 1)");
+    var legacy = str_from("{\"id\":\"00000000-0000-0000-0000-000000000000\",\"name\":\"legacy\",\"description\":\"\",\"mode\":\"Sequential\",\"steps\":[],\"rollback_on_failure\":false,\"timeout_ms\":null}");
+    var lf = flow_from_json(legacy);
+    assert(lf != 0, "legacy json parsed");
+    assert_eq(flow_version(lf), 1, "legacy version defaults to 1");
+    assert(str_eq_cstr(flow_name(lf), "legacy"), "legacy name is 'legacy'");
+    assert_eq(flow_mode(lf), FLOW_SEQUENTIAL, "legacy mode is Sequential");
+    assert_eq(flow_timeout_present(lf), 0, "legacy timeout is None");
+    assert_eq(flow_steps_len(lf), 0, "legacy has no steps");
+
+    test_group("flow_version_serde_roundtrip");
+    var vrf = flow_with_version(flow_new(str_from("v"), FLOW_DAG), 7);
+    var vjson = flow_to_json(vrf);
+    var vback = flow_from_json(vjson);
+    assert(vback != 0, "version roundtrip parsed");
+    assert_eq(flow_version(vback), 7, "version roundtrips as 7");
+    assert_eq(flow_mode(vback), FLOW_DAG, "mode roundtrips as Dag");
+
+    test_group("flow_serde_roundtrip: name + steps + rollback");
+    var rb = step_new(str_from("build"));
+    var rt = step_new(str_from("test"));
+    step_depends_on_add(rt, step_id_hi(rb), step_id_lo(rb));
+    var rpipe = flow_with_rollback(flow_new(str_from("pipeline"), FLOW_DAG));
+    flow_add_step(rpipe, rb);
+    flow_add_step(rpipe, rt);
+    var rjson = flow_to_json(rpipe);
+    var rback = flow_from_json(rjson);
+    assert(rback != 0, "roundtrip parsed");
+    assert(str_eq_cstr(flow_name(rback), "pipeline"), "name roundtrips");
+    assert_eq(flow_steps_len(rback), 2, "2 steps roundtrip");
+    assert_eq(flow_rollback_on_failure(rback), 1, "rollback roundtrips");
+    # the dependency survived the roundtrip and still validates as a DAG
+    assert(is_ok(flow_validate(rback)), "roundtripped dag still validates");
+    assert_eq(step_depends_on_len(flow_step_at(rback, 1)), 1, "step 2 kept its dependency");
+
+    test_group("proptest-as-fixed: linear dag of 20 never cycles");
+    var lin = flow_new(str_from("linear"), FLOW_DAG);
+    var prev = 0;
+    var pi = 0;
+    while (pi < 20) {
+        var st = step_new(str_cat(str_from("s"), str_from_int(pi)));
+        if (prev != 0) {
+            step_depends_on_add(st, step_id_hi(prev), step_id_lo(prev));
+        }
+        flow_add_step(lin, st);
+        prev = st;
+        pi = pi + 1;
+    }
+    assert(is_ok(flow_validate(lin)), "20-node linear dag validates");
+
+    test_group("proptest-as-fixed: fanout dag never cycles");
+    var root = step_new(str_from("root"));
+    var fan = flow_new(str_from("fanout"), FLOW_DAG);
+    flow_add_step(fan, root);
+    var fi = 0;
+    while (fi < 15) {
+        var leafn = step_new(str_cat(str_from("leaf"), str_from_int(fi)));
+        step_depends_on_add(leafn, step_id_hi(root), step_id_lo(root));
+        flow_add_step(fan, leafn);
+        fi = fi + 1;
+    }
+    assert(is_ok(flow_validate(fan)), "fanout dag validates");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

@@ -1,0 +1,665 @@
+# step.cyr — workflow step definitions, builders, backoff, status, results
+#
+# Ports rust-old/src/step.rs (StepDef + builder pattern, BackoffStrategy, TriggerMode,
+# StepStatus, StepResult, serde (de)serialization). StepDef is a heap blob with an enum of
+# byte-offset layout constants and accessor fns (the majra heap-struct idiom). All ids are
+# UUIDs carried as two i64 halves (hi, lo) matching src/uuid.cyr.
+#
+# Usage: include "src/step.cyr"
+# Requires: lib/str.cyr (Str + builder), lib/vec.cyr, lib/alloc.cyr (alloc_init before any
+#   constructor), lib/bayan.cyr (json_v config + step_to_json/from_json), src/uuid.cyr
+#   (uuid_generate/uuid_to_str/uuid_parse). lib/io must be in scope before lib/bayan.
+# Naming: every public symbol is step_/StepStatus/BackoffStrategy/TriggerMode-prefixed; no
+#   bare names that collide with vendored majra/bote. Internal helpers use the _ prefix.
+
+# BackoffStrategy — retry-delay growth. Values are declaration order (0/1/2). The serde wire
+# name (step.rs derives Serialize with NO rename_all) is the PascalCase variant name, emitted
+# by _backoff_name. Default (serde + StepDef::new) is Fixed. (step.rs lines 35-45.)
+enum BackoffStrategy {
+    BACKOFF_FIXED = 0;
+    BACKOFF_LINEAR = 1;
+    BACKOFF_EXPONENTIAL = 2;
+}
+
+# TriggerMode — DAG dependency resolution mode. Values are declaration order. The serde wire
+# name is the PascalCase variant name. Default (serde + StepDef::new) is All. (step.rs 24-32.)
+enum TriggerMode {
+    TRIGGER_ALL = 0;
+    TRIGGER_ANY = 1;
+}
+
+# StepStatus — the 6 step execution states. Values are declaration order. NOTE: step.rs has
+# TWO distinct string forms: the Display impl emits snake_case (step_status_display) while the
+# serde Serialize impl emits the PascalCase variant name (step_status_serde_name). StepResult
+# JSON carries the serde (PascalCase) form. (step.rs 73-93.)
+enum StepStatus {
+    STATUS_PENDING = 0;
+    STATUS_RUNNING = 1;
+    STATUS_COMPLETED = 2;
+    STATUS_FAILED = 3;
+    STATUS_SKIPPED = 4;
+    STATUS_ROLLED_BACK = 5;
+}
+
+# Hardware accelerator requirement default. The real REQ_* constants come from ai-hwaccel at
+# M2 (port-plan §3.2); for M1 StepDef carries a plain i64 hardware field defaulting to
+# REQ_NONE = 0. See 'todo' — the field is present and round-trips but is not yet validated
+# against an ai-hwaccel registry.
+enum StepHw { REQ_NONE = 0; }
+
+# i64 max sentinel for saturating backoff math (Rust uses u64::MAX; Cyrius i64 clamps to
+# i64::MAX — see parity_notes for the divergence). 0x7FFF... is 2^63-1.
+enum StepSat { STEP_I64_MAX = 0x7FFFFFFFFFFFFFFF; }
+
+# Map a BackoffStrategy to its serde/Debug PascalCase name (cstr). Mirrors step.rs derive(
+# Serialize) on the enum (no rename_all). Unknown -> "Fixed" (the default).
+fn step_backoff_name(b) {
+    if (b == BACKOFF_FIXED) { return "Fixed"; }
+    if (b == BACKOFF_LINEAR) { return "Linear"; }
+    if (b == BACKOFF_EXPONENTIAL) { return "Exponential"; }
+    return "Fixed";
+}
+
+# Parse a BackoffStrategy from its serde PascalCase name (Str). Unknown/missing -> BACKOFF_FIXED
+# (serde #[default] parity). Used by step_from_json.
+fn step_backoff_from_name(s) {
+    if (s == 0) { return BACKOFF_FIXED; }
+    if (str_eq_cstr(s, "Linear") == 1) { return BACKOFF_LINEAR; }
+    if (str_eq_cstr(s, "Exponential") == 1) { return BACKOFF_EXPONENTIAL; }
+    return BACKOFF_FIXED;
+}
+
+# Map a TriggerMode to its serde/Debug PascalCase name (cstr). Unknown -> "All" (the default).
+fn step_trigger_name(t) {
+    if (t == TRIGGER_ALL) { return "All"; }
+    if (t == TRIGGER_ANY) { return "Any"; }
+    return "All";
+}
+
+# Parse a TriggerMode from its serde PascalCase name (Str). Unknown/missing -> TRIGGER_ALL
+# (serde #[default] parity). Used by step_from_json.
+fn step_trigger_from_name(s) {
+    if (s == 0) { return TRIGGER_ALL; }
+    if (str_eq_cstr(s, "Any") == 1) { return TRIGGER_ANY; }
+    return TRIGGER_ALL;
+}
+
+# Map a StepStatus to its Display (snake_case) string (cstr). Mirrors the std::fmt::Display
+# impl in step.rs lines 82-93 (RolledBack -> "rolled_back"). Unknown -> "pending".
+fn step_status_display(s) {
+    if (s == STATUS_PENDING) { return "pending"; }
+    if (s == STATUS_RUNNING) { return "running"; }
+    if (s == STATUS_COMPLETED) { return "completed"; }
+    if (s == STATUS_FAILED) { return "failed"; }
+    if (s == STATUS_SKIPPED) { return "skipped"; }
+    if (s == STATUS_ROLLED_BACK) { return "rolled_back"; }
+    return "pending";
+}
+
+# Map a StepStatus to its serde/Debug (PascalCase) name (cstr). This is what StepResult JSON
+# carries (derive(Serialize), no rename_all). Unknown -> "Pending".
+fn step_status_serde_name(s) {
+    if (s == STATUS_PENDING) { return "Pending"; }
+    if (s == STATUS_RUNNING) { return "Running"; }
+    if (s == STATUS_COMPLETED) { return "Completed"; }
+    if (s == STATUS_FAILED) { return "Failed"; }
+    if (s == STATUS_SKIPPED) { return "Skipped"; }
+    if (s == STATUS_ROLLED_BACK) { return "RolledBack"; }
+    return "Pending";
+}
+
+# Parse a StepStatus from its serde PascalCase name (Str). Unknown/missing -> STATUS_PENDING.
+fn step_status_from_name(s) {
+    if (s == 0) { return STATUS_PENDING; }
+    if (str_eq_cstr(s, "Running") == 1) { return STATUS_RUNNING; }
+    if (str_eq_cstr(s, "Completed") == 1) { return STATUS_COMPLETED; }
+    if (str_eq_cstr(s, "Failed") == 1) { return STATUS_FAILED; }
+    if (str_eq_cstr(s, "Skipped") == 1) { return STATUS_SKIPPED; }
+    if (str_eq_cstr(s, "RolledBack") == 1) { return STATUS_ROLLED_BACK; }
+    return STATUS_PENDING;
+}
+
+# backoff_delay_ms(strategy, base_delay_ms, attempt) — the per-attempt retry delay (attempt is
+# 1-indexed). Mirrors BackoffStrategy::delay_ms (step.rs 51-60) with SATURATING math:
+#   Fixed       -> base
+#   Linear      -> base * attempt              (saturating)
+#   Exponential -> base * 2^(attempt-1)         (saturating; shift overflow clamps to MAX)
+# Cyrius i64 saturation clamps to i64::MAX (Rust clamps to u64::MAX) — see parity_notes.
+fn step_backoff_delay_ms(strategy, base_delay_ms, attempt) {
+    if (strategy == BACKOFF_FIXED) {
+        return base_delay_ms;
+    }
+    if (strategy == BACKOFF_LINEAR) {
+        return _step_sat_mul(base_delay_ms, attempt);
+    }
+    # Exponential: factor = 2^(attempt-1), with checked_shl semantics. attempt is 1-indexed;
+    # attempt.saturating_sub(1) is the shift amount. A shift >= 63 overflows i64, so clamp the
+    # factor to STEP_I64_MAX (Rust's checked_shl returns None -> unwrap_or(u64::MAX)).
+    var shift = attempt - 1;
+    if (attempt == 0) { shift = 0; }
+    if (shift >= 63) {
+        return _step_sat_mul(base_delay_ms, STEP_I64_MAX);
+    }
+    var factor = 1 << shift;
+    return _step_sat_mul(base_delay_ms, factor);
+}
+
+# Saturating i64 multiply clamping positive overflow to STEP_I64_MAX. Both operands are
+# non-negative in every backoff call (base_delay_ms, attempt, 2^k are all >= 0); a negative
+# operand would mean corrupt input, in which case we still avoid wrap by clamping. Internal.
+fn _step_sat_mul(a, b) {
+    if (b == 0) { return 0; }
+    if (a == 0) { return 0; }
+    var r = a * b;
+    # Divide-back overflow check (both operands non-negative -> positive product expected).
+    if (r / b != a) {
+        return STEP_I64_MAX;
+    }
+    if (r < 0) {
+        return STEP_I64_MAX;
+    }
+    return r;
+}
+
+# StepDef — heap blob. Mirrors the Rust struct (step.rs 113-151). Optional fields hold a Str
+# pointer (or json_v* for config) when present and 0 (Rust None) when absent. The id is two
+# i64 halves matching src/uuid.cyr. depends_on / sub_steps are vec pointers (always allocated,
+# possibly empty). hardware is a plain i64 (REQ_NONE default; ai-hwaccel constants land at M2).
+#
+# Byte layout (120 bytes):
+#   +0    id_hi          (i64, uuid hi half)
+#   +8    id_lo          (i64, uuid lo half)
+#   +16   name           (Str ptr)
+#   +24   description    (Str ptr)
+#   +32   timeout_ms     (i64, default 30000)
+#   +40   max_retries    (i64, default 0)
+#   +48   retry_delay_ms (i64, default 1000)
+#   +56   backoff        (i64 BackoffStrategy, default BACKOFF_FIXED)
+#   +64   rollbackable   (i64 1/0, default 0)
+#   +72   step_type      (Str ptr, 0 = None)
+#   +80   config         (json_v* , 0 = None)
+#   +88   condition      (Str ptr, 0 = None)
+#   +96   depends_on     (vec of dep-blob ptrs {hi@0, lo@8})
+#   +104  trigger_mode   (i64 TriggerMode, default TRIGGER_ALL)
+#   +112  sub_steps      (vec of StepDef ptrs)
+#   +120  hardware       (i64, REQ_NONE default; ai-hwaccel REQ_* constants at M2)
+enum StepDefL {
+    STEPDEF_SIZE = 128;
+    SD_ID_HI = 0;
+    SD_ID_LO = 8;
+    SD_NAME = 16;
+    SD_DESCRIPTION = 24;
+    SD_TIMEOUT_MS = 32;
+    SD_MAX_RETRIES = 40;
+    SD_RETRY_DELAY_MS = 48;
+    SD_BACKOFF = 56;
+    SD_ROLLBACKABLE = 64;
+    SD_STEP_TYPE = 72;
+    SD_CONFIG = 80;
+    SD_CONDITION = 88;
+    SD_DEPENDS_ON = 96;
+    SD_TRIGGER_MODE = 104;
+    SD_SUB_STEPS = 112;
+    SD_HARDWARE = 120;
+}
+
+# A dependency id is a 16-byte blob {hi@0, lo@8} (a StepId/Uuid). depends_on is a vec of these.
+enum StepDepL { DEP_SIZE = 16; DEP_HI = 0; DEP_LO = 8; }
+
+# --- StepDef accessors ---
+
+# Get the step id high half (i64).
+fn step_id_hi(s) { return load64(s + SD_ID_HI); }
+
+# Get the step id low half (i64).
+fn step_id_lo(s) { return load64(s + SD_ID_LO); }
+
+# Get the step name (Str ptr).
+fn step_name(s) { return load64(s + SD_NAME); }
+
+# Get the step description (Str ptr).
+fn step_description(s) { return load64(s + SD_DESCRIPTION); }
+
+# Get the timeout in milliseconds (i64).
+fn step_timeout_ms(s) { return load64(s + SD_TIMEOUT_MS); }
+
+# Get the max retry attempts (i64).
+fn step_max_retries(s) { return load64(s + SD_MAX_RETRIES); }
+
+# Get the retry delay in milliseconds (i64).
+fn step_retry_delay_ms(s) { return load64(s + SD_RETRY_DELAY_MS); }
+
+# Get the backoff strategy (BackoffStrategy enum value).
+fn step_backoff(s) { return load64(s + SD_BACKOFF); }
+
+# Is this step rollbackable? 1/0.
+fn step_rollbackable(s) { return load64(s + SD_ROLLBACKABLE); }
+
+# Get the step_type (Str ptr, 0 = None).
+fn step_step_type(s) { return load64(s + SD_STEP_TYPE); }
+
+# Get the config (json_v* , 0 = None).
+fn step_config(s) { return load64(s + SD_CONFIG); }
+
+# Get the condition expression (Str ptr, 0 = None).
+fn step_condition(s) { return load64(s + SD_CONDITION); }
+
+# Get the depends_on vec (vec of 16-byte dep blobs {hi, lo}).
+fn step_depends_on(s) { return load64(s + SD_DEPENDS_ON); }
+
+# Get the number of dependencies.
+fn step_depends_on_len(s) { return vec_len(load64(s + SD_DEPENDS_ON)); }
+
+# Get the i-th dependency id high half.
+fn step_depends_on_hi(s, i) { return load64(vec_get(load64(s + SD_DEPENDS_ON), i) + DEP_HI); }
+
+# Get the i-th dependency id low half.
+fn step_depends_on_lo(s, i) { return load64(vec_get(load64(s + SD_DEPENDS_ON), i) + DEP_LO); }
+
+# Get the trigger mode (TriggerMode enum value).
+fn step_trigger_mode(s) { return load64(s + SD_TRIGGER_MODE); }
+
+# Get the sub_steps vec (vec of StepDef ptrs).
+fn step_sub_steps(s) { return load64(s + SD_SUB_STEPS); }
+
+# Get the number of sub-steps.
+fn step_sub_steps_len(s) { return vec_len(load64(s + SD_SUB_STEPS)); }
+
+# Get the i-th sub-step (StepDef ptr).
+fn step_sub_step_at(s, i) { return vec_get(load64(s + SD_SUB_STEPS), i); }
+
+# Get the hardware requirement (i64, REQ_NONE default).
+fn step_hardware(s) { return load64(s + SD_HARDWARE); }
+
+# --- Builders ---
+
+# Allocate a fresh StepDef with the given name (Str) and step.rs defaults: a freshly generated
+# v4 UUID id, empty description, timeout_ms 30000, max_retries 0, retry_delay_ms 1000, backoff
+# Fixed, rollbackable false, all optionals None, empty depends_on/sub_steps, trigger_mode All,
+# hardware REQ_NONE. Mirrors StepDef::new (step.rs 155-174). Returns 0 on OOM.
+fn step_new(name) {
+    var s = alloc(STEPDEF_SIZE);
+    if (s == 0) { return 0; }
+    var hi, lo = uuid_generate();
+    store64(s + SD_ID_HI, hi);
+    store64(s + SD_ID_LO, lo);
+    store64(s + SD_NAME, name);
+    store64(s + SD_DESCRIPTION, str_from(""));
+    store64(s + SD_TIMEOUT_MS, 30000);
+    store64(s + SD_MAX_RETRIES, 0);
+    store64(s + SD_RETRY_DELAY_MS, 1000);
+    store64(s + SD_BACKOFF, BACKOFF_FIXED);
+    store64(s + SD_ROLLBACKABLE, 0);
+    store64(s + SD_STEP_TYPE, 0);
+    store64(s + SD_CONFIG, 0);
+    store64(s + SD_CONDITION, 0);
+    store64(s + SD_DEPENDS_ON, vec_new());
+    store64(s + SD_TRIGGER_MODE, TRIGGER_ALL);
+    store64(s + SD_SUB_STEPS, vec_new());
+    store64(s + SD_HARDWARE, REQ_NONE);
+    return s;
+}
+
+# Set timeout_ms (mirrors with_timeout). Mutates and returns s. (step.rs 177-180.)
+fn step_with_timeout(s, ms) {
+    if (s == 0) { return 0; }
+    store64(s + SD_TIMEOUT_MS, ms);
+    return s;
+}
+
+# Set max_retries + retry_delay_ms (mirrors with_retries). Returns s. (step.rs 183-187.)
+fn step_with_retries(s, max, delay_ms) {
+    if (s == 0) { return 0; }
+    store64(s + SD_MAX_RETRIES, max);
+    store64(s + SD_RETRY_DELAY_MS, delay_ms);
+    return s;
+}
+
+# Set the backoff strategy (mirrors with_backoff). Returns s. (step.rs 190-193.)
+fn step_with_backoff(s, strategy) {
+    if (s == 0) { return 0; }
+    store64(s + SD_BACKOFF, strategy);
+    return s;
+}
+
+# Mark the step rollbackable (mirrors with_rollback). Returns s. (step.rs 196-199.)
+fn step_with_rollback(s) {
+    if (s == 0) { return 0; }
+    store64(s + SD_ROLLBACKABLE, 1);
+    return s;
+}
+
+# Append a dependency id (mirrors depends_on). hi/lo are the StepId halves. Returns s.
+# (step.rs 202-205.)
+fn step_depends_on_add(s, hi, lo) {
+    if (s == 0) { return 0; }
+    var dep = alloc(DEP_SIZE);
+    if (dep == 0) { return s; }
+    store64(dep + DEP_HI, hi);
+    store64(dep + DEP_LO, lo);
+    vec_push(load64(s + SD_DEPENDS_ON), dep);
+    return s;
+}
+
+# Set the step_type (mirrors with_step_type). step_type is a Str. Returns s. (step.rs 208-211.)
+fn step_with_step_type(s, step_type) {
+    if (s == 0) { return 0; }
+    store64(s + SD_STEP_TYPE, step_type);
+    return s;
+}
+
+# Set the config json_v (mirrors with_config). config is a json_v*. Returns s. (step.rs 214-217.)
+fn step_with_config(s, config) {
+    if (s == 0) { return 0; }
+    store64(s + SD_CONFIG, config);
+    return s;
+}
+
+# Set the condition expression (mirrors with_condition). expr is a Str. Returns s.
+# (step.rs 220-223.)
+fn step_with_condition(s, expr) {
+    if (s == 0) { return 0; }
+    store64(s + SD_CONDITION, expr);
+    return s;
+}
+
+# Set the trigger mode (mirrors with_trigger_mode). Returns s. (step.rs 226-229.)
+fn step_with_trigger_mode(s, mode) {
+    if (s == 0) { return 0; }
+    store64(s + SD_TRIGGER_MODE, mode);
+    return s;
+}
+
+# Append a sub-step (mirrors with_sub_step). step is a StepDef*. Returns s. (step.rs 232-235.)
+fn step_with_sub_step(s, sub) {
+    if (s == 0) { return 0; }
+    vec_push(load64(s + SD_SUB_STEPS), sub);
+    return s;
+}
+
+# Set the hardware requirement (mirrors with_hardware). req is an i64 REQ_* value. Returns s.
+# (step.rs 240-243.)
+fn step_with_hardware(s, req) {
+    if (s == 0) { return 0; }
+    store64(s + SD_HARDWARE, req);
+    return s;
+}
+
+# StepResult — heap blob. Mirrors the Rust struct (step.rs 247-255). step_id is two i64 halves;
+# output is a json_v* (never None in Rust — defaults to Value::Null); error is a Str/0 (None).
+#
+# Byte layout (48 bytes):
+#   +0   step_id_hi  (i64)
+#   +8   step_id_lo  (i64)
+#   +16  status      (i64 StepStatus)
+#   +24  output      (json_v*, Value::Null if no output)
+#   +32  duration_ms (i64)
+#   +40  attempts    (i64)
+#   +48  error       (Str ptr, 0 = None)
+enum StepResultL {
+    STEPRESULT_SIZE = 56;
+    SR_ID_HI = 0;
+    SR_ID_LO = 8;
+    SR_STATUS = 16;
+    SR_OUTPUT = 24;
+    SR_DURATION_MS = 32;
+    SR_ATTEMPTS = 40;
+    SR_ERROR = 48;
+}
+
+# Get the StepResult step id high half.
+fn step_result_id_hi(r) { return load64(r + SR_ID_HI); }
+
+# Get the StepResult step id low half.
+fn step_result_id_lo(r) { return load64(r + SR_ID_LO); }
+
+# Get the StepResult status (StepStatus enum value).
+fn step_result_status(r) { return load64(r + SR_STATUS); }
+
+# Get the StepResult output (json_v*).
+fn step_result_output(r) { return load64(r + SR_OUTPUT); }
+
+# Get the StepResult duration_ms (i64).
+fn step_result_duration_ms(r) { return load64(r + SR_DURATION_MS); }
+
+# Get the StepResult attempts (i64).
+fn step_result_attempts(r) { return load64(r + SR_ATTEMPTS); }
+
+# Get the StepResult error message (Str ptr, 0 = None).
+fn step_result_error(r) { return load64(r + SR_ERROR); }
+
+# Allocate a StepResult. hi/lo are the StepId halves, status is a StepStatus, output is a
+# json_v* (pass bayan_json_v_null() for "no output"), error is a Str/0. Returns 0 on OOM.
+fn step_result_new(hi, lo, status, output, duration_ms, attempts) {
+    var r = alloc(STEPRESULT_SIZE);
+    if (r == 0) { return 0; }
+    store64(r + SR_ID_HI, hi);
+    store64(r + SR_ID_LO, lo);
+    store64(r + SR_STATUS, status);
+    store64(r + SR_OUTPUT, output);
+    store64(r + SR_DURATION_MS, duration_ms);
+    store64(r + SR_ATTEMPTS, attempts);
+    store64(r + SR_ERROR, 0);
+    return r;
+}
+
+# Set the error message (Str) on a StepResult. Returns r.
+fn step_result_set_error(r, error) {
+    if (r == 0) { return 0; }
+    store64(r + SR_ERROR, error);
+    return r;
+}
+
+# --- JSON (de)serialization ---
+
+# Append "key":<json-value> into a json object value `obj`. key is a cstr; the value uses
+# bayan json_v constructors. Internal helpers keep step_to_json readable.
+
+# Build the id Str ("xxxxxxxx-...") for a step's id halves. Internal.
+fn _step_id_str(hi, lo) {
+    return uuid_to_str(hi, lo);
+}
+
+# Serialize a StepDef to a JSON object Str. Field set + order matches the Rust serde Serialize
+# of StepDef: id, name, description, timeout_ms, max_retries, retry_delay_ms, backoff,
+# rollbackable, step_type (skip if None), config (skip if None), condition (skip if None),
+# depends_on, trigger_mode, sub_steps (skip if empty), hardware. id is the UUID string; backoff/
+# trigger_mode/status are the PascalCase variant names; depends_on is an array of UUID strings;
+# sub_steps is an array of nested StepDef objects (recursive). (step.rs derive(Serialize) +
+# the #[serde(skip_serializing_if)] attributes on lines 129/132/136/145.)
+fn step_to_json(s) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("id"),
+    bayan_json_v_str_new(_step_id_str(step_id_hi(s), step_id_lo(s))));
+    bayan_json_v_obj_set(o, str_from("name"), bayan_json_v_str_new(step_name(s)));
+    bayan_json_v_obj_set(o, str_from("description"),
+    bayan_json_v_str_new(step_description(s)));
+    bayan_json_v_obj_set(o, str_from("timeout_ms"),
+    bayan_json_v_int_new(step_timeout_ms(s)));
+    bayan_json_v_obj_set(o, str_from("max_retries"),
+    bayan_json_v_int_new(step_max_retries(s)));
+    bayan_json_v_obj_set(o, str_from("retry_delay_ms"),
+    bayan_json_v_int_new(step_retry_delay_ms(s)));
+    bayan_json_v_obj_set(o, str_from("backoff"),
+    bayan_json_v_str_new(str_from(step_backoff_name(step_backoff(s)))));
+    bayan_json_v_obj_set(o, str_from("rollbackable"),
+    bayan_json_v_bool_new(step_rollbackable(s)));
+    # step_type: skip_serializing_if = Option::is_none
+    if (step_step_type(s) != 0) {
+        bayan_json_v_obj_set(o, str_from("step_type"),
+        bayan_json_v_str_new(step_step_type(s)));
+    }
+    # config: skip_serializing_if = Option::is_none
+    if (step_config(s) != 0) {
+        bayan_json_v_obj_set(o, str_from("config"), step_config(s));
+    }
+    # condition: skip_serializing_if = Option::is_none
+    if (step_condition(s) != 0) {
+        bayan_json_v_obj_set(o, str_from("condition"),
+        bayan_json_v_str_new(step_condition(s)));
+    }
+    var deps = bayan_json_v_arr_new();
+    var n = step_depends_on_len(s);
+    var i = 0;
+    while (i < n) {
+        bayan_json_v_arr_push(deps,
+        bayan_json_v_str_new(_step_id_str(step_depends_on_hi(s, i),
+        step_depends_on_lo(s, i))));
+        i = i + 1;
+    }
+    bayan_json_v_obj_set(o, str_from("depends_on"), deps);
+    bayan_json_v_obj_set(o, str_from("trigger_mode"),
+    bayan_json_v_str_new(str_from(step_trigger_name(step_trigger_mode(s)))));
+    # sub_steps: skip_serializing_if = Vec::is_empty
+    var subn = step_sub_steps_len(s);
+    if (subn != 0) {
+        var subs = bayan_json_v_arr_new();
+        var j = 0;
+        while (j < subn) {
+            bayan_json_v_arr_push(subs,
+            bayan_json_v_parse(step_to_json(step_sub_step_at(s, j))));
+            j = j + 1;
+        }
+        bayan_json_v_obj_set(o, str_from("sub_steps"), subs);
+    }
+    bayan_json_v_obj_set(o, str_from("hardware"),
+    bayan_json_v_int_new(step_hardware(s)));
+    return bayan_json_v_build(o);
+}
+
+# Build a StepDef from a parsed json_v object with serde-default semantics: every optional /
+# #[serde(default)] field falls back to the StepDef::new default rather than aborting. id parses
+# from the UUID string (malformed -> a fresh generated id, matching the spirit of always having
+# a valid StepId; documented in parity_notes). Internal — step_from_json wraps the Str entry.
+fn _step_from_v(o) {
+    if (o == 0) { return 0; }
+    var name_v = bayan_json_v_obj_get(o, "name");
+    var name = str_from("");
+    if (bayan_json_v_is_str(name_v) == 1) { name = bayan_json_v_str(name_v); }
+    var s = step_new(name);
+    if (s == 0) { return 0; }
+    # id (parse the UUID string; malformed -> keep the fresh generated id)
+    var id_v = bayan_json_v_obj_get(o, "id");
+    if (bayan_json_v_is_str(id_v) == 1) {
+        var hi, lo = uuid_parse(str_cstr(bayan_json_v_str(id_v)));
+        if (uuid_parse_ok(hi, lo) == 1) {
+            store64(s + SD_ID_HI, hi);
+            store64(s + SD_ID_LO, lo);
+        }
+    }
+    # description (default "")
+    var desc_v = bayan_json_v_obj_get(o, "description");
+    if (bayan_json_v_is_str(desc_v) == 1) {
+        store64(s + SD_DESCRIPTION, bayan_json_v_str(desc_v));
+    }
+    # timeout_ms / max_retries / retry_delay_ms (defaults already set by step_new)
+    var to_v = bayan_json_v_obj_get(o, "timeout_ms");
+    if (bayan_json_v_is_int(to_v) == 1) {
+        store64(s + SD_TIMEOUT_MS, bayan_json_v_int(to_v));
+    }
+    var mr_v = bayan_json_v_obj_get(o, "max_retries");
+    if (bayan_json_v_is_int(mr_v) == 1) {
+        store64(s + SD_MAX_RETRIES, bayan_json_v_int(mr_v));
+    }
+    var rd_v = bayan_json_v_obj_get(o, "retry_delay_ms");
+    if (bayan_json_v_is_int(rd_v) == 1) {
+        store64(s + SD_RETRY_DELAY_MS, bayan_json_v_int(rd_v));
+    }
+    # backoff (#[serde(default)] -> Fixed when missing/unknown)
+    var bk_v = bayan_json_v_obj_get(o, "backoff");
+    if (bayan_json_v_is_str(bk_v) == 1) {
+        store64(s + SD_BACKOFF, step_backoff_from_name(bayan_json_v_str(bk_v)));
+    }
+    # rollbackable (default false)
+    var rb_v = bayan_json_v_obj_get(o, "rollbackable");
+    if (bayan_json_v_is_bool(rb_v) == 1) {
+        store64(s + SD_ROLLBACKABLE, bayan_json_v_bool(rb_v));
+    }
+    # step_type (Option -> None when missing)
+    var st_v = bayan_json_v_obj_get(o, "step_type");
+    if (bayan_json_v_is_str(st_v) == 1) {
+        store64(s + SD_STEP_TYPE, bayan_json_v_str(st_v));
+    }
+    # config (Option -> None when missing; keep the json_v subtree as-is)
+    var cf_v = bayan_json_v_obj_get(o, "config");
+    if (cf_v != 0) {
+        store64(s + SD_CONFIG, cf_v);
+    }
+    # condition (Option -> None when missing)
+    var cn_v = bayan_json_v_obj_get(o, "condition");
+    if (bayan_json_v_is_str(cn_v) == 1) {
+        store64(s + SD_CONDITION, bayan_json_v_str(cn_v));
+    }
+    # depends_on (array of UUID strings; default empty)
+    var dep_v = bayan_json_v_obj_get(o, "depends_on");
+    if (bayan_json_v_is_arr(dep_v) == 1) {
+        var dn = bayan_json_v_arr_len(dep_v);
+        var i = 0;
+        while (i < dn) {
+            var el = bayan_json_v_arr_get(dep_v, i);
+            if (bayan_json_v_is_str(el) == 1) {
+                var dh, dl = uuid_parse(str_cstr(bayan_json_v_str(el)));
+                if (uuid_parse_ok(dh, dl) == 1) {
+                    step_depends_on_add(s, dh, dl);
+                }
+            }
+            i = i + 1;
+        }
+    }
+    # trigger_mode (#[serde(default)] -> All when missing/unknown)
+    var tm_v = bayan_json_v_obj_get(o, "trigger_mode");
+    if (bayan_json_v_is_str(tm_v) == 1) {
+        store64(s + SD_TRIGGER_MODE, step_trigger_from_name(bayan_json_v_str(tm_v)));
+    }
+    # sub_steps (#[serde(default)] -> empty when missing; recursive)
+    var ss_v = bayan_json_v_obj_get(o, "sub_steps");
+    if (bayan_json_v_is_arr(ss_v) == 1) {
+        var sn = bayan_json_v_arr_len(ss_v);
+        var j = 0;
+        while (j < sn) {
+            var sub = _step_from_v(bayan_json_v_arr_get(ss_v, j));
+            if (sub != 0) { step_with_sub_step(s, sub); }
+            j = j + 1;
+        }
+    }
+    # hardware (#[serde(default)] -> REQ_NONE when missing)
+    var hw_v = bayan_json_v_obj_get(o, "hardware");
+    if (bayan_json_v_is_int(hw_v) == 1) {
+        store64(s + SD_HARDWARE, bayan_json_v_int(hw_v));
+    }
+    return s;
+}
+
+# Deserialize a StepDef from a JSON object Str with serde-default semantics (missing backoff/
+# trigger_mode/sub_steps/optionals default rather than fail). Returns 0 on parse failure.
+fn step_from_json(json) {
+    var o = bayan_json_v_parse(json);
+    if (o == 0) { return 0; }
+    return _step_from_v(o);
+}
+
+# Serialize a StepResult to a JSON object Str. Field set + order matches the Rust serde
+# Serialize of StepResult: step_id (UUID string), status (PascalCase variant name), output
+# (json_v subtree, null if absent), duration_ms, attempts, error (null when None). (step.rs
+# 247-255 derive(Serialize) — StepResult has no skip attributes, so error serializes as null.)
+fn step_result_to_json(r) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("step_id"),
+    bayan_json_v_str_new(_step_id_str(step_result_id_hi(r), step_result_id_lo(r))));
+    bayan_json_v_obj_set(o, str_from("status"),
+    bayan_json_v_str_new(str_from(step_status_serde_name(step_result_status(r)))));
+    var out = step_result_output(r);
+    if (out == 0) { out = bayan_json_v_null(); }
+    bayan_json_v_obj_set(o, str_from("output"), out);
+    bayan_json_v_obj_set(o, str_from("duration_ms"),
+    bayan_json_v_int_new(step_result_duration_ms(r)));
+    bayan_json_v_obj_set(o, str_from("attempts"),
+    bayan_json_v_int_new(step_result_attempts(r)));
+    var err = step_result_error(r);
+    if (err == 0) {
+        bayan_json_v_obj_set(o, str_from("error"), bayan_json_v_null());
+    } else {
+        bayan_json_v_obj_set(o, str_from("error"), bayan_json_v_str_new(err));
+    }
+    return bayan_json_v_build(o);
+}

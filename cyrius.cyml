@@ -1,14 +1,39 @@
 [package]
 name = "szal"
-version = "0.1.0"
-description = "szal — Cyrius port (from 13172 lines of Rust)"
+version = "${file:VERSION}"
+description = "szal — workflow engine: step/flow execution with branching, retry, rollback, DAG and parallel stages"
 license = "GPL-3.0-only"
+repository = "https://github.com/MacCracken/szal"
 language = "cyrius"
-cyrius = "6.1.33"
+cyrius = "6.1.35"
 
 [build]
 entry = "src/main.cyr"
-output = "szal"
+output = "build/szal"
+
+# [lib] / [lib.core] dist-bundle module lists are added at `cyrius distlib` time (M5).
+# The authoritative target lists live in docs/development/port-plan.md §5; they are grown
+# here incrementally as modules land so the manifest never references a nonexistent file.
 
 [deps]
-stdlib = ["string", "fmt", "alloc", "vec", "str", "syscalls", "io", "args", "assert"]
+# Human-readable stdlib record (cyrius 6.x: `cyrius lib sync` provisions ./lib/).
+# NO "json"/"base64"/"toml" here — carved into bayan (opt-in include). NO "slice"/"ct"
+# (not separately resolvable — lib sync provides them).
+stdlib = ["string", "fmt", "alloc", "freelist", "vec", "str", "syscalls", "io", "fs",
+          "args", "assert", "test", "hashmap", "tagged", "result", "fnptr", "chrono",
+          "thread", "sync", "async", "atomic", "process", "net", "random", "log",
+          "sakshi", "patra", "sigil", "bayan", "bench"]
+
+# ai-hwaccel has no git sub-deps -> safe as a normal dep block. Overlaid by `cyrius deps`
+# into lib/ai-hwaccel.cyr. Needed from M2 (engine_hardware) onward.
+[deps.ai-hwaccel]
+git = "https://github.com/MacCracken/ai-hwaccel"
+path = "../ai-hwaccel"
+tag = "2.3.9"
+modules = ["dist/ai-hwaccel.cyr"]
+
+# bote-core + majra are VENDORED at src/vendor/ (hoosh pattern): a [deps.bote] block would
+# make `cyrius deps` recurse into bote's own [deps.libro]/[deps.majra] git blocks (lib/ bloat
+# + last-definition-wins symbol collisions). Pins: bote 2.7.3 dist/bote-core.cyr,
+# majra 2.4.5 dist/majra.cyr -- re-synced by scripts/sync-bote.sh / sync-majra.sh.
+# Added when the engine/MCP modules that need them land (M2/M3).

@@ -1,0 +1,196 @@
+# szal_migration.tcyr — flow migration registry parity tests for src/migration.cyr
+# Run: cyrius build --strict --no-deps tests/szal_migration.tcyr build/test_migration \
+#      && ./build/test_migration
+#
+# Ports rust-old/src/migration.rs #[cfg(test)] assertions: migrate_single_step,
+# migrate_chains_multiple_versions, already_at_target_is_noop, empty_registry_migrate_latest_noop,
+# downgrade_is_rejected, missing_migration_path_errors, overshoot_target_errors,
+# migration_error_propagates, and the two #[should_panic] cases (duplicate_source_version_panics
+# / non_increasing_version_panics) — the latter two are tested via the guarded precondition path
+# (the actual abort calls syscall(60,1) and would kill the harness; we assert the conditions that
+# trigger it instead, see the abort-guard group).
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "src/error.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+include "src/flow.cyr"
+include "src/migration.cyr"
+
+# --- Migration transform functions (the fn(flow_ptr) -> Result ABI) ---
+# These mirror the closures passed to fn_migration in the Rust tests.
+
+# Identity migration: Ok(flow) unchanged. Mirrors `fn_migration(1, 2, Ok)` (the bare Ok closure).
+fn mig_identity(flow) {
+    return Ok(flow);
+}
+
+# Rename the first step to "release". Mirrors migrate_single_step's closure
+# (`flow.steps[0].name = "release".into()`). Writes directly into the StepDef name slot
+# (SD_NAME is in scope from src/step.cyr; there is no public step name setter).
+fn mig_rename_first_to_release(flow) {
+    var step0 = flow_step_at(flow, 0);
+    store64(step0 + SD_NAME, str_from("release"));
+    return Ok(flow);
+}
+
+# Set the flow description to "v2". Mirrors the 1->2 closure in migrate_chains_multiple_versions
+# (`flow.description = "v2".into()`). FD_DESCRIPTION is in scope from src/flow.cyr.
+fn mig_set_desc_v2(flow) {
+    store64(flow + FD_DESCRIPTION, str_from("v2"));
+    return Ok(flow);
+}
+
+# Append a step named "verify". Mirrors the 2->3 closure in migrate_chains_multiple_versions
+# (`flow.add_step(StepDef::new("verify"))`).
+fn mig_add_verify(flow) {
+    flow_add_step(flow, step_new(str_from("verify")));
+    return Ok(flow);
+}
+
+# A migration that always fails. Mirrors migration_error_propagates'
+# `Err(SzalError::MigrationFailed("boom"))`.
+fn mig_boom(flow) {
+    return szal_err(ERR_MIGRATION, str_from("boom"));
+}
+
+# Build a fresh flow "pipeline" (Sequential) at the given version with one "deploy" step.
+# Mirrors the test helper flow_v (migration.rs 225-229).
+fn flow_v(version) {
+    var f = flow_new(str_from("pipeline"), FLOW_SEQUENTIAL);
+    flow_with_version(f, version);
+    flow_add_step(f, step_new(str_from("deploy")));
+    return f;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("fn_migration + accessors");
+    var m12 = fn_migration(1, 2, &mig_identity);
+    assert_eq(flow_migration_from(m12), 1, "from_version is 1");
+    assert_eq(flow_migration_to(m12), 2, "to_version is 2");
+    assert(flow_migration_fn(m12) != 0, "fn_ptr is non-null");
+
+    test_group("migrate_single_step: 1->2 renames steps[0] and stamps version");
+    var reg1 = migration_registry_new();
+    migration_with(reg1, fn_migration(1, 2, &mig_rename_first_to_release));
+    var out1 = migrate_to(reg1, flow_v(1), 2);
+    assert(is_ok(out1), "single-step migrate is Ok");
+    var f1 = result_unwrap(out1);
+    assert_eq(flow_version(f1), 2, "version stamped to 2");
+    assert(str_eq_cstr(step_name(flow_step_at(f1, 0)), "release"), "steps[0] renamed to release");
+
+    test_group("migrate_chains_multiple_versions: 1->2->3 via migrate_latest");
+    var reg2 = migration_registry_new();
+    migration_with(reg2, fn_migration(1, 2, &mig_set_desc_v2));
+    migration_with(reg2, fn_migration(2, 3, &mig_add_verify));
+    var out2 = migrate_latest(reg2, flow_v(1));
+    assert(is_ok(out2), "chained migrate_latest is Ok");
+    var f2 = result_unwrap(out2);
+    assert_eq(flow_version(f2), 3, "chained version stamped to 3");
+    assert(str_eq_cstr(flow_description(f2), "v2"), "description set to v2 by hop 1");
+    assert_eq(flow_steps_len(f2), 2, "hop 2 added a step (now 2 steps)");
+    assert(str_eq_cstr(step_name(flow_step_at(f2, 1)), "verify"), "steps[1] is verify");
+
+    test_group("per-hop version stamping is observable mid-chain");
+    # A registry 1->2 only: migrating a v1 flow to target 2 stamps exactly one hop.
+    var reg_hop = migration_registry_new();
+    migration_with(reg_hop, fn_migration(1, 2, &mig_identity));
+    var hop_out = migrate_to(reg_hop, flow_v(1), 2);
+    assert(is_ok(hop_out), "single hop is Ok");
+    assert_eq(flow_version(result_unwrap(hop_out)), 2, "single hop stamps version 2");
+
+    test_group("already_at_target_is_noop");
+    var reg3 = migration_registry_new();
+    migration_with(reg3, fn_migration(1, 2, &mig_identity));
+    var out3 = migrate_to(reg3, flow_v(2), 2);
+    assert(is_ok(out3), "no-op at target is Ok");
+    assert_eq(flow_version(result_unwrap(out3)), 2, "no-op leaves version 2");
+
+    test_group("empty_registry_migrate_latest_noop");
+    var reg4 = migration_registry_new();
+    var out4 = migrate_latest(reg4, flow_v(1));
+    assert(is_ok(out4), "empty-registry migrate_latest is Ok");
+    assert_eq(flow_version(result_unwrap(out4)), 1, "empty-registry leaves version 1");
+    assert_eq(migration_latest_version_present(reg4), 0, "empty registry latest_version is None");
+
+    test_group("latest_version reports the highest to_version");
+    var reg5 = migration_registry_new();
+    migration_with(reg5, fn_migration(1, 2, &mig_identity));
+    migration_with(reg5, fn_migration(2, 3, &mig_identity));
+    assert_eq(migration_latest_version_present(reg5), 1, "non-empty registry latest is Some");
+    assert_eq(migration_latest_version(reg5), 3, "latest_version is 3");
+
+    test_group("downgrade_is_rejected");
+    var reg6 = migration_registry_new();
+    migration_with(reg6, fn_migration(1, 2, &mig_identity));
+    var out6 = migrate_to(reg6, flow_v(3), 2);
+    assert(is_err_result(out6), "downgrade is Err");
+    assert_eq(err_code_of(out6), ERR_MIGRATION, "downgrade code is ERR_MIGRATION");
+    assert(str_eq_cstr(szal_get_err_msg(),
+        "flow 'pipeline' is at version 3 which is newer than target 2; downgrades are not supported"),
+        "downgrade detail message");
+
+    test_group("missing_migration_path_errors: 1->2 only, target 3");
+    var reg7 = migration_registry_new();
+    migration_with(reg7, fn_migration(1, 2, &mig_identity));
+    var out7 = migrate_to(reg7, flow_v(1), 3);
+    assert(is_err_result(out7), "missing path is Err");
+    assert_eq(err_code_of(out7), ERR_MIGRATION, "missing path code is ERR_MIGRATION");
+    # After the 1->2 hop applies, the flow is at v2 with no migration from 2; fails there.
+    assert(str_eq_cstr(szal_get_err_msg(),
+        "no migration registered from version 2 (flow 'pipeline', target 3)"),
+        "missing-path detail message");
+
+    test_group("overshoot_target_errors: 1->3 migration, target 2");
+    var reg8 = migration_registry_new();
+    migration_with(reg8, fn_migration(1, 3, &mig_identity));
+    var out8 = migrate_to(reg8, flow_v(1), 2);
+    assert(is_err_result(out8), "overshoot is Err");
+    assert_eq(err_code_of(out8), ERR_MIGRATION, "overshoot code is ERR_MIGRATION");
+    assert(str_eq_cstr(szal_get_err_msg(),
+        "migration from version 1 jumps to 3, overshooting target 2 (flow 'pipeline')"),
+        "overshoot detail message");
+
+    test_group("migration_error_propagates");
+    var reg9 = migration_registry_new();
+    migration_with(reg9, fn_migration(1, 2, &mig_boom));
+    var out9 = migrate_to(reg9, flow_v(1), 2);
+    assert(is_err_result(out9), "migration-fn Err propagates");
+    assert_eq(err_code_of(out9), ERR_MIGRATION, "propagated code is ERR_MIGRATION");
+    assert(str_eq_cstr(szal_get_err_msg(), "boom"), "propagated detail is boom");
+
+    test_group("abort guards (duplicate-source + non-increasing) — precondition path");
+    # The real register() aborts via syscall(60,1) on these; that would kill the test harness,
+    # so we assert the exact conditions that trigger the abort instead of invoking it (the
+    # #[should_panic] cases duplicate_source_version_panics / non_increasing_version_panics).
+    var rega = migration_registry_new();
+    migration_with(rega, fn_migration(1, 2, &mig_identity));
+    # duplicate source: a second migration FROM version 1 would abort ("already registered").
+    assert_eq(map_u64_has(migration_registry_map(rega), 1), 1,
+        "source version 1 already present -> register would abort");
+    # non-increasing: to (2) <= from (2) would abort ("must be greater").
+    var bad = fn_migration(2, 2, &mig_identity);
+    assert(flow_migration_to(bad) <= flow_migration_from(bad),
+        "to <= from -> register would abort");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

@@ -1,0 +1,140 @@
+# state.cyr — szal WorkflowState finite-state machine
+#
+# Ports rust-old/src/state.rs (WorkflowState enum + is_terminal/valid_transition/Display).
+# Pure FSM: no heap identity, so WorkflowState is a plain integer enum (i64), not a heap blob.
+# The transition table and terminal set match the Rust oracle EXACTLY.
+#
+# Usage: include "src/state.cyr"
+# Requires: lib/str.cyr only if callers use str_eq_cstr against state_name (this module returns
+# cstr names and takes/returns integers — stdlib-only, no szal-module deps).
+# Naming: enum constants are STATE_-prefixed and the fns are state_-prefixed to stay collision-
+# free with vendored majra/bote (port-plan §3.3).
+#
+# Byte layout: none. A WorkflowState value IS the enum integer (0..7); it is passed and stored
+# directly as an i64. There is no allocation and no accessor layer.
+
+# Workflow execution state. Variant order matches rust-old/src/state.rs (Created=0 .. Cancelled=7).
+# Rust exposes TWO distinct text forms and the port mirrors BOTH:
+#   - Display (snake_case, e.g. "rolling_back"): state_name / state_from_name — used for logging,
+#     topics, and human-facing text (mirrors the Display impl, state.rs 67-80).
+#   - serde (PascalCase variant identifier, e.g. "RollingBack"): state_json_name / state_from_json
+#     — the JSON wire form. The Rust enum derives Serialize/Deserialize with NO #[serde(rename_all)],
+#     so serde_json emits the bare variant identifier (PascalCase). This is what ExecutionRecord
+#     round-trips on disk (storage, M2); it is NOT the Display form. Conflating the two breaks
+#     serde round-trip parity.
+enum WorkflowState {
+    STATE_CREATED = 0;
+    STATE_RUNNING = 1;
+    STATE_PAUSED = 2;
+    STATE_COMPLETED = 3;
+    STATE_FAILED = 4;
+    STATE_ROLLING_BACK = 5;
+    STATE_ROLLED_BACK = 6;
+    STATE_CANCELLED = 7;
+}
+
+# True if the state is fully terminal (no outgoing transitions). Terminal set is exactly
+# {Completed, RolledBack, Cancelled} — Failed is NOT terminal (it can go to RollingBack).
+# Returns 1 (terminal) or 0 (not terminal). Mirrors WorkflowState::is_terminal.
+fn state_is_terminal(s) {
+    if (s == STATE_COMPLETED) { return 1; }
+    if (s == STATE_ROLLED_BACK) { return 1; }
+    if (s == STATE_CANCELLED) { return 1; }
+    return 0;
+}
+
+# True if `from -> to` is a legal transition. Edge list mirrors WorkflowState::valid_transition
+# EXACTLY: Created->Running; Running->{Paused,Completed,Failed,Cancelled,RollingBack};
+# Paused->{Running,Cancelled}; Failed->RollingBack; RollingBack->{RolledBack,Failed}.
+# Every other pair (including all terminal-state origins and self-loops) is invalid.
+# Returns 1 (valid) or 0 (invalid).
+fn state_valid_transition(from, to) {
+    if (from == STATE_CREATED) {
+        if (to == STATE_RUNNING) { return 1; }
+        return 0;
+    }
+    if (from == STATE_RUNNING) {
+        if (to == STATE_PAUSED) { return 1; }
+        if (to == STATE_COMPLETED) { return 1; }
+        if (to == STATE_FAILED) { return 1; }
+        if (to == STATE_CANCELLED) { return 1; }
+        if (to == STATE_ROLLING_BACK) { return 1; }
+        return 0;
+    }
+    if (from == STATE_PAUSED) {
+        if (to == STATE_RUNNING) { return 1; }
+        if (to == STATE_CANCELLED) { return 1; }
+        return 0;
+    }
+    if (from == STATE_FAILED) {
+        if (to == STATE_ROLLING_BACK) { return 1; }
+        return 0;
+    }
+    if (from == STATE_ROLLING_BACK) {
+        if (to == STATE_ROLLED_BACK) { return 1; }
+        if (to == STATE_FAILED) { return 1; }
+        return 0;
+    }
+    return 0;
+}
+
+# Snake_case name (cstr) for a state, matching WorkflowState's Display impl in state.rs.
+# Unknown values map to "unknown" (the Rust enum is closed; this is the Cyrius out-of-range guard).
+fn state_name(s) {
+    if (s == STATE_CREATED) { return "created"; }
+    if (s == STATE_RUNNING) { return "running"; }
+    if (s == STATE_PAUSED) { return "paused"; }
+    if (s == STATE_COMPLETED) { return "completed"; }
+    if (s == STATE_FAILED) { return "failed"; }
+    if (s == STATE_ROLLING_BACK) { return "rolling_back"; }
+    if (s == STATE_ROLLED_BACK) { return "rolled_back"; }
+    if (s == STATE_CANCELLED) { return "cancelled"; }
+    return "unknown";
+}
+
+# Parse a snake_case name (cstr) back to a WorkflowState integer. Inverse of state_name (the
+# Display form). Returns the matching STATE_* value, or (0 - 1) for an unrecognized name (Rust
+# would error; the port signals the bad input with the (0 - 1) sentinel).
+fn state_from_name(name) {
+    if (streq(name, "created")) { return STATE_CREATED; }
+    if (streq(name, "running")) { return STATE_RUNNING; }
+    if (streq(name, "paused")) { return STATE_PAUSED; }
+    if (streq(name, "completed")) { return STATE_COMPLETED; }
+    if (streq(name, "failed")) { return STATE_FAILED; }
+    if (streq(name, "rolling_back")) { return STATE_ROLLING_BACK; }
+    if (streq(name, "rolled_back")) { return STATE_ROLLED_BACK; }
+    if (streq(name, "cancelled")) { return STATE_CANCELLED; }
+    return (0 - 1);
+}
+
+# PascalCase serde identifier (cstr) for a state — the form serde_json emits for the Rust
+# WorkflowState enum (Serialize derive with no #[serde(rename_all)] → bare variant identifier).
+# This is the JSON wire form, distinct from state_name's Display snake_case. Unknown values map
+# to "Unknown" (out-of-range guard; the Rust enum is closed).
+fn state_json_name(s) {
+    if (s == STATE_CREATED) { return "Created"; }
+    if (s == STATE_RUNNING) { return "Running"; }
+    if (s == STATE_PAUSED) { return "Paused"; }
+    if (s == STATE_COMPLETED) { return "Completed"; }
+    if (s == STATE_FAILED) { return "Failed"; }
+    if (s == STATE_ROLLING_BACK) { return "RollingBack"; }
+    if (s == STATE_ROLLED_BACK) { return "RolledBack"; }
+    if (s == STATE_CANCELLED) { return "Cancelled"; }
+    return "Unknown";
+}
+
+# Parse a PascalCase serde identifier (cstr) back to a WorkflowState integer. Inverse of
+# state_json_name; this is the serde Deserialize form (serde_json::from_str). Mirrors the Rust
+# serde round-trip exactly. Returns the matching STATE_* value, or (0 - 1) for an unrecognized
+# name (Rust would error; the port signals the bad input with the (0 - 1) sentinel).
+fn state_from_json(name) {
+    if (streq(name, "Created")) { return STATE_CREATED; }
+    if (streq(name, "Running")) { return STATE_RUNNING; }
+    if (streq(name, "Paused")) { return STATE_PAUSED; }
+    if (streq(name, "Completed")) { return STATE_COMPLETED; }
+    if (streq(name, "Failed")) { return STATE_FAILED; }
+    if (streq(name, "RollingBack")) { return STATE_ROLLING_BACK; }
+    if (streq(name, "RolledBack")) { return STATE_ROLLED_BACK; }
+    if (streq(name, "Cancelled")) { return STATE_CANCELLED; }
+    return (0 - 1);
+}

@@ -1,0 +1,173 @@
+# szal_state.tcyr — WorkflowState FSM parity tests for src/state.cyr
+# Run: cyrius build --strict --no-deps tests/szal_state.tcyr build/test_state && ./build/test_state
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "src/state.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("workflow state enum order");
+    assert_eq(STATE_CREATED, 0, "STATE_CREATED is 0");
+    assert_eq(STATE_RUNNING, 1, "STATE_RUNNING is 1");
+    assert_eq(STATE_PAUSED, 2, "STATE_PAUSED is 2");
+    assert_eq(STATE_COMPLETED, 3, "STATE_COMPLETED is 3");
+    assert_eq(STATE_FAILED, 4, "STATE_FAILED is 4");
+    assert_eq(STATE_ROLLING_BACK, 5, "STATE_ROLLING_BACK is 5");
+    assert_eq(STATE_ROLLED_BACK, 6, "STATE_ROLLED_BACK is 6");
+    assert_eq(STATE_CANCELLED, 7, "STATE_CANCELLED is 7");
+
+    # Mirrors tests::terminal_states.
+    test_group("terminal states");
+    assert(state_is_terminal(STATE_COMPLETED), "Completed is terminal");
+    assert(state_is_terminal(STATE_ROLLED_BACK) == 1, "RolledBack is terminal");
+    assert(state_is_terminal(STATE_CANCELLED) == 1, "Cancelled is terminal");
+    assert_eq(state_is_terminal(STATE_FAILED), 0, "Failed is NOT terminal");
+    assert_eq(state_is_terminal(STATE_RUNNING), 0, "Running is NOT terminal");
+    assert_eq(state_is_terminal(STATE_ROLLING_BACK), 0, "RollingBack is NOT terminal");
+    assert_eq(state_is_terminal(STATE_CREATED), 0, "Created is NOT terminal");
+    assert_eq(state_is_terminal(STATE_PAUSED), 0, "Paused is NOT terminal");
+
+    # Mirrors tests::valid_transitions.
+    test_group("valid transitions");
+    assert(state_valid_transition(STATE_CREATED, STATE_RUNNING), "Created -> Running");
+    assert(state_valid_transition(STATE_RUNNING, STATE_COMPLETED), "Running -> Completed");
+    assert(state_valid_transition(STATE_RUNNING, STATE_ROLLING_BACK), "Running -> RollingBack");
+    assert(state_valid_transition(STATE_FAILED, STATE_ROLLING_BACK), "Failed -> RollingBack");
+    assert_eq(state_valid_transition(STATE_COMPLETED, STATE_RUNNING), 0, "Completed -> Running invalid");
+    assert_eq(state_valid_transition(STATE_CREATED, STATE_COMPLETED), 0, "Created -> Completed invalid");
+
+    # Full edge list (exact parity with valid_transition's matches! arm).
+    test_group("full edge list");
+    assert(state_valid_transition(STATE_RUNNING, STATE_PAUSED), "Running -> Paused");
+    assert(state_valid_transition(STATE_RUNNING, STATE_FAILED), "Running -> Failed");
+    assert(state_valid_transition(STATE_RUNNING, STATE_CANCELLED), "Running -> Cancelled");
+    assert(state_valid_transition(STATE_PAUSED, STATE_RUNNING), "Paused -> Running");
+    assert(state_valid_transition(STATE_PAUSED, STATE_CANCELLED), "Paused -> Cancelled");
+    assert(state_valid_transition(STATE_ROLLING_BACK, STATE_ROLLED_BACK), "RollingBack -> RolledBack");
+    assert(state_valid_transition(STATE_ROLLING_BACK, STATE_FAILED), "RollingBack -> Failed");
+
+    # A representative set of edges that must be REJECTED.
+    test_group("invalid transitions");
+    assert_eq(state_valid_transition(STATE_CREATED, STATE_PAUSED), 0, "Created -> Paused invalid");
+    assert_eq(state_valid_transition(STATE_CREATED, STATE_CREATED), 0, "Created -> Created invalid");
+    assert_eq(state_valid_transition(STATE_RUNNING, STATE_CREATED), 0, "Running -> Created invalid");
+    assert_eq(state_valid_transition(STATE_RUNNING, STATE_RUNNING), 0, "Running -> Running invalid");
+    assert_eq(state_valid_transition(STATE_PAUSED, STATE_COMPLETED), 0, "Paused -> Completed invalid");
+    assert_eq(state_valid_transition(STATE_PAUSED, STATE_PAUSED), 0, "Paused -> Paused invalid");
+    assert_eq(state_valid_transition(STATE_FAILED, STATE_RUNNING), 0, "Failed -> Running invalid");
+    assert_eq(state_valid_transition(STATE_FAILED, STATE_COMPLETED), 0, "Failed -> Completed invalid");
+    assert_eq(state_valid_transition(STATE_FAILED, STATE_FAILED), 0, "Failed -> Failed invalid");
+    assert_eq(state_valid_transition(STATE_ROLLING_BACK, STATE_RUNNING), 0, "RollingBack -> Running invalid");
+    assert_eq(state_valid_transition(STATE_ROLLING_BACK, STATE_ROLLING_BACK), 0, "RollingBack -> RollingBack inv");
+
+    # Mirrors tests::no_transition_from_terminal: terminal origins reject ALL 8 targets.
+    test_group("no transition from terminal");
+    var terminals[24];
+    store64(&terminals + 0, STATE_COMPLETED);
+    store64(&terminals + 8, STATE_ROLLED_BACK);
+    store64(&terminals + 16, STATE_CANCELLED);
+    var all[64];
+    store64(&all + 0, STATE_CREATED);
+    store64(&all + 8, STATE_RUNNING);
+    store64(&all + 16, STATE_PAUSED);
+    store64(&all + 24, STATE_COMPLETED);
+    store64(&all + 32, STATE_FAILED);
+    store64(&all + 40, STATE_ROLLING_BACK);
+    store64(&all + 48, STATE_ROLLED_BACK);
+    store64(&all + 56, STATE_CANCELLED);
+    var ti = 0;
+    var bad = 0;
+    while (ti < 3) {
+        var t = load64(&terminals + ti * 8);
+        var ai = 0;
+        while (ai < 8) {
+            var target = load64(&all + ai * 8);
+            if (state_valid_transition(t, target) != 0) {
+                bad = bad + 1;
+            }
+            ai = ai + 1;
+        }
+        ti = ti + 1;
+    }
+    assert_eq(bad, 0, "no terminal state has any outgoing transition");
+
+    # Mirrors tests::display and the Display impl name strings.
+    test_group("state name (Display parity)");
+    assert_streq(state_name(STATE_CREATED), "created", "name created");
+    assert_streq(state_name(STATE_RUNNING), "running", "name running");
+    assert_streq(state_name(STATE_PAUSED), "paused", "name paused");
+    assert_streq(state_name(STATE_COMPLETED), "completed", "name completed");
+    assert_streq(state_name(STATE_FAILED), "failed", "name failed");
+    assert_streq(state_name(STATE_ROLLING_BACK), "rolling_back", "name rolling_back");
+    assert_streq(state_name(STATE_ROLLED_BACK), "rolled_back", "name rolled_back");
+    assert_streq(state_name(STATE_CANCELLED), "cancelled", "name cancelled");
+
+    # Mirrors proptests::display_never_empty: every state has a non-empty name.
+    test_group("display never empty");
+    var s = 0;
+    var emptyc = 0;
+    while (s < 8) {
+        if (strlen(state_name(s)) == 0) {
+            emptyc = emptyc + 1;
+        }
+        s = s + 1;
+    }
+    assert_eq(emptyc, 0, "every state name is non-empty");
+
+    # Display-form (snake_case) round-trip through state_name/state_from_name.
+    test_group("Display-name round-trip");
+    assert_eq(state_from_name(state_name(STATE_ROLLING_BACK)), STATE_ROLLING_BACK, "round-trip rolling_back");
+    var rs = 0;
+    var rtbad = 0;
+    while (rs < 8) {
+        if (state_from_name(state_name(rs)) != rs) {
+            rtbad = rtbad + 1;
+        }
+        rs = rs + 1;
+    }
+    assert_eq(rtbad, 0, "every state round-trips through name/from_name");
+    assert_eq(state_from_name("not_a_state"), (0 - 1), "unknown name returns sentinel");
+
+    # serde wire form is PascalCase (the variant identifier), NOT the Display snake_case — the
+    # Rust enum derives Serialize/Deserialize with no rename. These are the exact bytes
+    # serde_json emits/accepts, so they round-trip with Rust-persisted ExecutionRecord JSON.
+    test_group("serde-name (PascalCase) parity");
+    assert_streq(state_json_name(STATE_CREATED), "Created", "json Created");
+    assert_streq(state_json_name(STATE_ROLLING_BACK), "RollingBack", "json RollingBack");
+    assert_streq(state_json_name(STATE_ROLLED_BACK), "RolledBack", "json RolledBack");
+    assert_streq(state_json_name(STATE_CANCELLED), "Cancelled", "json Cancelled");
+
+    # Mirrors tests::serde_roundtrip + proptests::serde_roundtrip_any (PascalCase wire form).
+    test_group("serde-name round-trip");
+    assert_eq(state_from_json(state_json_name(STATE_ROLLING_BACK)), STATE_ROLLING_BACK, "round-trip RollingBack");
+    var js = 0;
+    var jbad = 0;
+    while (js < 8) {
+        if (state_from_json(state_json_name(js)) != js) {
+            jbad = jbad + 1;
+        }
+        js = js + 1;
+    }
+    assert_eq(jbad, 0, "every state round-trips through json_name/from_json");
+    # the two forms are genuinely distinct: snake_case is NOT accepted by the serde parser
+    assert_eq(state_from_json("rolling_back"), (0 - 1), "Display snake_case rejected by serde parser");
+    assert_eq(state_from_json("NotAState"), (0 - 1), "unknown serde name returns sentinel");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

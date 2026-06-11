@@ -1,0 +1,196 @@
+# uuid.cyr — RFC-4122 v4 UUID generation, formatting, and parsing
+#
+# Ports the `uuid` crate surface used by rust-old (step.rs StepId, flow.rs FlowId,
+# storage.rs id parsing, mcp/tools/encoding_tools.rs UuidGen): Uuid::new_v4() for ids,
+# .to_string() (lowercase hyphenated 8-4-4-4-12), and Uuid::parse_str(). The Rust crate
+# stored a 128-bit value; here a UUID is TWO i64 halves (hi, lo) carried via multi-return
+# (matching majra src/envelope.cyr's uuid_generate / id_hi / id_lo split).
+#
+# Usage: include "src/uuid.cyr"
+# Requires: lib/str.cyr (Str), lib/alloc.cyr (alloc/alloc_init for per-call buffers),
+#   lib/syscalls.cyr (sys_getrandom).
+# Naming: every symbol is uuid_-prefixed (port-plan §3.3 domain prefix); no collision with
+#   vendored majra's bare uuid_generate because szal modules are compiled standalone here.
+#
+# BYTE LAYOUT / ENDIANNESS (the round-trip contract):
+#   A UUID is the 16 bytes b[0..15]. The canonical RFC-4122 string reads those bytes
+#   left-to-right as hex: b[0] is the first two hex chars, b[15] the last two.
+#   We pack BIG-ENDIAN into the two halves so emission is a straight nibble walk:
+#     hi = b[0]<<56 | b[1]<<48 | ... | b[7]      (b[0] is the most-significant byte of hi)
+#     lo = b[8]<<56 | b[9]<<48 | ... | b[15]     (b[8] is the most-significant byte of lo)
+#   Group boundaries in "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx":
+#     b[0..3]=group1, b[4..5]=group2, b[6..7]=group3, b[8..9]=group4, b[10..15]=group5.
+#   Version nibble (must be '4') is the HIGH nibble of b[6] = bits 8..11 of hi's low word,
+#   i.e. nibble index 12 from the top of hi. Variant nibble (8/9/a/b) is the HIGH nibble
+#   of b[8] = the top nibble of lo.
+
+# getrandom flag for the default blocking CSPRNG read (lib/random.cyr GRND_NONBLOCK etc.).
+enum UuidRand { UUID_GRND_BLOCK = 0; }
+
+# Buffer / sentinel sizes. UUID_STR_CAP = 36 chars + 1 NUL. Enum constants so they are legal
+# as alloc sizes and comparisons without negative/arith literals.
+enum UuidSz {
+    UUID_BYTES = 16;
+    UUID_STR_LEN = 36;
+    UUID_STR_CAP = 37;
+}
+
+# _uuid_hex_nibble(n) -> the lowercase-hex ASCII byte for nibble n (0..15). 0..9 -> '0'..'9',
+# 10..15 -> 'a'..'f'. Internal (underscore) so no doc comment required.
+fn _uuid_hex_nibble(n) {
+    if (n < 10) {
+        return 48 + n;
+    }
+    return 97 + (n - 10);
+}
+
+# _uuid_unhex(c) -> nibble value 0..15 for an ASCII hex byte (upper or lower case), or
+# (0 - 1) for a non-hex byte. Internal.
+fn _uuid_unhex(c) {
+    if ((c >= 48) && (c <= 57)) {
+        return c - 48;
+    }
+    if ((c >= 97) && (c <= 102)) {
+        return (c - 97) + 10;
+    }
+    if ((c >= 65) && (c <= 70)) {
+        return (c - 65) + 10;
+    }
+    return (0 - 1);
+}
+
+# Generate a random RFC-4122 v4 UUID. Fills 16 bytes from the kernel CSPRNG, then patches
+# b[6] = (b[6] & 0x0F) | 0x40 (version 4) and b[8] = (b[8] & 0x3F) | 0x80 (variant 10xx).
+# Returns TWO values (hi, lo) big-endian packed (see header). Consume with: var hi, lo = ...
+# On CSPRNG failure (negative return) the bytes are left zeroed except for the version/variant
+# patch (so the result is still a structurally valid v4 nil-ish UUID rather than garbage).
+fn uuid_generate() {
+    var buf = alloc(UUID_BYTES);
+    if (buf == 0) {
+        return (0, 0);
+    }
+    var i = 0;
+    while (i < UUID_BYTES) {
+        store8(buf + i, 0);
+        i = i + 1;
+    }
+    sys_getrandom(buf, UUID_BYTES, UUID_GRND_BLOCK);
+    # version 4: high nibble of byte 6 -> 0x4
+    var b6 = load8(buf + 6);
+    store8(buf + 6, (b6 & 0x0F) | 0x40);
+    # variant 10xx: top two bits of byte 8 -> 0x80
+    var b8 = load8(buf + 8);
+    store8(buf + 8, (b8 & 0x3F) | 0x80);
+    # pack big-endian
+    var hi = 0;
+    var lo = 0;
+    i = 0;
+    while (i < 8) {
+        hi = (hi << 8) | load8(buf + i);
+        lo = (lo << 8) | load8(buf + 8 + i);
+        i = i + 1;
+    }
+    return (hi, lo);
+}
+
+# _uuid_byte_at(hi, lo, idx) -> byte idx (0..15) of the big-endian-packed UUID. Internal.
+fn _uuid_byte_at(hi, lo, idx) {
+    if (idx < 8) {
+        var sh1 = (7 - idx) * 8;
+        return (hi >> sh1) & 0xFF;
+    }
+    var sh2 = (7 - (idx - 8)) * 8;
+    return (lo >> sh2) & 0xFF;
+}
+
+# Format (hi, lo) as a NUL-terminated lowercase hyphenated RFC-4122 cstr
+# "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx". Per-call buffer via alloc(37); returns the cstr,
+# or 0 on OOM. Round-trips with uuid_parse. (Rust: Uuid::to_string().)
+fn uuid_to_cstr(hi, lo) {
+    var out = alloc(UUID_STR_CAP);
+    if (out == 0) {
+        return 0;
+    }
+    var pos = 0;
+    var idx = 0;
+    while (idx < UUID_BYTES) {
+        if ((idx == 4) || (idx == 6) || (idx == 8) || (idx == 10)) {
+            store8(out + pos, 45);
+            pos = pos + 1;
+        }
+        var byte = _uuid_byte_at(hi, lo, idx);
+        store8(out + pos, _uuid_hex_nibble((byte >> 4) & 0x0F));
+        pos = pos + 1;
+        store8(out + pos, _uuid_hex_nibble(byte & 0x0F));
+        pos = pos + 1;
+        idx = idx + 1;
+    }
+    store8(out + pos, 0);
+    return out;
+}
+
+# Format (hi, lo) as a Str (heap fat pointer) via uuid_to_cstr + str_from. Convenience for
+# callers working in Str internally; returns the empty Str on OOM.
+fn uuid_to_str(hi, lo) {
+    var c = uuid_to_cstr(hi, lo);
+    if (c == 0) {
+        return str_from("");
+    }
+    return str_from(c);
+}
+
+# Parse a hyphenated RFC-4122 cstr into (hi, lo). Accepts exactly the
+# "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" form (36 chars, hyphens at indices 8/13/18/23,
+# 32 hex digits, upper or lower case). On ANY malformed input returns the SENTINEL
+# (hi, lo) = ((0 - 1), (0 - 1)) i.e. (0xFFFF.., 0xFFFF..) — callers test with uuid_parse_ok.
+# (Rust: Uuid::parse_str(); the Err arm in storage.rs/step_tools.rs maps to this sentinel.)
+fn uuid_parse(s) {
+    if (s == 0) {
+        return ((0 - 1), (0 - 1));
+    }
+    # verify length is exactly 36 (scan for NUL)
+    var len = 0;
+    while (load8(s + len) != 0) {
+        len = len + 1;
+        if (len > UUID_STR_LEN) {
+            return ((0 - 1), (0 - 1));
+        }
+    }
+    if (len != UUID_STR_LEN) {
+        return ((0 - 1), (0 - 1));
+    }
+    var hi = 0;
+    var lo = 0;
+    var nib_count = 0;
+    var i = 0;
+    while (i < UUID_STR_LEN) {
+        var c = load8(s + i);
+        if ((i == 8) || (i == 13) || (i == 18) || (i == 23)) {
+            if (c != 45) {
+                return ((0 - 1), (0 - 1));
+            }
+        } else {
+            var v = _uuid_unhex(c);
+            if (v < 0) {
+                return ((0 - 1), (0 - 1));
+            }
+            if (nib_count < 16) {
+                hi = (hi << 4) | v;
+            } else {
+                lo = (lo << 4) | v;
+            }
+            nib_count = nib_count + 1;
+        }
+        i = i + 1;
+    }
+    return (hi, lo);
+}
+
+# uuid_parse_ok(hi, lo) -> 1 if (hi, lo) is NOT the parse sentinel, else 0. Use after
+# uuid_parse to branch on success (the Ok/Err split from Rust's Uuid::parse_str()).
+fn uuid_parse_ok(hi, lo) {
+    if ((hi == (0 - 1)) && (lo == (0 - 1))) {
+        return 0;
+    }
+    return 1;
+}

@@ -1,0 +1,294 @@
+# md5.cyr — RFC 1321 MD5 message digest
+#
+# Ports the `md5` crate usage in rust-old/src/mcp/tools/hash_tools.rs (the szal_md5 MCP tool:
+# `md5::Md5::digest(input.as_bytes())` then lowercase hex). No MD5 module exists in Cyrius, so
+# this is a hand-port of RFC 1321; structure modeled on lib/sha1.cyr (init/update/finalize +
+# hex). Unlike SHA-1, MD5 uses LITTLE-ENDIAN word handling.
+#
+# WARNING: MD5 is NOT a trust primitive. Collision attacks are practical. Use only for
+# checksums / content addressing (matching the Rust tool's "for checksums, not security"
+# description) — never for signatures, password hashing, or anything needing collision
+# resistance.
+#
+# Public API
+# ----------
+#   fn md5(data, len, out16)
+#     Hashes `data[0..len)` with RFC 1321 MD5 and writes 16 raw digest bytes to `out16`
+#     (caller-allocated). Digest bytes are little-endian per RFC 1321 §3.5.
+#   fn md5_hex(data, len) -> cstr
+#     Returns 32 lowercase hex chars (NUL-terminated cstr) of the MD5 digest, in a per-call
+#     alloc(33) buffer. Returns 0 on OOM.
+#
+# Usage: include "src/md5.cyr"
+# Requires: lib/alloc.cyr (alloc + alloc_init before md5/md5_hex), lib/string.cyr (memset/memcpy).
+# Naming: md5_ / _md5_ prefixed to stay collision-free with vendored surfaces.
+
+# RFC 1321 §3.4 — per-round left-rotate amounts (s table), 4 rounds x 4 distinct shifts.
+# Indexed 0..63 by operation number.
+var _md5_s_init = 0;
+var _md5_s[64];
+
+# RFC 1321 §3.4 — the 64 additive constants K[i] = floor(abs(sin(i+1)) * 2^32).
+# Each slot is one 32-bit value (held in the low word of a native i64 slot, 8 bytes apart):
+# 64 slots * 8 bytes = 512 bytes. `var buf[N]` needs a literal/enum-constant size.
+enum Md5KLayout { MD5_K_BYTES = 512; }
+var _md5_k_init = 0;
+var _md5_k[MD5_K_BYTES];
+
+# Lazily populate the s (shift) and K (sine) tables. Idempotent; safe to call every digest.
+fn _md5_tables_init(): i64 {
+    if (_md5_s_init != 0) { return 0; }
+
+    # Round 1 shifts: 7,12,17,22 repeated 4 times (ops 0..15).
+    var i = 0;
+    while (i < 16) {
+        store8(&_md5_s + i + 0, 7);
+        store8(&_md5_s + i + 1, 12);
+        store8(&_md5_s + i + 2, 17);
+        store8(&_md5_s + i + 3, 22);
+        i = i + 4;
+    }
+    # Round 2 shifts: 5,9,14,20 (ops 16..31).
+    i = 16;
+    while (i < 32) {
+        store8(&_md5_s + i + 0, 5);
+        store8(&_md5_s + i + 1, 9);
+        store8(&_md5_s + i + 2, 14);
+        store8(&_md5_s + i + 3, 20);
+        i = i + 4;
+    }
+    # Round 3 shifts: 4,11,16,23 (ops 32..47).
+    i = 32;
+    while (i < 48) {
+        store8(&_md5_s + i + 0, 4);
+        store8(&_md5_s + i + 1, 11);
+        store8(&_md5_s + i + 2, 16);
+        store8(&_md5_s + i + 3, 23);
+        i = i + 4;
+    }
+    # Round 4 shifts: 6,10,15,21 (ops 48..63).
+    i = 48;
+    while (i < 64) {
+        store8(&_md5_s + i + 0, 6);
+        store8(&_md5_s + i + 1, 10);
+        store8(&_md5_s + i + 2, 15);
+        store8(&_md5_s + i + 3, 21);
+        i = i + 4;
+    }
+
+    # RFC 1321 §3.4 — the 64 K constants (precomputed sine table).
+    store64(&_md5_k + 0 * 8, 0xD76AA478);
+    store64(&_md5_k + 1 * 8, 0xE8C7B756);
+    store64(&_md5_k + 2 * 8, 0x242070DB);
+    store64(&_md5_k + 3 * 8, 0xC1BDCEEE);
+    store64(&_md5_k + 4 * 8, 0xF57C0FAF);
+    store64(&_md5_k + 5 * 8, 0x4787C62A);
+    store64(&_md5_k + 6 * 8, 0xA8304613);
+    store64(&_md5_k + 7 * 8, 0xFD469501);
+    store64(&_md5_k + 8 * 8, 0x698098D8);
+    store64(&_md5_k + 9 * 8, 0x8B44F7AF);
+    store64(&_md5_k + 10 * 8, 0xFFFF5BB1);
+    store64(&_md5_k + 11 * 8, 0x895CD7BE);
+    store64(&_md5_k + 12 * 8, 0x6B901122);
+    store64(&_md5_k + 13 * 8, 0xFD987193);
+    store64(&_md5_k + 14 * 8, 0xA679438E);
+    store64(&_md5_k + 15 * 8, 0x49B40821);
+    store64(&_md5_k + 16 * 8, 0xF61E2562);
+    store64(&_md5_k + 17 * 8, 0xC040B340);
+    store64(&_md5_k + 18 * 8, 0x265E5A51);
+    store64(&_md5_k + 19 * 8, 0xE9B6C7AA);
+    store64(&_md5_k + 20 * 8, 0xD62F105D);
+    store64(&_md5_k + 21 * 8, 0x02441453);
+    store64(&_md5_k + 22 * 8, 0xD8A1E681);
+    store64(&_md5_k + 23 * 8, 0xE7D3FBC8);
+    store64(&_md5_k + 24 * 8, 0x21E1CDE6);
+    store64(&_md5_k + 25 * 8, 0xC33707D6);
+    store64(&_md5_k + 26 * 8, 0xF4D50D87);
+    store64(&_md5_k + 27 * 8, 0x455A14ED);
+    store64(&_md5_k + 28 * 8, 0xA9E3E905);
+    store64(&_md5_k + 29 * 8, 0xFCEFA3F8);
+    store64(&_md5_k + 30 * 8, 0x676F02D9);
+    store64(&_md5_k + 31 * 8, 0x8D2A4C8A);
+    store64(&_md5_k + 32 * 8, 0xFFFA3942);
+    store64(&_md5_k + 33 * 8, 0x8771F681);
+    store64(&_md5_k + 34 * 8, 0x6D9D6122);
+    store64(&_md5_k + 35 * 8, 0xFDE5380C);
+    store64(&_md5_k + 36 * 8, 0xA4BEEA44);
+    store64(&_md5_k + 37 * 8, 0x4BDECFA9);
+    store64(&_md5_k + 38 * 8, 0xF6BB4B60);
+    store64(&_md5_k + 39 * 8, 0xBEBFBC70);
+    store64(&_md5_k + 40 * 8, 0x289B7EC6);
+    store64(&_md5_k + 41 * 8, 0xEAA127FA);
+    store64(&_md5_k + 42 * 8, 0xD4EF3085);
+    store64(&_md5_k + 43 * 8, 0x04881D05);
+    store64(&_md5_k + 44 * 8, 0xD9D4D039);
+    store64(&_md5_k + 45 * 8, 0xE6DB99E5);
+    store64(&_md5_k + 46 * 8, 0x1FA27CF8);
+    store64(&_md5_k + 47 * 8, 0xC4AC5665);
+    store64(&_md5_k + 48 * 8, 0xF4292244);
+    store64(&_md5_k + 49 * 8, 0x432AFF97);
+    store64(&_md5_k + 50 * 8, 0xAB9423A7);
+    store64(&_md5_k + 51 * 8, 0xFC93A039);
+    store64(&_md5_k + 52 * 8, 0x655B59C3);
+    store64(&_md5_k + 53 * 8, 0x8F0CCC92);
+    store64(&_md5_k + 54 * 8, 0xFFEFF47D);
+    store64(&_md5_k + 55 * 8, 0x85845DD1);
+    store64(&_md5_k + 56 * 8, 0x6FA87E4F);
+    store64(&_md5_k + 57 * 8, 0xFE2CE6E0);
+    store64(&_md5_k + 58 * 8, 0xA3014314);
+    store64(&_md5_k + 59 * 8, 0x4E0811A1);
+    store64(&_md5_k + 60 * 8, 0xF7537E82);
+    store64(&_md5_k + 61 * 8, 0xBD3AF235);
+    store64(&_md5_k + 62 * 8, 0x2AD7D2BB);
+    store64(&_md5_k + 63 * 8, 0xEB86D391);
+
+    _md5_s_init = 1;
+    return 0;
+}
+
+# 32-bit left-rotate. `>>` is logical (zero-fill) in Cyrius, which is what a rotate needs;
+# operands are masked to 32 bits so the result fits a u32.
+fn _md5_rotl32(x, n): i64 {
+    x = x & 0xFFFFFFFF;
+    return ((x << n) | (x >> (32 - n))) & 0xFFFFFFFF;
+}
+
+# Compute the RFC 1321 MD5 digest of `data[0..len)`. Writes 16 little-endian digest bytes to
+# `out16` (caller-allocated). Returns 0, or returns 1 on OOM (no bytes written).
+# NOT collision-resistant — see module header.
+fn md5(data, len, out16): i64 {
+    _md5_tables_init();
+
+    # RFC 1321 §3.3 — initial state A,B,C,D (stored little-endian on the wire, but held as
+    # plain 32-bit values here).
+    var a0 = 0x67452301;
+    var b0 = 0xEFCDAB89;
+    var c0 = 0x98BADCFE;
+    var d0 = 0x10325476;
+
+    # RFC 1321 §3.1 — padding: append 0x80, zero-pad so length is congruent to 56 (mod 64),
+    # then append the 64-bit LITTLE-ENDIAN message length in bits.
+    var msg_len = len + 1 + 8;
+    var pad_len = 64 - (msg_len % 64);
+    if (pad_len == 64) { pad_len = 0; }
+    var total = len + 1 + pad_len + 8;
+    var buf = alloc(total);
+    if (buf == 0) { return 1; }
+    memset(buf, 0, total);
+    memcpy(buf, data, len);
+    store8(buf + len, 0x80);
+    var bit_len = len * 8;
+    # Little-endian 64-bit bit length in the final 8 bytes.
+    store8(buf + total - 8, bit_len & 0xFF);
+    store8(buf + total - 7, (bit_len >> 8) & 0xFF);
+    store8(buf + total - 6, (bit_len >> 16) & 0xFF);
+    store8(buf + total - 5, (bit_len >> 24) & 0xFF);
+    store8(buf + total - 4, (bit_len >> 32) & 0xFF);
+    store8(buf + total - 3, (bit_len >> 40) & 0xFF);
+    store8(buf + total - 2, (bit_len >> 48) & 0xFF);
+    store8(buf + total - 1, (bit_len >> 56) & 0xFF);
+
+    # Message words M[0..15] for the current block; each slot is 8 bytes apart to use native
+    # 64-bit load/store (32-bit value in the low word).
+    var m = alloc(16 * 8);
+    if (m == 0) { return 1; }
+
+    var chunk_off = 0;
+    while (chunk_off < total) {
+        # RFC 1321 §3.4 — decode the 16 LITTLE-ENDIAN 32-bit words of this block.
+        var i = 0;
+        while (i < 16) {
+            var b0w = load8(buf + chunk_off + i * 4);
+            var b1w = load8(buf + chunk_off + i * 4 + 1);
+            var b2w = load8(buf + chunk_off + i * 4 + 2);
+            var b3w = load8(buf + chunk_off + i * 4 + 3);
+            store64(m + i * 8, b0w | (b1w << 8) | (b2w << 16) | (b3w << 24));
+            i = i + 1;
+        }
+
+        var a = a0;
+        var b = b0;
+        var c = c0;
+        var d = d0;
+
+        # RFC 1321 §3.4 — 64 operations across 4 rounds. f and the message index g are
+        # selected per round; the s/K tables are common.
+        i = 0;
+        while (i < 64) {
+            var f = 0;
+            var g = 0;
+            if (i < 16) {
+                f = (b & c) | ((b ^ 0xFFFFFFFF) & d);
+                g = i;
+            } elif (i < 32) {
+                f = (d & b) | ((d ^ 0xFFFFFFFF) & c);
+                g = (5 * i + 1) % 16;
+            } elif (i < 48) {
+                f = b ^ c ^ d;
+                g = (3 * i + 5) % 16;
+            } else {
+                f = c ^ (b | (d ^ 0xFFFFFFFF));
+                g = (7 * i) % 16;
+            }
+            f = f & 0xFFFFFFFF;
+            var sum = (f + a + load64(&_md5_k + i * 8) + load64(m + g * 8)) & 0xFFFFFFFF;
+            var rot = _md5_rotl32(sum, load8(&_md5_s + i));
+            a = d;
+            d = c;
+            c = b;
+            b = (b + rot) & 0xFFFFFFFF;
+            i = i + 1;
+        }
+
+        a0 = (a0 + a) & 0xFFFFFFFF;
+        b0 = (b0 + b) & 0xFFFFFFFF;
+        c0 = (c0 + c) & 0xFFFFFFFF;
+        d0 = (d0 + d) & 0xFFFFFFFF;
+        chunk_off = chunk_off + 64;
+    }
+
+    # RFC 1321 §3.5 — output digest little-endian, A then B then C then D.
+    store8(out16 + 0,   a0 & 0xFF);
+    store8(out16 + 1,  (a0 >> 8) & 0xFF);
+    store8(out16 + 2,  (a0 >> 16) & 0xFF);
+    store8(out16 + 3,  (a0 >> 24) & 0xFF);
+    store8(out16 + 4,   b0 & 0xFF);
+    store8(out16 + 5,  (b0 >> 8) & 0xFF);
+    store8(out16 + 6,  (b0 >> 16) & 0xFF);
+    store8(out16 + 7,  (b0 >> 24) & 0xFF);
+    store8(out16 + 8,   c0 & 0xFF);
+    store8(out16 + 9,  (c0 >> 8) & 0xFF);
+    store8(out16 + 10, (c0 >> 16) & 0xFF);
+    store8(out16 + 11, (c0 >> 24) & 0xFF);
+    store8(out16 + 12,  d0 & 0xFF);
+    store8(out16 + 13, (d0 >> 8) & 0xFF);
+    store8(out16 + 14, (d0 >> 16) & 0xFF);
+    store8(out16 + 15, (d0 >> 24) & 0xFF);
+    return 0;
+}
+
+# Lowercase hex digit (0..15) -> ASCII byte. '0'..'9' = 48..57, 'a'..'f' = 97..102.
+fn _md5_hex_digit(v): i64 {
+    if (v < 10) { return 48 + v; }
+    return 97 + (v - 10);
+}
+
+# Compute MD5 of `data[0..len)` and return 32 lowercase hex chars as a NUL-terminated cstr.
+# Allocated per-call (alloc(33)); returns 0 on OOM. Matches the Rust szal_md5 tool's hex output.
+fn md5_hex(data, len): i64 {
+    var digest = alloc(16);
+    if (digest == 0) { return 0; }
+    var rc = md5(data, len, digest);
+    if (rc != 0) { return 0; }
+    var out = alloc(33);
+    if (out == 0) { return 0; }
+    var i = 0;
+    while (i < 16) {
+        var byte = load8(digest + i);
+        store8(out + i * 2, _md5_hex_digit((byte >> 4) & 0xF));
+        store8(out + i * 2 + 1, _md5_hex_digit(byte & 0xF));
+        i = i + 1;
+    }
+    store8(out + 32, 0);
+    return out;
+}
