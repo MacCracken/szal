@@ -48,7 +48,7 @@ enum StepStatus {
 enum StepHw { REQ_NONE = 0; }
 
 # i64 max sentinel for saturating backoff math (Rust uses u64::MAX; Cyrius i64 clamps to
-# i64::MAX — see parity_notes for the divergence). 0x7FFF... is 2^63-1.
+# i64::MAX — see docs/development/parity-notes.md §2 for the divergence). 0x7FFF... is 2^63-1.
 enum StepSat { STEP_I64_MAX = 0x7FFFFFFFFFFFFFFF; }
 
 # Map a BackoffStrategy to its serde/Debug PascalCase name (cstr). Mirrors step.rs derive(
@@ -124,7 +124,7 @@ fn step_status_from_name(s) {
 #   Fixed       -> base
 #   Linear      -> base * attempt              (saturating)
 #   Exponential -> base * 2^(attempt-1)         (saturating; shift overflow clamps to MAX)
-# Cyrius i64 saturation clamps to i64::MAX (Rust clamps to u64::MAX) — see parity_notes.
+# Cyrius i64 saturation clamps to i64::MAX (Rust clamps to u64::MAX) — see docs/development/parity-notes.md §2.
 fn step_backoff_delay_ms(strategy, base_delay_ms, attempt) {
     if (strategy == BACKOFF_FIXED) {
         return base_delay_ms;
@@ -530,7 +530,7 @@ fn step_to_json(s) {
 # Build a StepDef from a parsed json_v object with serde-default semantics: every optional /
 # #[serde(default)] field falls back to the StepDef::new default rather than aborting. id parses
 # from the UUID string (malformed -> a fresh generated id, matching the spirit of always having
-# a valid StepId; documented in parity_notes). Internal — step_from_json wraps the Str entry.
+# a valid StepId; documented in docs/development/parity-notes.md §3). Internal — step_from_json wraps the Str entry.
 fn _step_from_v(o) {
     if (o == 0) { return 0; }
     var name_v = bayan_json_v_obj_get(o, "name");

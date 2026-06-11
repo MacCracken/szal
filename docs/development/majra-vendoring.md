@@ -2,7 +2,7 @@
 
 > **Status: COMPLETE.** The full majra dist is vendored at `src/vendor/majra.cyr` (3,131 lines,
 > 9-symbol collision rename applied via `scripts/sync-majra.sh`), included in `main.cyr`, and the
-> whole suite is green (726 assertions, 0 duplicate-symbol warnings). The interim metrics shim
+> whole suite is green (882 assertions, 0 duplicate-symbol warnings). The interim metrics shim
 > (`src/vendor/majra_metrics.cyr`) has been **retired** and `metrics.cyr` repointed at the full dist.
 >
 > This doc is kept as the **maintenance record** for re-syncing majra and for the collision
@@ -22,15 +22,20 @@ metrics vtable (row 10 — shipped now via the shim). All but metrics need the *
 
 ## 2. The pin
 
-- **majra 2.4.5**, `dist/majra.cyr` (85,031 bytes), synced from a majra checkout's `dist/`.
+- **majra 2.4.6**, `dist/majra.cyr` (85,031 bytes upstream-dist source; the renamed
+  `src/vendor/majra.cyr` is ~85.6 KB with its provenance header), synced from a majra checkout's `dist/`.
+  (cyrius.cyml pin still reads 2.4.5 — known, reconcile at M5; see §8.)
 - Lands at `src/vendor/majra.cyr` (hoosh vendor pattern — a `[deps.majra]` block would make
   `cyrius deps` recurse into majra's own git sub-deps; see `cyrius.cyml`).
 
-## 3. BLOCKER — `lib/bigint.cyr` is missing from the lib snapshot
+## 3. ~~BLOCKER~~ — `lib/bigint.cyr` (RESOLVED: false alarm)
 
-`cyrius lib sync` provisioned 89 modules; **`bigint` is not among them**. The full majra dist
-references bigint (via its `tls` module), so a `--strict` build fails with an undefined function
-until this is resolved. **Resolve one of:**
+> **RESOLVED 2026-06-11:** the core `dist/majra.cyr` references **no** `bigint` symbol — this was
+> never a real blocker (see the status banner). The options below are kept as the historical record.
+
+`cyrius lib sync` provisioned 89 modules; `bigint` is not among them. It was *thought* the full majra
+dist needed bigint (via its `tls` module); in fact the core dist references none of `bigint`/`tls`.
+Had it been real, the resolution options were:
 - re-run `cyrius lib sync` on a toolchain whose snapshot includes `bigint` (preferred — verify the
   6.1.x snapshot actually ships it), OR
 - confirm whether the majra subset szal actually links (mq/fleet/pubsub/ratelimit/heartbeat/metrics)
@@ -115,7 +120,7 @@ so include `thread` but **not** `sync` (else last-wins duplicate warnings on `mu
 - [x] Re-ran the 9-collision `comm` check vs majra 2.4.6 — same 9 symbols, no NEW clashes.
 - [x] `main.cyr` includes `lib/thread.cyr` + `src/vendor/majra.cyr` in single-pass order.
 - [x] `cyrius build --strict` clean — full main (all szal modules + full majra) has **0 undefined
-      fns, 0 duplicate-symbol warnings**; `./build/szal` runs; 726 assertions green.
+      fns, 0 duplicate-symbol warnings**; `./build/szal` runs; 882 assertions green.
 - [x] Deleted `src/vendor/majra_metrics.cyr` + `scripts/sync-majra-metrics.sh`; repointed `metrics.cyr`.
 - [ ] **TODO (M5):** CHANGELOG 2.0.0 — note majra 2.4.6 vendored + the `MJ_`/`majra_` rename of its
       bundled workflow surface. Also: `cyrius.cyml` pin says 2.4.5 but the checkout/vendor is 2.4.6 —

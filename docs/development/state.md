@@ -11,10 +11,11 @@
 
 ## Toolchain
 
-- **Cyrius pin**: `6.1.35` (in `cyrius.cyml [package].cyrius`), matching the installed wrapper —
-  no drift. Bumped 6.1.34→6.1.35 on 2026-06-11 after the parity audit landed green under the new
-  wrapper (full build/test/fmt/lint/doc re-verified). History: 6.1.33→6.1.34 earlier to chase the
-  same drift.
+- **Cyrius pin**: `6.1.35` (in `cyrius.cyml [package].cyrius`). All 882 assertions + main were last
+  verified green under **6.1.35**. **Drift watch (2026-06-11, late):** the installed wrapper has since
+  moved to **6.1.36** — the next session should re-verify the suite under 6.1.36 and bump the pin to
+  match (the prior 6.1.33→6.1.34→6.1.35 bumps were each a quick re-verify; silence the warning
+  per-invocation with `CYRIUS_NO_WARN_PIN_DRIFT=1`). History: 6.1.33 (M0) → 6.1.34 → 6.1.35.
 
 ## Milestone
 
@@ -49,10 +50,10 @@ modules ported, tested, wired into `main`; adversarial parity audit run + both f
     Some(0) from None; Rust struct has no `skip_serializing_if`, so serde emits `0`). Fix: added
     `WE_DURATION_SET` presence flag (mirrors the existing `WE_ATTEMPT_SET`); WE_SIZE 72→80; +3 assertions.
 
-**M2 — Engine core + executors. ⏳ in progress.** Porting port-plan §4 rows 8–21 in topological
-order. Open questions Q9 (`registry_new` collision, blocks `engine_hardware`), Q10 (concurrency),
-Q11 (logging under threads) still gate the parallel/hardware rows — the early rows below are
-unblocked.
+**M2 — Engine core + executors. ⏳ in progress (rows 8–18 done; 19/20/21 + 17 remain).** Porting
+port-plan §4 rows 8–21 in topological order. **Q10 (concurrency) + Q11 (logging) are RESOLVED in
+practice** — the parallel/dag/queue rows shipped on the cooperative-cancel + thread-safe-`alloc`
+model (parity-notes §8); only **Q9 (`registry_new` collision)** still gates `engine_hardware` (row 17).
 
 - ✅ **row 8 `src/engine_result.cyr` (`FlowResult`)** — ported + wired into `main`, cross-checked
   vs `engine/result.rs`. `FlowResult {flow_name, steps vec, total_duration_ms, success,
@@ -184,14 +185,44 @@ warnings); only `cyrius build` verdicts are authoritative.
 
 _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosAI/samay)._
 
-## Next
+## Next — ▶ START HERE (handoff)
 
-**M2 in progress — rows 8–10 (`engine_result`, `storage`, `metrics`) done & verified; next is
-row 11 `src/engine_core.cyr`.** engine_core is the large one (`engine/mod.rs` minus
-`sub_flow_handler`: FlowCtx/ExecCtx, EngineConfig, the (fn-ptr, ctx) handler ABI, check_condition,
-emit, progress sink). It needs **no majra** — it holds `metrics_vt`/`storage_vt` as opaque slots
-(0 = none). After it: step_exec → sequential → dag → hierarchical are pure-logic and unblocked.
-**Gated rows** need sign-off + the full majra vendoring: parallel/hardware (Q9 `registry_new`, Q10
-concurrency, Q11 logging) and queue_runner/distributed (full majra — see
-[`majra-vendoring.md`](majra-vendoring.md)). See [`roadmap.md`](roadmap.md) M2,
-[`port-plan.md`](port-plan.md) §4, and accepted divergences in [`parity-notes.md`](parity-notes.md).
+**Done so far (M1 ✅ + M2 rows 8–18 ✅, all parity-verified 0-findings): 20 modules, 882 assertions,
+0 failures, oracle pristine.** All five execution modes run (sequential/parallel/dag/hierarchical/
+queue) + core + step_exec. Full majra 2.4.6 vendored. Build recipe + gotchas above.
+
+**Pick up at row 19 `src/engine_distributed.cyr`** (rust-old/src/engine/distributed.rs, ~285 non-test
+lines — the hardest module; scouted, not yet written). Notes to start warm:
+- **Shape:** a multi-worker coordinator. Spawn one worker thread per fleet node; each worker drains
+  its node's majra queue and reports each StepResult back over a result CHANNEL. A coordinator loop
+  submits ready steps to the fleet, polls the channel for completions, `unlock_dependents`, and
+  `fleet_rebalance` per completion.
+- **Reuse:** the DAG Kahn bookkeeping is identical — reuse the ordinal-arena in_degree/dependents +
+  `_dag_unlock` pattern from `engine_dag.cyr`, and `engine_parallel`'s worker/PA_* if helpful.
+- **majra fleet API (vendored):** `fleet_submit(fq, priority, payload)` → the item, or **0** if no
+  node accepts; `fleet_node_queue(fq, node_id)` → that node's mq (enumerate node ids via
+  `map_keys(load64(fq))`); `fleet_rebalance(fq)`; `fleet_node_count(fq)`. Node mq dequeue =
+  `mq_dequeue` (+ `queue_item_payload`, `mq_complete`/`mq_fail`).
+- **Concurrency translation (port-plan §1.7 + parity-notes §8):** Rust's two `tokio::select!{biased}`
+  become POLL loops. Worker: check a `done` cancel token (`cancel_token_new/signal/check`), else
+  `mq_dequeue` its node queue, else `sleep_ms(2)`. Coordinator: `chan_try_recv` the result channel,
+  else check token/timeout (`clock_now_ms`), else brief sleep. After the loop: `done` cancel +
+  join workers; skip-everything-unseen with reason `cancelled`/`flow timeout exceeded`/`not scheduled`.
+- **Skip reasons (exact):** `dependency failed`, `condition not met`, `no fleet node available` (Failed),
+  and the post-loop `cancelled`/`flow timeout exceeded`/`not scheduled`.
+- **Testing caveat:** it's genuinely nondeterministic (real concurrent workers) — keep handlers fast;
+  assert on the result SET + statuses, not strict ordering. `alloc()` is thread-safe (global lock)
+  and majra fleet/mq + `chan_*` are mutex/futex-guarded, so concurrent access is safe.
+
+**Then:** row 20 `engine_runner.cyr` (the heart, 746 lines — `Engine` + builders, the run sequence:
+validate → flow_started → save Running `ExecutionRecord` → metrics → heartbeat guard (majra; can
+no-op) → resolve timeout → **mode dispatch** to the executors (incl. the queue path via `run_queued`
+and `run_distributed_dag`) → rollback completed steps on failure → flow_completed/failed/rolled_back
+→ build FlowResult → save final record → return; plus `run_with_cancellation`, `run_distributed`,
+shared `finalize`, `rollback_completed_steps`). Then row 21 `engine_subflow` (sub_flow_handler;
+constructs an Engine so it's last). **Still gated:** row 17 `engine_hardware` on Q9 (`registry_new`
+collision — bote×ai-hwaccel; needs the §3.3 resolution before porting).
+
+See [`roadmap.md`](roadmap.md) M2, [`port-plan.md`](port-plan.md) §4 (per-module spec),
+[`parity-notes.md`](parity-notes.md) (accepted divergences §1–8 + audit log), and
+[`majra-vendoring.md`](majra-vendoring.md) (re-sync).

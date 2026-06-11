@@ -495,7 +495,7 @@ fn cond_resolve_path(path, context) {
 }
 
 # Compare two json_v values for equality. Same-type comparisons use structural equality; numbers
-# compare numerically as f64 (see parity_notes). Cross-type comparisons return 0. Mirrors Rust
+# compare numerically as f64 (see docs/development/parity-notes.md §5). Cross-type comparisons return 0. Mirrors Rust
 # values_equal. Internal.
 fn _cond_values_equal(a, b) {
     if (bayan_json_v_is_str(a) == 1) {

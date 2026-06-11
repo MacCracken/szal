@@ -64,6 +64,9 @@ cyrius test                              # run tests/*.tcyr
 - [`docs/architecture/`](docs/architecture/) — Non-obvious constraints
 - [`docs/guides/`](docs/guides/) — Task-oriented how-tos
 - [`docs/examples/`](docs/examples/) — Runnable examples
-- [`docs/development/state.md`](docs/development/state.md) — Live state
+- [`docs/development/state.md`](docs/development/state.md) — Live state (start here for a handoff)
 - [`docs/development/roadmap.md`](docs/development/roadmap.md) — Milestones through v1.0
+- [`docs/development/port-plan.md`](docs/development/port-plan.md) — Authoritative porting brief (per-module API, byte layouts, dep mapping) — read before porting any module
+- [`docs/development/parity-notes.md`](docs/development/parity-notes.md) — Accepted Rust→Cyrius divergences + the audit disposition log
+- [`docs/development/majra-vendoring.md`](docs/development/majra-vendoring.md) — majra vendoring maintenance record (re-sync + collision renames)
 

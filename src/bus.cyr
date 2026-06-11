@@ -286,7 +286,7 @@ fn _event_json_opt_int(sb, key, val, present) {
 # flow_name, step_name, step_id, attempt, duration_ms, error, timestamp.
 # Optional fields render null when absent. timestamp renders as an ISO-8601
 # string at SECOND precision via iso8601 (the epoch-ns is truncated to secs;
-# chrono cannot round-trip subsecond — accepted divergence, see parity_notes).
+# chrono cannot round-trip subsecond — accepted divergence, see docs/development/parity-notes.md §4).
 fn event_to_json(e) {
     var sb = str_builder_new();
     str_builder_putc(sb, 123);

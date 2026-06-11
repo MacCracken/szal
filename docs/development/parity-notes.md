@@ -142,6 +142,12 @@ differs, and only for misbehaving handlers. See `src/engine_step_exec.cyr`.
 
 ### Disposition log
 
+- **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/
+  flow/step/condition, 12-auditor adversarial sweep + skeptic verify): 5 modules clean;
+  **2 real divergences found and FIXED Cyrius-side** (oracle untouched) — (1) `state.cyr`: Rust
+  `WorkflowState` serde emits PascalCase (`"RollingBack"`), distinct from Display snake_case → added
+  `state_json_name`/`state_from_json`; (2) `bus.cyr`: `duration_ms` `Some(0)` rendered `null` → added
+  the `WE_DURATION_SET` presence flag. (Predates §1–8; these were the only non-idiom findings all port.)
 - **2026-06-11 — M2 result-parity audit** (`engine_result.cyr` + `step.cyr` StepResult deser):
   9 "confirmed" findings, all resolved as **accepted idioms already covered by §1 (u64→i64) and
   §3 (lenient deser)** — documented here, no behavioral change. The audit's suggested fixes that

@@ -13,7 +13,7 @@
 ## Target
 
 **Rust 1.2.0 → Cyrius 2.0.0.** Plain SemVer from 2.0.0 onward (majra is the precedent).
-Toolchain pinned at `cyrius = "6.1.33"`. `VERSION` is the single source of truth.
+Toolchain pinned at `cyrius = "6.1.35"` (was 6.1.33 at M0). `VERSION` is the single source of truth.
 
 ## Pre-port decisions
 
@@ -26,8 +26,8 @@ Toolchain pinned at `cyrius = "6.1.33"`. `VERSION` is the single source of truth
 | SQL store | patra (stdlib) only; **postgres deferred**, prometheus passthrough dropped | ✅ decided |
 | Version | 2.0.0; keep `rust-old/` as parity oracle, retire in a 2.0.x patch | ✅ decided |
 | `registry_new` collision (bote-core × ai-hwaccel) | resolve before engine porting — vendor+rename locally (interim) or upstream ai-hwaccel rename (clean) | ⏳ open (blocks M2 hardware) |
-| Engine concurrency model | threads + permit-channel + cancel tokens; cooperative cancel replaces `JoinHandle::abort()` (observable timeout/cancel delta) | ⏳ open (sign-off before M2 parallel) |
-| Logging under threads | sakshi is single-threaded — chan-fed logging thread recommended | ⏳ open (before M2 parallel) |
+| Engine concurrency model | threads + permit-channel (bounded `chan`) + cancel tokens; cooperative cancel replaces `JoinHandle::abort()` (observable timeout/cancel delta) | ✅ decided + implemented (parallel/dag/queue verified; see parity-notes §8) |
+| Logging under threads | szal's own emit/metric/log calls stay on the MAIN thread (workers only run handlers), so sakshi is never touched cross-thread — no logging thread needed | ✅ decided + implemented |
 | Pub/sub lag semantics | majra bounded-chan drop-newest vs tokio broadcast drop-oldest — contract change | ⏳ open (M3 stream/bus) |
 | `validate_path` symlink semantics | component-walk + readlink (closest parity) vs lexical-only | ⏳ open (M3 MCP, security-relevant) |
 
@@ -39,25 +39,26 @@ Toolchain pinned at `cyrius = "6.1.33"`. `VERSION` is the single source of truth
 - [x] Language/codebase review → [`port-plan.md`](port-plan.md) (7-brief synthesis)
 - [x] Doc-tree per first-party-documentation standard
 
-### M1 — Project wiring + foundation (compiling Cyrius core) — *in progress*
+### M1 — Project wiring + foundation (compiling Cyrius core) — ✅ done 2026-06-11
 
 Project setup:
-- [ ] `VERSION` → 2.0.0; `cyrius.cyml` `[package]`/`[build]`/`[lib]`/`[lib.core]`/`[deps]`
-- [ ] GPL-3.0-only `LICENSE` text
-- [ ] `cyrius lib sync` + `cyrius deps` provision `lib/`; smoke `main.cyr` builds
+- [x] `VERSION` → 2.0.0; `cyrius.cyml` `[package]`/`[build]`/`[deps]` (`[lib]`/`[lib.core]` dist lists deferred to M5 `cyrius distlib`)
+- [x] GPL-3.0-only `LICENSE` text
+- [x] `cyrius lib sync` provisions `lib/`; smoke `main.cyr` builds + runs
 
 Foundation modules (no engine, no MCP — pure data + algorithms):
-- [ ] `src/uuid.cyr` — `uuid_generate()` (hi/lo), `uuid_to_cstr` RFC-4122, `uuid_parse`
-- [ ] `src/md5.cyr` — RFC 1321 `md5(data,len,out16)` + `md5_hex` (model: `lib/sha1.cyr`)
-- [ ] `src/error.cyr` — `SzalErr` code enum + `szal_err_name` + detail-msg buffer
-- [ ] `src/state.cyr` — `WorkflowState` FSM (8 states, exact transition table, `state_name`)
-- [ ] `src/step.cyr` — `StepDef` heap struct + builders, backoff math, `StepStatus`, `StepResult`, `step_to/from_json`
-- [ ] `src/condition.cyr` — DSL tokenizer→parser→evaluator, compiled cache, `render_template`, `build_step_context` (1,270 Rust lines — largest pure unit)
-- [ ] `src/flow.cyr` — `FlowDef` + builders, `flow_validate` (Dag DFS cycle check), `flow_to/from_json`
-- [ ] `src/bus.cyr` — `WorkflowEvent`/`EventType` (11), `event_topic`, `event_to_json`, `otel_event_sink` (majra-backed `EventBus` deferred to M3)
-- [ ] Foundation tests (`tests/szal_core.tcyr`, `tests/szal_condition.tcyr`) — port the Rust unit + proptest assertions
+- [x] `src/uuid.cyr` — `uuid_generate()` (hi/lo), `uuid_to_str` RFC-4122, `uuid_parse`
+- [x] `src/md5.cyr` — RFC 1321 `md5(data,len,out16)` + `md5_hex` (model: `lib/sha1.cyr`)
+- [x] `src/error.cyr` — `SzalErr` code enum + `szal_err_name` + detail-msg buffer
+- [x] `src/state.cyr` — `WorkflowState` FSM (8 states, exact transition table; Display + serde PascalCase forms)
+- [x] `src/step.cyr` — `StepDef` heap struct + builders, backoff math, `StepStatus`, `StepResult`, `step_to/from_json`
+- [x] `src/condition.cyr` — DSL tokenizer→parser→evaluator, compiled cache, `render_template`, `cond_build_step_context`
+- [x] `src/flow.cyr` — `FlowDef` + builders, `flow_validate` (Dag DFS cycle check), `flow_to/from_json`
+- [x] `src/bus.cyr` — `WorkflowEvent`/`EventType` (11), `event_topic`, `event_to_json`, `otel_event_sink` (majra-backed `EventBus` deferred to M3)
+- [x] `src/migration.cyr` — `MigrationRegistry`, `migration_register`, `latest_version`, `migrate_to`/`migrate_latest` (pure, sync)
+- [x] Foundation tests (`szal_core.tcyr` + per-module suites) — Rust unit + proptest assertions ported
 
-**Exit:** `cyrius build --no-deps` green; foundation tests pass; `cyrius fmt --check` + `cyrius lint` clean.
+**Exit:** ✅ `cyrius build --strict` green; foundation tests pass; `cyrius fmt --check` + `cyrius lint` + `cyrius doc --check` clean.
 
 ### M2 — Engine core + executors
 

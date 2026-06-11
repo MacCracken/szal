@@ -5,14 +5,15 @@ Merged from 7 research briefs (lang-core, lang-latest, vidya, stdlib, deps, szal
 machine** (cyrius repo, vidya field notes, majra/bote/ai-hwaccel/patra/szal repos); resolutions
 are marked `[VERIFIED]` with the source. This is the single input for the porting engineers.
 
-Facts of record (verified on disk):
+Facts of record (M0 snapshot — **live toolchain/dep pins now live in `state.md` + `cyrius.cyml`**;
+this table is the as-written-at-M0 record):
 
 | Thing | Value | Source |
 |---|---|---|
-| Toolchain | Cyrius **6.1.33** | `/home/macro/Repos/cyrius/VERSION` |
+| Toolchain | Cyrius **6.1.33** at M0 → now pinned **6.1.35** (wrapper 6.1.36, see state.md) | `cyrius.cyml`, `state.md` |
 | szal (Rust) | **1.2.0**, 13,127–13,172 LOC, 42 src files, AGPL-3.0-only in Cargo.toml | `/home/macro/Repos/szal` |
 | bote (Cyrius) | **2.7.3**, dist/bote.cyr + dist/bote-core.cyr committed | `/home/macro/Repos/bote` |
-| majra (Cyrius) | **2.4.5**, 4 dist bundles committed | `/home/macro/Repos/majra` |
+| majra (Cyrius) | **2.4.6** (vendored `src/vendor/majra.cyr`; was 2.4.5 at M0) | `/home/macro/Repos/majra`, `majra-vendoring.md` |
 | ai-hwaccel (Cyrius) | **2.3.9**, dist/ai-hwaccel.cyr | `/home/macro/Repos/ai-hwaccel` |
 | patra (SQL) | **1.11.0**, ALSO in cyrius stdlib as `lib/patra.cyr` | `/home/macro/Repos/patra`, `/home/macro/Repos/cyrius/lib/patra.cyr` |
 | Stdlib | **88** `lib/*.cyr` modules (json/toml/csv/base64/bigint/u128/matrix/linalg carved out → bayan/ganita) | `ls /home/macro/Repos/cyrius/lib/*.cyr` |
