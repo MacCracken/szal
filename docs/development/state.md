@@ -65,9 +65,33 @@ unblocked.
   serde-default deserializers). Recorded in the new **`docs/development/parity-notes.md`** (which
   also resolved 5 dangling `see parity_notes` references from M1 modules). Audit "fixes" that
   proposed editing `rust-old/` were rejected (parity = match Rust, never mutate the oracle).
-- ⏳ Next rows: 9 `storage.cyr` (WorkflowStorage + ExecutionStore fn-ptr vtables via `lib/trait.cyr`;
-  embeds `Option<FlowResult>`) → 10 `metrics.cyr` (needs majra vendored at `src/vendor/`) →
-  11 `engine_core.cyr` (FlowCtx/ExecCtx, EngineConfig, handler ABI).
+- ✅ **row 9 `src/storage.cyr`** — ported + wired. `WorkflowStorage` (3-slot vtable
+  {get_by_name,get_by_id,list}) + `InMemoryStorage` (insert/remove); `ExecutionRecord`
+  {execution_id, flow_name, state, result `Option<FlowResult>`, started_at, finished_at} +
+  serde to/from_json; `ExecutionStore` (4-slot vtable {save,get,list(filter),remove}) +
+  in-memory impl. `dyn Trait` → fat-pointer vtables via `lib/trait.cyr` (`trait_obj_new`/
+  `trait_call0/1`); maps are `map_new_str` (Str content keys). `tests/szal_storage.tcyr` (38)
+  ports all 6 Rust storage tests + an `ExecutionRecord` round-trip. Locking deferred to the M2
+  parallel rows (parity-notes §7); get/remove return the stored ptr not a deep clone (§6).
+- ✅ Adversarial parity-verify of storage (3 lenses, auditors primed with the parity-notes
+  accepted-idioms list, oracle read-only): **0 findings, 0 changes** — full behavioral + serde
+  parity. Disposition logged in parity-notes.
+- ✅ **row 10 `src/metrics.cyr`** — ported + wired. 5 fire-and-forget wrappers (`metric_run_started/
+  completed/failed`, `metric_step_started/finished`) over majra's 22-slot metrics vtable; sink is
+  the vtable ptr with `0 = None` (no-op guard). `MetricsSink = Option<Arc<dyn MajraMetrics>>` →
+  vtable-ptr handle (AGNOS "hand the consumer the vtable" model). `tests/szal_metrics.tcyr` (13)
+  mirrors the Rust none/noop tests + a dispatch proof (wrapper reaches vtable slot 136).
+  - **majra vendoring — interim shim only.** Full majra is blocked (9-symbol collision +
+    missing `lib/bigint.cyr`) and disproportionate for metrics, so only majra's self-contained
+    metrics module is vendored: `src/vendor/majra_metrics.cyr` (synced from majra **2.4.6** by
+    `scripts/sync-majra-metrics.sh`; cyrius.cyml still pins 2.4.5 — patch drift, metrics module
+    byte-stable). **Full majra is a REQUIRED, scheduled 2.0.0 deliverable** — complete spec +
+    blockers in `docs/development/majra-vendoring.md`, tracked in `roadmap.md` M2. When it lands,
+    delete the shim and repoint `metrics.cyr` (drop-in, identical vtable surface).
+- ⏳ Next: row 11 `engine_core.cyr` (the big one: `engine/mod.rs` minus `sub_flow_handler` —
+  FlowCtx/ExecCtx, EngineConfig, handler ABI, check_condition; needs no majra, holds `metrics_vt`
+  as an opaque slot). Then step_exec → sequential → dag → hierarchical (pure logic, unblocked);
+  parallel/hardware/queue_runner/distributed gated on Q9/Q10/Q11 + full majra.
 
 ## Toolchain gotchas found during the port (for docs/cyrius-feedback.md)
 
@@ -105,12 +129,12 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 ## Next
 
-**M2 in progress — row 8 (`engine_result`) done; next is row 9 `src/storage.cyr`.** storage
-embeds `Option<FlowResult>` in its `ExecutionRecord` (now unblocked) and introduces the
-fn-pointer vtable pattern (`lib/trait.cyr`) for the `WorkflowStorage` (3-slot) + `ExecutionStore`
-(4-slot, synchronous per ADR 0001) traits + in-memory impls. Then row 10 `metrics.cyr` (requires
-majra vendored at `src/vendor/` — first module to need it) → row 11 `engine_core.cyr`.
-Before the parallel/hardware rows (14, 17): sign off Q9 (`registry_new` collision), Q10
-(concurrency model), Q11 (logging under threads). See [`roadmap.md`](roadmap.md) M2,
-[`port-plan.md`](port-plan.md) §4, and accepted divergences in
-[`parity-notes.md`](parity-notes.md).
+**M2 in progress — rows 8–10 (`engine_result`, `storage`, `metrics`) done & verified; next is
+row 11 `src/engine_core.cyr`.** engine_core is the large one (`engine/mod.rs` minus
+`sub_flow_handler`: FlowCtx/ExecCtx, EngineConfig, the (fn-ptr, ctx) handler ABI, check_condition,
+emit, progress sink). It needs **no majra** — it holds `metrics_vt`/`storage_vt` as opaque slots
+(0 = none). After it: step_exec → sequential → dag → hierarchical are pure-logic and unblocked.
+**Gated rows** need sign-off + the full majra vendoring: parallel/hardware (Q9 `registry_new`, Q10
+concurrency, Q11 logging) and queue_runner/distributed (full majra — see
+[`majra-vendoring.md`](majra-vendoring.md)). See [`roadmap.md`](roadmap.md) M2,
+[`port-plan.md`](port-plan.md) §4, and accepted divergences in [`parity-notes.md`](parity-notes.md).

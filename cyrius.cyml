@@ -36,4 +36,9 @@ modules = ["dist/ai-hwaccel.cyr"]
 # make `cyrius deps` recurse into bote's own [deps.libro]/[deps.majra] git blocks (lib/ bloat
 # + last-definition-wins symbol collisions). Pins: bote 2.7.3 dist/bote-core.cyr,
 # majra 2.4.5 dist/majra.cyr -- re-synced by scripts/sync-bote.sh / sync-majra.sh.
-# Added when the engine/MCP modules that need them land (M2/M3).
+#
+# INTERIM (M2 row 10): only majra's self-contained metrics module is vendored, as
+# src/vendor/majra_metrics.cyr (synced from majra 2.4.6 dist by scripts/sync-majra-metrics.sh).
+# The FULL majra dist is a REQUIRED-but-deferred 2.0.0 deliverable -- it has a 9-symbol collision
+# with szal + needs lib/bigint.cyr (missing from the snapshot). Complete spec + blockers:
+# docs/development/majra-vendoring.md (tracked in roadmap.md M2). bote-core lands with M3 MCP.

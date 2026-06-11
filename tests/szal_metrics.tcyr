@@ -1,0 +1,69 @@
+# szal_metrics.tcyr — metrics wrappers (metrics.cyr) over the majra metrics vtable.
+#
+# Ports rust-old/src/metrics.rs tests (metric_sink_none_is_noop, metric_sink_with_noop) + a
+# dispatch assertion proving the wrappers reach the correct vtable slot.
+#   cyrius build --strict --no-deps tests/szal_metrics.tcyr build/test_metrics && ./build/test_metrics
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "src/vendor/majra_metrics.cyr"
+include "src/metrics.cyr"
+
+# Counting slot fn: fncall2 invokes it with (workflow_id, extra). Counts invocations so the test
+# can prove a wrapper dispatched through the workflow_run_started slot (vtable offset 136).
+var _wf_started_count = 0;
+fn _count_wf_started(a, b) {
+    _wf_started_count = _wf_started_count + 1;
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    # Mirrors metric_sink_none_is_noop: a None sink (0) makes every wrapper a no-op (no crash).
+    test_group("metric sink None (0) is a no-op");
+    assert_eq(metric_run_started(0, str_from("test")), 0, "run_started none");
+    assert_eq(metric_run_completed(0, str_from("test"), 100), 0, "run_completed none");
+    assert_eq(metric_run_failed(0, str_from("test"), 50), 0, "run_failed none");
+    assert_eq(metric_step_started(0, str_from("test"), str_from("step-1")), 0, "step_started none");
+    assert_eq(metric_step_finished(0, str_from("test"), str_from("step-1"), str_from("completed"), 30),
+    0, "step_finished none");
+
+    # Mirrors metric_sink_with_noop: a noop_metrics() sink dispatches without crashing.
+    test_group("metric sink noop_metrics dispatches");
+    var noop = noop_metrics();
+    assert(noop != 0, "noop_metrics returns a non-null vtable");
+    assert_eq(metric_run_started(noop, str_from("test")), 0, "run_started noop");
+    assert_eq(metric_run_completed(noop, str_from("test"), 100), 0, "run_completed noop");
+    assert_eq(metric_run_failed(noop, str_from("test"), 50), 0, "run_failed noop");
+    assert_eq(metric_step_started(noop, str_from("test"), str_from("step-1")), 0, "step_started noop");
+    assert_eq(metric_step_finished(noop, str_from("test"), str_from("step-1"), str_from("failed"), 30),
+    0, "step_finished noop");
+
+    # Dispatch proof: install a counting fn at the workflow_run_started slot (offset 136) and
+    # confirm metric_run_started reaches it. Also confirms the None-guard short-circuits (sink 0
+    # must NOT increment).
+    test_group("wrapper dispatches to the right vtable slot");
+    var vt = noop_metrics();
+    store64(vt + 136, &_count_wf_started);
+    _wf_started_count = 0;
+    metric_run_started(0, str_from("ignored"));
+    assert_eq(_wf_started_count, 0, "None sink does not dispatch");
+    metric_run_started(vt, str_from("wf-1"));
+    metric_run_started(vt, str_from("wf-2"));
+    assert_eq(_wf_started_count, 2, "run_started dispatched twice through slot 136");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

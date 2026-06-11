@@ -1,0 +1,173 @@
+# szal_storage.tcyr — WorkflowStorage + ExecutionStore (storage.cyr) unit tests.
+#
+# Ports rust-old/src/storage.rs tests (in_memory_insert_and_get / list / remove,
+# execution_store_save_and_get / list_filters / remove) + an ExecutionRecord serde round-trip.
+#   cyrius build --strict --no-deps tests/szal_storage.tcyr build/test_storage && ./build/test_storage
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+include "src/flow.cyr"
+include "src/engine_result.cyr"
+include "src/storage.cyr"
+
+# Does Str s contain the cstr substring `needle`? Field-presence helper for JSON assertions.
+fn contains_cstr(s, needle) {
+    var data = str_data(s);
+    var slen = str_len(s);
+    var nlen = strlen(needle);
+    if (nlen == 0) { return 1; }
+    if (nlen > slen) { return 0; }
+    var i = 0;
+    while (i <= slen - nlen) {
+        var j = 0;
+        var ok = 1;
+        while (j < nlen) {
+            if (load8(data + i + j) != load8(needle + j)) { ok = 0; j = nlen; }
+            else { j = j + 1; }
+        }
+        if (ok == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Does a vec of Str contain a Str equal (by content) to cstr `needle`?
+fn vec_has_name(v, needle) {
+    var n = vec_len(v);
+    var i = 0;
+    while (i < n) {
+        if (str_eq_cstr(vec_get(v, i), needle) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    # --- WorkflowStorage: insert + get_by_name + get_by_id + missing ---
+    test_group("InMemoryStorage insert_and_get");
+    var storage = in_memory_storage_new();
+    var flow = flow_new(str_from("deploy"), FLOW_SEQUENTIAL);
+    flow_add_step(flow, step_new(str_from("build")));
+    var flow_id = uuid_to_str(flow_id_hi(flow), flow_id_lo(flow));
+    in_memory_storage_insert(storage, flow);
+
+    var by_name = workflow_storage_get_by_name(storage, str_from("deploy"));
+    assert(by_name != 0, "get_by_name deploy is Some");
+    assert(str_eq_cstr(flow_name(by_name), "deploy"), "get_by_name returns the deploy flow");
+    var by_id = workflow_storage_get_by_id(storage, flow_id);
+    assert(by_id != 0, "get_by_id is Some");
+    assert(str_eq_cstr(flow_name(by_id), "deploy"), "get_by_id returns the deploy flow");
+    assert_eq(workflow_storage_get_by_name(storage, str_from("missing")), 0, "missing is None");
+    # malformed UUID id parses to a miss
+    assert_eq(workflow_storage_get_by_id(storage, str_from("not-a-uuid")), 0, "bad id is None");
+
+    # --- WorkflowStorage: list ---
+    test_group("InMemoryStorage list");
+    var s2 = in_memory_storage_new();
+    in_memory_storage_insert(s2, flow_new(str_from("a"), FLOW_SEQUENTIAL));
+    in_memory_storage_insert(s2, flow_new(str_from("b"), FLOW_PARALLEL));
+    var names = workflow_storage_list(s2);
+    assert_eq(vec_len(names), 2, "list len == 2");
+    assert_eq(vec_has_name(names, "a"), 1, "list contains a");
+    assert_eq(vec_has_name(names, "b"), 1, "list contains b");
+
+    # --- WorkflowStorage: remove returns the value, then it's gone ---
+    test_group("InMemoryStorage remove");
+    var s3 = in_memory_storage_new();
+    in_memory_storage_insert(s3, flow_new(str_from("x"), FLOW_SEQUENTIAL));
+    var removed = in_memory_storage_remove(s3, str_from("x"));
+    assert(removed != 0, "remove x returns Some");
+    assert(str_eq_cstr(flow_name(removed), "x"), "removed flow is x");
+    assert_eq(workflow_storage_get_by_name(s3, str_from("x")), 0, "x gone after remove");
+    assert_eq(in_memory_storage_remove(s3, str_from("x")), 0, "remove again is None");
+
+    # --- ExecutionStore: save + get ---
+    test_group("ExecutionStore save_and_get");
+    var store = in_memory_execution_store_new();
+    var rec = execution_record_new(str_from("exec-1"), str_from("deploy"), STATE_RUNNING, 0,
+    str_from("2026-04-03T00:00:00Z"), 0);
+    execution_store_save(store, rec);
+    var got = execution_store_get(store, str_from("exec-1"));
+    assert(got != 0, "get exec-1 is Some");
+    assert(str_eq_cstr(execution_record_flow_name(got), "deploy"), "record flow_name deploy");
+    assert_eq(execution_record_state(got), STATE_RUNNING, "record state Running");
+    assert_eq(execution_record_result(got), 0, "record result is None");
+    assert_eq(execution_store_get(store, str_from("nope")), 0, "missing exec is None");
+
+    # --- ExecutionStore: list with flow-name filter ---
+    test_group("ExecutionStore list_filters");
+    var fs = in_memory_execution_store_new();
+    execution_store_save(fs, execution_record_new(str_from("e1"), str_from("deploy"),
+    STATE_COMPLETED, 0, str_from(""), 0));
+    execution_store_save(fs, execution_record_new(str_from("e2"), str_from("test"),
+    STATE_FAILED, 0, str_from(""), 0));
+    execution_store_save(fs, execution_record_new(str_from("e3"), str_from("deploy"),
+    STATE_ROLLED_BACK, 0, str_from(""), 0));
+    assert_eq(vec_len(execution_store_list(fs, 0)), 3, "list(None) == 3");
+    assert_eq(vec_len(execution_store_list(fs, str_from("deploy"))), 2, "list(deploy) == 2");
+    assert_eq(vec_len(execution_store_list(fs, str_from("test"))), 1, "list(test) == 1");
+    assert_eq(vec_len(execution_store_list(fs, str_from("missing"))), 0, "list(missing) == 0");
+
+    # --- ExecutionStore: remove ---
+    test_group("ExecutionStore remove");
+    var rs = in_memory_execution_store_new();
+    execution_store_save(rs, execution_record_new(str_from("e1"), str_from("x"), STATE_CREATED,
+    0, str_from(""), 0));
+    var rmrec = execution_store_remove(rs, str_from("e1"));
+    assert(rmrec != 0, "remove e1 is Some");
+    assert_eq(execution_store_get(rs, str_from("e1")), 0, "e1 gone after remove");
+
+    # --- ExecutionRecord serde shape + round-trip (state PascalCase, Option nulls) ---
+    test_group("ExecutionRecord serde");
+    var er = execution_record_new(str_from("exec-9"), str_from("deploy"), STATE_RUNNING, 0,
+    str_from("2026-04-03T00:00:00Z"), 0);
+    var ejson = execution_record_to_json(er);
+    assert_eq(contains_cstr(ejson, "\"execution_id\":\"exec-9\""), 1, "json execution_id");
+    assert_eq(contains_cstr(ejson, "\"state\":\"Running\""), 1, "json state PascalCase");
+    assert_eq(contains_cstr(ejson, "\"result\":null"), 1, "json result null when None");
+    assert_eq(contains_cstr(ejson, "\"finished_at\":null"), 1, "json finished_at null when None");
+    var eback = execution_record_from_json(ejson);
+    assert(eback != 0, "record round-trip parse ok");
+    assert(str_eq_cstr(execution_record_execution_id(eback), "exec-9"), "round-trip execution_id");
+    assert_eq(execution_record_state(eback), STATE_RUNNING, "round-trip state Running");
+    assert_eq(execution_record_result(eback), 0, "round-trip result None");
+    assert_eq(execution_record_finished_at(eback), 0, "round-trip finished_at None");
+
+    # record with a FlowResult + finished_at present round-trips those too
+    var fr = flow_result_new(str_from("deploy"), 250, 1, 0);
+    var er2 = execution_record_new(str_from("exec-10"), str_from("deploy"), STATE_COMPLETED, fr,
+    str_from("2026-04-03T00:00:00Z"), str_from("2026-04-03T00:05:00Z"));
+    var e2back = execution_record_from_json(execution_record_to_json(er2));
+    assert(e2back != 0, "record-with-result round-trip ok");
+    assert_eq(execution_record_state(e2back), STATE_COMPLETED, "round-trip state Completed");
+    assert(execution_record_result(e2back) != 0, "round-trip result is Some");
+    assert(str_eq_cstr(flow_result_flow_name(execution_record_result(e2back)), "deploy"),
+    "round-trip result.flow_name");
+    assert(str_eq_cstr(execution_record_finished_at(e2back), "2026-04-03T00:05:00Z"),
+    "round-trip finished_at preserved");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

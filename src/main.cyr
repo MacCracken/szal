@@ -17,12 +17,17 @@ include "lib/syscalls.cyr"
 include "lib/tagged.cyr"
 include "lib/result.cyr"
 include "lib/fnptr.cyr"
+include "lib/trait.cyr"
 include "lib/assert.cyr"
 include "lib/io.cyr"
 include "lib/bayan.cyr"
 include "lib/chrono.cyr"
 include "lib/sakshi.cyr"
 include "lib/log.cyr"
+
+# --- vendored deps (hoosh pattern). majra metrics is the interim shim; the FULL majra dist is a
+# deferred 2.0.0 deliverable — see docs/development/majra-vendoring.md. ---
+include "src/vendor/majra_metrics.cyr"
 
 # --- szal foundation modules (port-plan §4 topological order) ---
 include "src/error.cyr"
@@ -35,6 +40,8 @@ include "src/condition.cyr"
 include "src/flow.cyr"
 include "src/migration.cyr"
 include "src/engine_result.cyr"
+include "src/storage.cyr"
+include "src/metrics.cyr"
 
 fn main() {
     alloc_init();

@@ -61,9 +61,10 @@ Foundation modules (no engine, no MCP — pure data + algorithms):
 
 ### M2 — Engine core + executors
 
-- [ ] `src/engine_result.cyr` — `FlowResult` (must precede storage; breaks the storage↔engine cycle)
-- [ ] `src/storage.cyr` — `WorkflowStorage` + `ExecutionStore` fn-pointer vtables, in-memory impls
-- [ ] `src/metrics.cyr` — majra 22-slot metrics vtable + thin wrappers
+- [x] `src/engine_result.cyr` — `FlowResult` (must precede storage; breaks the storage↔engine cycle) ✅
+- [x] `src/storage.cyr` — `WorkflowStorage` + `ExecutionStore` fn-pointer vtables, in-memory impls ✅
+- [ ] `src/metrics.cyr` — majra 22-slot metrics vtable + thin wrappers *(interim: over the metrics-only shim `src/vendor/majra_metrics.cyr`)*
+- [ ] **Full majra vendoring** (`src/vendor/majra.cyr` 2.4.5 + `scripts/sync-majra.sh`) — REQUIRED before `engine_queue_runner`/`engine_distributed` (and M3 `stream`/`mcp_pool`). Blocked on missing `lib/bigint.cyr`; needs a 9-symbol collision rename + 8 stdlib includes. **Full spec + blockers in [`majra-vendoring.md`](majra-vendoring.md) — do not re-discover.** When it lands, retire the metrics shim.
 - [ ] `src/engine_core.cyr` — `FlowCtx`/`ExecCtx`, `EngineConfig`, `check_condition`, (fn-ptr, ctx) handler ABI (everything in `engine/mod.rs` except `sub_flow_handler`)
 - [ ] `src/engine_step_exec.cyr` — retry/backoff/timeout via worker-thread + deadline (not `async_timeout` — it forks)
 - [ ] `src/engine_sequential.cyr` — in-order; exact skip-reason strings

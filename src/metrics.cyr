@@ -1,0 +1,51 @@
+# metrics.cyr — workflow metrics hooks over majra's metrics vtable
+#
+# Ports rust-old/src/metrics.rs: Rust models the metrics sink as
+# `MetricsSink = Option<Arc<dyn MajraMetrics>>` and exposes 5 fire-and-forget wrapper fns that
+# call the trait method when the sink is `Some`. The port lowers the `dyn MajraMetrics` trait
+# object to majra's 22-slot fn-pointer **metrics vtable** (the AGNOS "hand the consumer the
+# vtable" model — port-plan §3.2). The sink IS that vtable pointer, with **0 = None** (no metrics).
+# Each wrapper no-ops when sink == 0, else dispatches to the majra `metrics_workflow_*` slot.
+# `noop_metrics()` (from the vendored shim) builds an all-no-op vtable for a non-null default.
+# This is port-plan §4 row 10.
+#
+# Usage: include "src/metrics.cyr"
+# Requires: src/vendor/majra_metrics.cyr (METRICS_VTABLE_SIZE, noop_metrics, metrics_workflow_*),
+#   which itself needs lib/freelist (fl_alloc) + lib/fnptr (fncall2). The full majra dist is a
+#   deferred 2.0.0 deliverable (docs/development/majra-vendoring.md); the shim is the interim
+#   source of the metrics surface and is drop-in replaceable by the full dist.
+# Naming: wrappers are metric_-prefixed (mirroring the Rust crate-internal fn names).
+
+# Workflow run started. sink is a metrics vtable ptr (0 = None -> no-op). workflow_id is a Str.
+# Mirrors metric_run_started (metrics.rs 24-29). Returns 0.
+fn metric_run_started(sink, workflow_id) {
+    if (sink != 0) { metrics_workflow_run_started(sink, workflow_id); }
+    return 0;
+}
+
+# Workflow run completed with a duration (ms). Mirrors metric_run_completed (metrics.rs 31-37).
+fn metric_run_completed(sink, workflow_id, duration_ms) {
+    if (sink != 0) { metrics_workflow_run_completed(sink, workflow_id, duration_ms); }
+    return 0;
+}
+
+# Workflow run failed with a duration (ms). Mirrors metric_run_failed (metrics.rs 39-45).
+fn metric_run_failed(sink, workflow_id, duration_ms) {
+    if (sink != 0) { metrics_workflow_run_failed(sink, workflow_id, duration_ms); }
+    return 0;
+}
+
+# Workflow step started. step_id is a Str. Mirrors metric_step_started (metrics.rs 47-53).
+fn metric_step_started(sink, workflow_id, step_id) {
+    if (sink != 0) { metrics_workflow_step_started(sink, workflow_id, step_id); }
+    return 0;
+}
+
+# Workflow step finished with a status string + duration (ms). status is a Str ("completed"/
+# "failed"/...). Mirrors metric_step_finished (metrics.rs 55-67).
+fn metric_step_finished(sink, workflow_id, step_id, status, duration_ms) {
+    if (sink != 0) {
+        metrics_workflow_step_finished(sink, workflow_id, step_id, status, duration_ms);
+    }
+    return 0;
+}

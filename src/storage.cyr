@@ -1,0 +1,346 @@
+# storage.cyr — workflow storage + execution-state persistence
+#
+# Ports rust-old/src/storage.rs: the WorkflowStorage trait (runtime sub-flow resolution) and the
+# ExecutionStore trait (durable execution tracking), each with an in-memory impl. Rust models
+# these as `dyn Trait` objects (Arc<dyn WorkflowStorage>); the port lowers them to fat-pointer
+# vtables via lib/trait.cyr — a trait object is {vtable_ptr, data_ptr} and methods dispatch
+# through trait_call0/1. This is port-plan §4 row 9; it embeds Option<FlowResult> in
+# ExecutionRecord, so it MUST follow engine_result.cyr.
+#
+# Usage: include "src/storage.cyr"
+# Requires: lib/str.cyr (Str + str_eq), lib/vec.cyr, lib/hashmap.cyr (map_new_str + ops),
+#   lib/fnptr.cyr + lib/trait.cyr (fat-pointer vtables), lib/alloc.cyr (alloc_init first),
+#   lib/bayan.cyr (json_v; lib/io before lib/bayan), src/uuid.cyr (uuid_parse for get_by_id),
+#   src/state.cyr (WorkflowState + state_json_name/state_from_json), src/flow.cyr (FlowDef
+#   accessors), src/engine_result.cyr (FlowResult + flow_result_to_json/_flow_result_from_v).
+# Naming: public symbols are workflow_storage_/in_memory_storage_/execution_record_/
+#   execution_store_/in_memory_execution_store_-prefixed; internal impls + vtables use _.
+#
+# Concurrency: the Rust impls wrap the map in a std::sync::RwLock ("storage lock poisoned").
+# The port is single-threaded until the engine concurrency model is signed off (roadmap.md M2
+# open questions Q10/Q11); the data-structure behavior the tests assert is lock-independent, so
+# the lock lands together with the M2 parallel engine rows (engine_parallel/distributed). See
+# docs/development/parity-notes.md.
+
+# ===========================================================================
+# WorkflowStorage — 3-slot vtable {get_by_name, get_by_id, list}
+# ===========================================================================
+
+# Vtable slot indices (passed to trait_call*, which multiplies by 8 internally).
+enum WorkflowStorageSlot {
+    WS_GET_BY_NAME = 0;
+    WS_GET_BY_ID = 1;
+    WS_LIST = 2;
+}
+
+# 3 fn-pointer slots * 8 bytes.
+var WS_VTABLE_SIZE = 24;
+
+# --- InMemoryStorage impl: data is a Str-keyed map name(Str) -> FlowDef* ---
+
+# get_by_name(map, name) -> FlowDef* or 0 (None). Mirrors flows.read().get(name).cloned();
+# the port returns the stored pointer rather than a deep clone (storage reads are read-only at
+# the sub-flow execution boundary) — see parity-notes.md.
+fn _ims_get_by_name(map, name) {
+    return map_get(map, name);
+}
+
+# get_by_id(map, id) -> FlowDef* or 0. id is a UUID-string Str; a malformed UUID parses to a
+# miss (Rust `id.parse().ok()?` returns None). Linear scan over values matching f.id == uuid.
+fn _ims_get_by_id(map, id) {
+    var hi, lo = uuid_parse(str_cstr(id));
+    if (uuid_parse_ok(hi, lo) == 0) { return 0; }
+    var vals = map_values(map);
+    var n = vec_len(vals);
+    var i = 0;
+    while (i < n) {
+        var f = vec_get(vals, i);
+        if (flow_id_hi(f) == hi) {
+            if (flow_id_lo(f) == lo) { return f; }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# list(map) -> vec of names (Str). Mirrors flows.read().keys().cloned().collect().
+fn _ims_list(map) {
+    return map_keys(map);
+}
+
+# Lazily-built shared vtable for the InMemoryStorage impl.
+var _ims_vt = 0;
+
+fn _ims_vtable() {
+    if (_ims_vt == 0) {
+        var vt = alloc(WS_VTABLE_SIZE);
+        store64(vt + 0, &_ims_get_by_name);
+        store64(vt + 8, &_ims_get_by_id);
+        store64(vt + 16, &_ims_list);
+        _ims_vt = vt;
+    }
+    return _ims_vt;
+}
+
+# Create an in-memory WorkflowStorage. Returns a trait object {vtable, map} usable through the
+# workflow_storage_* dispatchers below. Mirrors InMemoryStorage::new.
+fn in_memory_storage_new() {
+    return trait_obj_new(_ims_vtable(), map_new_str());
+}
+
+# Store a FlowDef keyed by its name (overwrites an existing entry). Inherent to InMemoryStorage
+# (not a trait method); mirrors InMemoryStorage::insert. Returns 0.
+fn in_memory_storage_insert(obj, flow) {
+    map_set(trait_data(obj), flow_name(flow), flow);
+    return 0;
+}
+
+# Remove a FlowDef by name. Returns the removed FlowDef* or 0 (None) — mirrors HashMap::remove's
+# Option<FlowDef>. (map_delete only reports found/not, so look up the value first.)
+fn in_memory_storage_remove(obj, name) {
+    var map = trait_data(obj);
+    var v = map_get(map, name);
+    if (v == 0) { return 0; }
+    map_delete(map, name);
+    return v;
+}
+
+# --- WorkflowStorage trait dispatch (works on any impl's trait object) ---
+
+# Look up a workflow definition by name. Returns FlowDef* or 0 (None).
+fn workflow_storage_get_by_name(obj, name) {
+    return trait_call1(obj, WS_GET_BY_NAME, name);
+}
+
+# Look up a workflow definition by UUID-string id. Returns FlowDef* or 0 (None).
+fn workflow_storage_get_by_id(obj, id) {
+    return trait_call1(obj, WS_GET_BY_ID, id);
+}
+
+# List all available workflow names. Returns a vec of Str.
+fn workflow_storage_list(obj) {
+    return trait_call0(obj, WS_LIST);
+}
+
+# ===========================================================================
+# ExecutionRecord — a snapshot of a running or completed flow execution
+# ===========================================================================
+
+# Mirrors the Rust struct (storage.rs 127-141; serde Serialize/Deserialize, no skip attrs — so
+# Option fields serialize as null when None).
+#
+# Byte layout (48 bytes):
+#   +0   execution_id  (Str)
+#   +8   flow_name     (Str)
+#   +16  state         (i64 WorkflowState)
+#   +24  result        (FlowResult* or 0 = None)
+#   +32  started_at    (Str)
+#   +40  finished_at   (Str or 0 = None)
+enum ExecutionRecordL {
+    ER_SIZE = 48;
+    ER_EXECUTION_ID = 0;
+    ER_FLOW_NAME = 8;
+    ER_STATE = 16;
+    ER_RESULT = 24;
+    ER_STARTED_AT = 32;
+    ER_FINISHED_AT = 40;
+}
+
+# Get the execution_id (Str).
+fn execution_record_execution_id(r) { return load64(r + ER_EXECUTION_ID); }
+
+# Get the flow_name (Str).
+fn execution_record_flow_name(r) { return load64(r + ER_FLOW_NAME); }
+
+# Get the state (WorkflowState enum value).
+fn execution_record_state(r) { return load64(r + ER_STATE); }
+
+# Get the result (FlowResult* or 0 = None).
+fn execution_record_result(r) { return load64(r + ER_RESULT); }
+
+# Get started_at (Str).
+fn execution_record_started_at(r) { return load64(r + ER_STARTED_AT); }
+
+# Get finished_at (Str or 0 = None).
+fn execution_record_finished_at(r) { return load64(r + ER_FINISHED_AT); }
+
+# Allocate an ExecutionRecord. execution_id/flow_name/started_at are Str; state is a
+# WorkflowState; result is a FlowResult* or 0 (None); finished_at is a Str or 0 (None).
+# Returns 0 on OOM.
+fn execution_record_new(execution_id, flow_name, state, result, started_at, finished_at) {
+    var r = alloc(ER_SIZE);
+    if (r == 0) { return 0; }
+    store64(r + ER_EXECUTION_ID, execution_id);
+    store64(r + ER_FLOW_NAME, flow_name);
+    store64(r + ER_STATE, state);
+    store64(r + ER_RESULT, result);
+    store64(r + ER_STARTED_AT, started_at);
+    store64(r + ER_FINISHED_AT, finished_at);
+    return r;
+}
+
+# Serialize an ExecutionRecord to a JSON object Str. Field set + order matches the serde
+# Serialize (no skip attrs): execution_id, flow_name, state (PascalCase serde name), result
+# (FlowResult object or null), started_at, finished_at (string or null).
+fn execution_record_to_json(r) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("execution_id"),
+    bayan_json_v_str_new(execution_record_execution_id(r)));
+    bayan_json_v_obj_set(o, str_from("flow_name"),
+    bayan_json_v_str_new(execution_record_flow_name(r)));
+    bayan_json_v_obj_set(o, str_from("state"),
+    bayan_json_v_str_new(str_from(state_json_name(execution_record_state(r)))));
+    var res = execution_record_result(r);
+    if (res == 0) {
+        bayan_json_v_obj_set(o, str_from("result"), bayan_json_v_null());
+    } else {
+        bayan_json_v_obj_set(o, str_from("result"),
+        bayan_json_v_parse(flow_result_to_json(res)));
+    }
+    bayan_json_v_obj_set(o, str_from("started_at"),
+    bayan_json_v_str_new(execution_record_started_at(r)));
+    var fin = execution_record_finished_at(r);
+    if (fin == 0) {
+        bayan_json_v_obj_set(o, str_from("finished_at"), bayan_json_v_null());
+    } else {
+        bayan_json_v_obj_set(o, str_from("finished_at"), bayan_json_v_str_new(fin));
+    }
+    return bayan_json_v_build(o);
+}
+
+# Build an ExecutionRecord from a parsed json_v object. Uses the port-wide lenient-deserializer
+# convention (see parity-notes.md §3): missing/mistyped fields fall back to defaults rather than
+# erroring. state parses from its PascalCase serde name (unknown -> Created); result is an
+# Option<FlowResult> (absent/null -> None); finished_at is Option<String> (absent/null -> None).
+# Internal; execution_record_from_json wraps the Str entry. Returns 0 on OOM.
+fn _execution_record_from_v(o) {
+    if (o == 0) { return 0; }
+    var eid = str_from("");
+    var eid_v = bayan_json_v_obj_get(o, "execution_id");
+    if (bayan_json_v_is_str(eid_v) == 1) { eid = bayan_json_v_str(eid_v); }
+    var fname = str_from("");
+    var fname_v = bayan_json_v_obj_get(o, "flow_name");
+    if (bayan_json_v_is_str(fname_v) == 1) { fname = bayan_json_v_str(fname_v); }
+    var state = STATE_CREATED;
+    var state_v = bayan_json_v_obj_get(o, "state");
+    if (bayan_json_v_is_str(state_v) == 1) {
+        var parsed = state_from_json(str_cstr(bayan_json_v_str(state_v)));
+        if (parsed != (0 - 1)) { state = parsed; }
+    }
+    var result = 0;
+    var result_v = bayan_json_v_obj_get(o, "result");
+    if (bayan_json_v_is_obj(result_v) == 1) { result = _flow_result_from_v(result_v); }
+    var started = str_from("");
+    var started_v = bayan_json_v_obj_get(o, "started_at");
+    if (bayan_json_v_is_str(started_v) == 1) { started = bayan_json_v_str(started_v); }
+    var finished = 0;
+    var finished_v = bayan_json_v_obj_get(o, "finished_at");
+    if (bayan_json_v_is_str(finished_v) == 1) { finished = bayan_json_v_str(finished_v); }
+    return execution_record_new(eid, fname, state, result, started, finished);
+}
+
+# Deserialize an ExecutionRecord from a JSON object Str. Inverse of execution_record_to_json.
+# Returns 0 on parse failure / OOM.
+fn execution_record_from_json(json) {
+    var o = bayan_json_v_parse(json);
+    if (o == 0) { return 0; }
+    return _execution_record_from_v(o);
+}
+
+# ===========================================================================
+# ExecutionStore — 4-slot vtable {save, get, list, remove} (synchronous, ADR 0001)
+# ===========================================================================
+
+enum ExecutionStoreSlot {
+    ES_SAVE = 0;
+    ES_GET = 1;
+    ES_LIST = 2;
+    ES_REMOVE = 3;
+}
+
+# 4 fn-pointer slots * 8 bytes.
+var ES_VTABLE_SIZE = 32;
+
+# --- InMemoryExecutionStore impl: data is a Str-keyed map execution_id(Str) -> ExecutionRecord* ---
+
+# save(map, record): insert keyed by execution_id, overwriting. Mirrors records.write().insert.
+fn _imes_save(map, record) {
+    map_set(map, execution_record_execution_id(record), record);
+    return 0;
+}
+
+# get(map, eid) -> ExecutionRecord* or 0 (None).
+fn _imes_get(map, eid) {
+    return map_get(map, eid);
+}
+
+# list(map, flow_filter) -> vec of execution_id (Str). flow_filter is a Str or 0 (None = all).
+# Mirrors values().filter(flow_name.is_none_or(|n| r.flow_name == n)).map(|r| r.execution_id).
+fn _imes_list(map, flow_filter) {
+    var vals = map_values(map);
+    var out = vec_new();
+    var n = vec_len(vals);
+    var i = 0;
+    while (i < n) {
+        var rec = vec_get(vals, i);
+        if (flow_filter == 0) {
+            vec_push(out, execution_record_execution_id(rec));
+        } else {
+            if (str_eq(execution_record_flow_name(rec), flow_filter) == 1) {
+                vec_push(out, execution_record_execution_id(rec));
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+# remove(map, eid) -> removed ExecutionRecord* or 0 (None). (look up before delete to return it.)
+fn _imes_remove(map, eid) {
+    var v = map_get(map, eid);
+    if (v == 0) { return 0; }
+    map_delete(map, eid);
+    return v;
+}
+
+var _imes_vt = 0;
+
+fn _imes_vtable() {
+    if (_imes_vt == 0) {
+        var vt = alloc(ES_VTABLE_SIZE);
+        store64(vt + 0, &_imes_save);
+        store64(vt + 8, &_imes_get);
+        store64(vt + 16, &_imes_list);
+        store64(vt + 24, &_imes_remove);
+        _imes_vt = vt;
+    }
+    return _imes_vt;
+}
+
+# Create an in-memory ExecutionStore. Returns a trait object {vtable, map}. Mirrors
+# InMemoryExecutionStore::new.
+fn in_memory_execution_store_new() {
+    return trait_obj_new(_imes_vtable(), map_new_str());
+}
+
+# --- ExecutionStore trait dispatch ---
+
+# Save or update an execution record. Returns 0.
+fn execution_store_save(obj, record) {
+    return trait_call1(obj, ES_SAVE, record);
+}
+
+# Load an execution record by id. Returns ExecutionRecord* or 0 (None).
+fn execution_store_get(obj, eid) {
+    return trait_call1(obj, ES_GET, eid);
+}
+
+# List execution ids, optionally filtered by flow name (Str, or 0 for all). Returns a vec of Str.
+fn execution_store_list(obj, flow_filter) {
+    return trait_call1(obj, ES_LIST, flow_filter);
+}
+
+# Remove an execution record by id. Returns the removed ExecutionRecord* or 0 (None).
+fn execution_store_remove(obj, eid) {
+    return trait_call1(obj, ES_REMOVE, eid);
+}

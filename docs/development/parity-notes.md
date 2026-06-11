@@ -85,6 +85,30 @@ cross-type comparison. Equality is same-type-only.
 **Why accepted:** mirrors the Rust evaluator's truthiness/comparison rules exactly (this is parity,
 documented here because `src/condition.cyr:498` points at parity-notes). See `src/condition.cyr`.
 
+## 6. Storage: returns the stored pointer, not a deep clone
+
+**What:** `WorkflowStorage::get_by_name`/`get_by_id` and `ExecutionStore::get`/`remove` in Rust
+return `.cloned()` values (independent deep copies). The Cyrius `in_memory_storage_*` /
+`in_memory_execution_store_*` impls return the **stored heap pointer** directly.
+
+**Divergence:** a caller that mutates a returned `FlowDef`/`ExecutionRecord` would also mutate the
+stored copy (aliasing), whereas Rust hands back an independent clone.
+
+**Why accepted:** the storage read path exists to resolve a sub-flow definition for execution,
+which is read-only; there is no `flow_clone`/`record_clone` in the port and adding deep-copy
+machinery for an unused mutation path is unwarranted. Observable results of get/list/remove match
+Rust exactly. See `src/storage.cyr`.
+
+## 7. Storage: `RwLock` deferred (single-threaded until concurrency sign-off)
+
+**What:** Rust wraps the storage/execution-store maps in `std::sync::RwLock`. The port uses a plain
+map with no lock.
+
+**Why accepted:** the whole engine is single-threaded until the concurrency model is signed off
+(roadmap M2, Q10/Q11). The data-structure behavior the tests assert is lock-independent; the lock
+lands together with the parallel engine rows (`engine_parallel`/`engine_distributed`), not before.
+See `src/storage.cyr`.
+
 ---
 
 ### Disposition log
@@ -96,3 +120,7 @@ documented here because `src/condition.cyr:498` points at parity-notes). See `sr
   achieved by matching Rust, not by mutating the frozen oracle. A flagged `vec_new()` OOM gap in
   `flow_result_new` was left as-is to match the house convention (`flow_new`/`step_new` likewise do
   not guard `vec_new()`; Rust `Vec::new()` never fails, so it is not a parity concern).
+- **2026-06-11 — M2 storage parity audit** (`storage.cyr` vs `storage.rs`): 3 lenses
+  (WorkflowStorage / ExecutionStore / ExecutionRecord serde), auditors primed with this file's
+  accepted-idiom list. **0 findings** — full behavioral + serde parity; the pointer-return (§6)
+  and deferred-lock (§7) divergences were correctly classified as accepted, not regressions.
