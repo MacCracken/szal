@@ -26,8 +26,10 @@ modules ported, tested, wired into `main`; adversarial parity audit run + both f
   `src/main.cyr` builds `--strict` green and runs.
 - ✅ Foundation modules ported (port-plan §4 rows 0–7), each cross-checked vs `rust-old` and
   self-tested `--strict` green: `error` (30), `state` (61), `uuid` (33), `md5` (13), `bus` (65),
-  `step` (131), `condition` (197), `flow` (49), `migration` (34) — **613 assertions, 0 failures**.
+  `step` (142), `condition` (197), `flow` (49), `migration` (34) — **624 assertions, 0 failures**.
   Combined `tests/szal_core.tcyr` (24) proves single-pass composition. ~3,300 lines of Cyrius.
+  (`step` grew +11 in M2: a `StepResult` deserializer `step_result_from_json`/`_step_result_from_v`
+  was added to fill the to/from-json asymmetry — `engine_result.from_json` is its first consumer.)
 - ✅ M1 exit gates green (re-verified under 6.1.35): `cyrius build --strict` clean · all tests
   pass · `cyrius lint` clean · `cyrius fmt <f> --check` clean · `cyrius doc --check` clean (0 undocumented).
 - ✅ Foundation wired into `src/main.cyr`: full single-pass include order (proven by
@@ -46,6 +48,26 @@ modules ported, tested, wired into `main`; adversarial parity audit run + both f
   - **bus (major, json-shape):** `duration_ms` Some(0) rendered `null` (a 0-sentinel can't tell
     Some(0) from None; Rust struct has no `skip_serializing_if`, so serde emits `0`). Fix: added
     `WE_DURATION_SET` presence flag (mirrors the existing `WE_ATTEMPT_SET`); WE_SIZE 72→80; +3 assertions.
+
+**M2 — Engine core + executors. ⏳ in progress.** Porting port-plan §4 rows 8–21 in topological
+order. Open questions Q9 (`registry_new` collision, blocks `engine_hardware`), Q10 (concurrency),
+Q11 (logging under threads) still gate the parallel/hardware rows — the early rows below are
+unblocked.
+
+- ✅ **row 8 `src/engine_result.cyr` (`FlowResult`)** — ported + wired into `main`, cross-checked
+  vs `engine/result.rs`. `FlowResult {flow_name, steps vec, total_duration_ms, success,
+  rolled_back}` + `completed/failed/skipped_count` + `to_json/from_json` (serde shape, no skips).
+  `tests/szal_engine_result.tcyr` (27) ports `flow_result_counts` + `flow_result_serde_roundtrip`.
+  Prereq landed in `step.cyr` (StepResult deserializer, see above). **Unblocks `storage.cyr`.**
+- ✅ Adversarial parity-verify of the new surface (3 diverse-lens auditors + skeptic verify, oracle
+  guarded read-only): serde wire-shape lens **clean**; 9 "confirmed" findings triaged to **0
+  behavioral changes** — all are accepted, codebase-wide idioms (§1 u64→i64 width, §3 lenient
+  serde-default deserializers). Recorded in the new **`docs/development/parity-notes.md`** (which
+  also resolved 5 dangling `see parity_notes` references from M1 modules). Audit "fixes" that
+  proposed editing `rust-old/` were rejected (parity = match Rust, never mutate the oracle).
+- ⏳ Next rows: 9 `storage.cyr` (WorkflowStorage + ExecutionStore fn-ptr vtables via `lib/trait.cyr`;
+  embeds `Option<FlowResult>`) → 10 `metrics.cyr` (needs majra vendored at `src/vendor/`) →
+  11 `engine_core.cyr` (FlowCtx/ExecCtx, EngineConfig, handler ABI).
 
 ## Toolchain gotchas found during the port (for docs/cyrius-feedback.md)
 
@@ -83,8 +105,12 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 ## Next
 
-**M1 is complete — M2 (engine core + executors) is next.** First module is
-`src/engine_result.cyr` (`FlowResult`) — it must precede storage to break the storage↔engine
-cycle (roadmap M2). Before M2 parallel/hardware work, the open questions must be signed off:
-Q9 (`registry_new` collision, blocks `engine_hardware`), Q10 (concurrency model), Q11 (logging
-under threads). See [`roadmap.md`](roadmap.md) M2 and [`port-plan.md`](port-plan.md) §4.
+**M2 in progress — row 8 (`engine_result`) done; next is row 9 `src/storage.cyr`.** storage
+embeds `Option<FlowResult>` in its `ExecutionRecord` (now unblocked) and introduces the
+fn-pointer vtable pattern (`lib/trait.cyr`) for the `WorkflowStorage` (3-slot) + `ExecutionStore`
+(4-slot, synchronous per ADR 0001) traits + in-memory impls. Then row 10 `metrics.cyr` (requires
+majra vendored at `src/vendor/` — first module to need it) → row 11 `engine_core.cyr`.
+Before the parallel/hardware rows (14, 17): sign off Q9 (`registry_new` collision), Q10
+(concurrency model), Q11 (logging under threads). See [`roadmap.md`](roadmap.md) M2,
+[`port-plan.md`](port-plan.md) §4, and accepted divergences in
+[`parity-notes.md`](parity-notes.md).

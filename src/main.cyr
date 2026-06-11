@@ -34,6 +34,7 @@ include "src/step.cyr"
 include "src/condition.cyr"
 include "src/flow.cyr"
 include "src/migration.cyr"
+include "src/engine_result.cyr"
 
 fn main() {
     alloc_init();

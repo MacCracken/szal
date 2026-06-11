@@ -388,7 +388,7 @@ fn step_with_hardware(s, req) {
 # StepResult — heap blob. Mirrors the Rust struct (step.rs 247-255). step_id is two i64 halves;
 # output is a json_v* (never None in Rust — defaults to Value::Null); error is a Str/0 (None).
 #
-# Byte layout (48 bytes):
+# Byte layout (56 bytes):
 #   +0   step_id_hi  (i64)
 #   +8   step_id_lo  (i64)
 #   +16  status      (i64 StepStatus)
@@ -662,4 +662,56 @@ fn step_result_to_json(r) {
         bayan_json_v_obj_set(o, str_from("error"), bayan_json_v_str_new(err));
     }
     return bayan_json_v_build(o);
+}
+
+# Build a StepResult from a parsed json_v object. Mirrors the StepResult serde Deserialize
+# (step.rs 247-255): step_id (UUID string), status (PascalCase serde name), output (json_v
+# subtree, Null when absent), duration_ms, attempts, error (Option<String>, None when null/
+# absent). Uses the port-wide lenient-deserializer convention (shared with _step_from_v /
+# _flow_from_v): every Rust-required field falls back to a default on missing/malformed input
+# rather than erroring — missing/malformed id -> fresh StepId, missing status -> Pending,
+# missing output -> Null, missing duration/attempts -> 0. Unobservable for real round-trips
+# (step_result_to_json always emits every field); see docs/development/parity-notes.md §3.
+# Internal; step_result_from_json wraps the Str entry. Returns 0 on OOM.
+fn _step_result_from_v(o) {
+    if (o == 0) { return 0; }
+    # step_id (UUID string; missing/malformed -> fresh generated id)
+    var hi, lo = uuid_generate();
+    var id_v = bayan_json_v_obj_get(o, "step_id");
+    if (bayan_json_v_is_str(id_v) == 1) {
+        var phi, plo = uuid_parse(str_cstr(bayan_json_v_str(id_v)));
+        if (uuid_parse_ok(phi, plo) == 1) { hi = phi; lo = plo; }
+    }
+    # status (PascalCase serde name; missing/unknown -> Pending, per step_status_from_name)
+    var status = STATUS_PENDING;
+    var st_v = bayan_json_v_obj_get(o, "status");
+    if (bayan_json_v_is_str(st_v) == 1) {
+        status = step_status_from_name(bayan_json_v_str(st_v));
+    }
+    # output (json_v subtree; missing -> Null, mirroring step_result_to_json's null default)
+    var out = bayan_json_v_obj_get(o, "output");
+    if (out == 0) { out = bayan_json_v_null(); }
+    # duration_ms / attempts (default 0)
+    var dur = 0;
+    var dur_v = bayan_json_v_obj_get(o, "duration_ms");
+    if (bayan_json_v_is_int(dur_v) == 1) { dur = bayan_json_v_int(dur_v); }
+    var att = 0;
+    var att_v = bayan_json_v_obj_get(o, "attempts");
+    if (bayan_json_v_is_int(att_v) == 1) { att = bayan_json_v_int(att_v); }
+    var r = step_result_new(hi, lo, status, out, dur, att);
+    if (r == 0) { return 0; }
+    # error (Option<String>; null/absent -> None)
+    var err_v = bayan_json_v_obj_get(o, "error");
+    if (bayan_json_v_is_str(err_v) == 1) {
+        step_result_set_error(r, bayan_json_v_str(err_v));
+    }
+    return r;
+}
+
+# Deserialize a StepResult from a JSON object Str. Inverse of step_result_to_json. Returns 0 on
+# parse failure / OOM.
+fn step_result_from_json(json) {
+    var o = bayan_json_v_parse(json);
+    if (o == 0) { return 0; }
+    return _step_result_from_v(o);
 }

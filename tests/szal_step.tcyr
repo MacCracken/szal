@@ -189,6 +189,24 @@ fn main() {
     assert_eq(contains_cstr(rnjson, "\"error\":null"), 1, "result json error null when None");
     assert_eq(contains_cstr(rnjson, "\"output\":null"), 1, "result json output null when absent");
 
+    # StepResult serde round-trip: to_json -> from_json preserves id, status, duration, attempts,
+    # output, and error. Mirrors the symmetry of the Rust derive(Serialize, Deserialize).
+    test_group("StepResult round-trip");
+    var rrt = step_result_from_json(rjson);
+    assert(rrt != 0, "round-trip parse ok");
+    assert_eq(step_result_id_hi(rrt), step_id_hi(ra), "round-trip id hi");
+    assert_eq(step_result_id_lo(rrt), step_id_lo(ra), "round-trip id lo");
+    assert_eq(step_result_status(rrt), STATUS_COMPLETED, "round-trip status");
+    assert_eq(step_result_duration_ms(rrt), 1234, "round-trip duration");
+    assert_eq(step_result_attempts(rrt), 2, "round-trip attempts");
+    assert_eq(bayan_json_v_int(step_result_output(rrt)), 42, "round-trip output value");
+    assert(str_eq_cstr(step_result_error(rrt), "boom"), "round-trip error preserved");
+    # error null / output null deserialize back to None(0) / Null
+    var rtn = step_result_from_json(rnjson);
+    assert(rtn != 0, "round-trip null parse ok");
+    assert_eq(step_result_status(rtn), STATUS_FAILED, "round-trip null status Failed");
+    assert_eq(step_result_error(rtn), 0, "round-trip error None when null");
+
     test_group("step_to_json — field presence");
     var sj = step_new(str_from("deploy"));
     sj = step_with_rollback(step_with_retries(step_with_timeout(sj, 60000), 3, 5000));

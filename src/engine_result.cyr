@@ -1,0 +1,177 @@
+# engine_result.cyr — FlowResult: the outcome of executing a complete flow
+#
+# Ports rust-old/src/engine/result.rs (FlowResult struct + completed/failed/skipped_count +
+# serde (de)serialization). FlowResult is a heap blob with an enum of byte-offset layout
+# constants and accessor fns (the majra heap-struct idiom). `steps` is a vec of StepResult*
+# (src/step.cyr). This is port-plan §4 row 8 — it MUST precede storage.cyr, which embeds an
+# Option<FlowResult> in its ExecutionRecord (breaks the storage<->engine module cycle).
+#
+# Usage: include "src/engine_result.cyr"
+# Requires: lib/str.cyr (Str), lib/vec.cyr, lib/alloc.cyr (alloc_init before any constructor),
+#   lib/bayan.cyr (json_v + flow_result_to_json/from_json; lib/io must be in scope before
+#   lib/bayan), src/step.cyr (StepResult accessors + StepStatus + step_result_to_json /
+#   step_result_from_json / _step_result_from_v).
+# Naming: every public symbol is flow_result_-prefixed; internal helpers use the _ prefix.
+
+# FlowResult — heap blob. Mirrors the Rust struct (engine/result.rs 29-35). The derive has no
+# skip_serializing attributes, so every field serializes unconditionally; field order is the
+# struct declaration order (= serde Serialize order).
+#
+# Byte layout (40 bytes):
+#   +0   flow_name          (Str ptr)
+#   +8   steps              (vec of StepResult ptrs)
+#   +16  total_duration_ms  (i64; Rust u64 carried as i64 — port-wide width mapping, see
+#                            docs/development/parity-notes.md §1. Unreachable magnitude for a ms
+#                            duration, so no observable divergence.)
+#   +24  success            (i64 1/0 bool)
+#   +32  rolled_back        (i64 1/0 bool)
+enum FlowResultL {
+    FR_SIZE = 40;
+    FR_FLOW_NAME = 0;
+    FR_STEPS = 8;
+    FR_TOTAL_DURATION_MS = 16;
+    FR_SUCCESS = 24;
+    FR_ROLLED_BACK = 32;
+}
+
+# Get the flow_name (Str ptr).
+fn flow_result_flow_name(fr) { return load64(fr + FR_FLOW_NAME); }
+
+# Get the steps vec (vec of StepResult ptrs).
+fn flow_result_steps(fr) { return load64(fr + FR_STEPS); }
+
+# Get the number of step results.
+fn flow_result_steps_len(fr) { return vec_len(load64(fr + FR_STEPS)); }
+
+# Get the StepResult* at index i.
+fn flow_result_step_at(fr, i) { return vec_get(load64(fr + FR_STEPS), i); }
+
+# Get total_duration_ms (i64).
+fn flow_result_total_duration_ms(fr) { return load64(fr + FR_TOTAL_DURATION_MS); }
+
+# Did the flow succeed? (1/0)
+fn flow_result_success(fr) { return load64(fr + FR_SUCCESS); }
+
+# Were completed steps rolled back? (1/0)
+fn flow_result_rolled_back(fr) { return load64(fr + FR_ROLLED_BACK); }
+
+# Allocate a FlowResult with an empty steps vec. flow_name is a Str; success/rolled_back are
+# 1/0 bools. Append results with flow_result_add_step. Returns 0 on OOM.
+fn flow_result_new(flow_name, total_duration_ms, success, rolled_back) {
+    var fr = alloc(FR_SIZE);
+    if (fr == 0) { return 0; }
+    store64(fr + FR_FLOW_NAME, flow_name);
+    store64(fr + FR_STEPS, vec_new());
+    store64(fr + FR_TOTAL_DURATION_MS, total_duration_ms);
+    store64(fr + FR_SUCCESS, success);
+    store64(fr + FR_ROLLED_BACK, rolled_back);
+    return fr;
+}
+
+# Append a StepResult* to the flow's steps vec. Returns fr.
+fn flow_result_add_step(fr, sr) {
+    if (fr == 0) { return 0; }
+    vec_push(load64(fr + FR_STEPS), sr);
+    return fr;
+}
+
+# Count steps whose status == `want` (a StepStatus). Internal; the count helpers below mirror
+# the Rust `.iter().filter(|s| s.status == ...).count()` one-liners exactly.
+fn _flow_result_count_status(fr, want) {
+    var n = flow_result_steps_len(fr);
+    var c = 0;
+    var i = 0;
+    while (i < n) {
+        if (step_result_status(flow_result_step_at(fr, i)) == want) { c = c + 1; }
+        i = i + 1;
+    }
+    return c;
+}
+
+# Number of Completed steps. Mirrors FlowResult::completed_count (engine/result.rs 38-44).
+fn flow_result_completed_count(fr) {
+    return _flow_result_count_status(fr, STATUS_COMPLETED);
+}
+
+# Number of Failed steps. Mirrors FlowResult::failed_count (engine/result.rs 46-52).
+fn flow_result_failed_count(fr) {
+    return _flow_result_count_status(fr, STATUS_FAILED);
+}
+
+# Number of Skipped steps. Mirrors FlowResult::skipped_count (engine/result.rs 54-60).
+fn flow_result_skipped_count(fr) {
+    return _flow_result_count_status(fr, STATUS_SKIPPED);
+}
+
+# --- JSON (de)serialization ---
+
+# Serialize a FlowResult to a JSON object Str. Field set + order matches the serde Serialize of
+# FlowResult (no skip attributes): flow_name, steps (array of StepResult objects),
+# total_duration_ms, success, rolled_back. Each step element is step_result_to_json reparsed
+# into a json_v subtree (the same build-then-parse idiom step_to_json uses for sub_steps).
+fn flow_result_to_json(fr) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("flow_name"),
+    bayan_json_v_str_new(flow_result_flow_name(fr)));
+    var steps = bayan_json_v_arr_new();
+    var n = flow_result_steps_len(fr);
+    var i = 0;
+    while (i < n) {
+        bayan_json_v_arr_push(steps,
+        bayan_json_v_parse(step_result_to_json(flow_result_step_at(fr, i))));
+        i = i + 1;
+    }
+    bayan_json_v_obj_set(o, str_from("steps"), steps);
+    bayan_json_v_obj_set(o, str_from("total_duration_ms"),
+    bayan_json_v_int_new(flow_result_total_duration_ms(fr)));
+    bayan_json_v_obj_set(o, str_from("success"),
+    bayan_json_v_bool_new(flow_result_success(fr)));
+    bayan_json_v_obj_set(o, str_from("rolled_back"),
+    bayan_json_v_bool_new(flow_result_rolled_back(fr)));
+    return bayan_json_v_build(o);
+}
+
+# Build a FlowResult from a parsed json_v object with serde-default semantics: every field
+# falls back to its zero value rather than aborting (flow_name "", empty steps, durations 0,
+# success/rolled_back false). This is the port-wide lenient-deserializer convention shared with
+# _step_from_v / _flow_from_v / _step_result_from_v — Rust serde would error on a missing
+# required field; the port defaults instead. Unobservable for real round-trips (flow_result_to_json
+# always emits every field); see docs/development/parity-notes.md §3. Internal;
+# flow_result_from_json wraps the Str entry. Returns 0 on OOM.
+fn _flow_result_from_v(o) {
+    if (o == 0) { return 0; }
+    var name_v = bayan_json_v_obj_get(o, "flow_name");
+    var name = str_from("");
+    if (bayan_json_v_is_str(name_v) == 1) { name = bayan_json_v_str(name_v); }
+    var dur = 0;
+    var dur_v = bayan_json_v_obj_get(o, "total_duration_ms");
+    if (bayan_json_v_is_int(dur_v) == 1) { dur = bayan_json_v_int(dur_v); }
+    var success = 0;
+    var su_v = bayan_json_v_obj_get(o, "success");
+    if (bayan_json_v_is_bool(su_v) == 1) { success = bayan_json_v_bool(su_v); }
+    var rb = 0;
+    var rb_v = bayan_json_v_obj_get(o, "rolled_back");
+    if (bayan_json_v_is_bool(rb_v) == 1) { rb = bayan_json_v_bool(rb_v); }
+    var fr = flow_result_new(name, dur, success, rb);
+    if (fr == 0) { return 0; }
+    # steps (default empty; array of StepResult objects)
+    var steps_v = bayan_json_v_obj_get(o, "steps");
+    if (bayan_json_v_is_arr(steps_v) == 1) {
+        var sn = bayan_json_v_arr_len(steps_v);
+        var i = 0;
+        while (i < sn) {
+            var sr = _step_result_from_v(bayan_json_v_arr_get(steps_v, i));
+            if (sr != 0) { flow_result_add_step(fr, sr); }
+            i = i + 1;
+        }
+    }
+    return fr;
+}
+
+# Deserialize a FlowResult from a JSON object Str. Inverse of flow_result_to_json. Returns 0
+# on parse failure / OOM.
+fn flow_result_from_json(json) {
+    var o = bayan_json_v_parse(json);
+    if (o == 0) { return 0; }
+    return _flow_result_from_v(o);
+}
