@@ -10,10 +10,9 @@
 # This is port-plan §4 row 10.
 #
 # Usage: include "src/metrics.cyr"
-# Requires: src/vendor/majra_metrics.cyr (METRICS_VTABLE_SIZE, noop_metrics, metrics_workflow_*),
-#   which itself needs lib/freelist (fl_alloc) + lib/fnptr (fncall2). The full majra dist is a
-#   deferred 2.0.0 deliverable (docs/development/majra-vendoring.md); the shim is the interim
-#   source of the metrics surface and is drop-in replaceable by the full dist.
+# Requires: src/vendor/majra.cyr (the full vendored majra 2.4.6 dist — provides
+#   METRICS_VTABLE_SIZE, noop_metrics, metrics_workflow_*), which needs lib/freelist (fl_alloc),
+#   lib/fnptr (fncall2), and lib/thread (chan_/mutex_). See docs/development/majra-vendoring.md.
 # Naming: wrappers are metric_-prefixed (mirroring the Rust crate-internal fn names).
 
 # Workflow run started. sink is a metrics vtable ptr (0 = None -> no-op). workflow_id is a Str.

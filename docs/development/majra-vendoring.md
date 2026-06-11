@@ -1,13 +1,17 @@
-# Full majra vendoring — deferred engineering spec (MUST land in 2.0.0)
+# Full majra vendoring — ✅ DONE (2026-06-11), majra 2.4.6 at `src/vendor/majra.cyr`
 
-> **Status: REQUIRED, not optional.** The metrics module ships an interim shim (see §6), but the
-> full majra dist MUST be vendored before the majra-heavy rows can land. This doc captures the
-> complete integration plan + every blocker found on 2026-06-11 so the work is **not re-discovered
-> from scratch**. Owner of the next majra-touching row: read this first.
+> **Status: COMPLETE.** The full majra dist is vendored at `src/vendor/majra.cyr` (3,131 lines,
+> 9-symbol collision rename applied via `scripts/sync-majra.sh`), included in `main.cyr`, and the
+> whole suite is green (726 assertions, 0 duplicate-symbol warnings). The interim metrics shim
+> (`src/vendor/majra_metrics.cyr`) has been **retired** and `metrics.cyr` repointed at the full dist.
 >
-> Tracked in [`roadmap.md`](roadmap.md) as an explicit M2 prerequisite (before row 18
-> `engine_queue_runner`). It also gates rows 19 (`engine_distributed`), and M3
-> `stream`/`mcp_pool`.
+> This doc is kept as the **maintenance record** for re-syncing majra and for the collision
+> rationale. The "blockers" below are annotated with how they actually resolved.
+>
+> **The §3 bigint blocker was a FALSE ALARM:** the core `dist/majra.cyr` references **zero**
+> `bigint`/`tls`/`sandhi`/`patra` symbols (those were over-listed in majra's cyml hint, used only
+> by its *other* bundles). The only stdlib addition the full dist needed was **`lib/thread.cyr`**
+> (chan_/mutex_); everything else was already in `main.cyr`.
 
 ## 1. Why it's required (what needs full majra)
 
@@ -87,31 +91,32 @@ module, which is **dead code for szal**. Stripping that module (by `# --- <modul
 boundaries) would remove most collisions at the source and cut bloat, but risks removing something
 mq/fleet transitively need. Renaming (5a) is lower-risk and was the chosen approach.
 
-## 6. Interim: metrics-only shim (shipped row 10, 2026-06-11)
+## 6. Interim metrics-only shim — RETIRED (was row 10 → superseded same day)
 
-majra's `metrics.cyr` module (dist lines 358–522, ~117 lines) is **fully self-contained** (only
-`fl_alloc` + `fncall2` + load/store) and **collision-free** (none of the 9 tokens appear in it). It
-is vendored as `src/vendor/majra_metrics.cyr` to unblock `src/metrics.cyr` without the full dist.
-**When the full dist lands, delete `src/vendor/majra_metrics.cyr` and repoint `metrics.cyr` at the
-full `src/vendor/majra.cyr` (same `METRICS_VTABLE_SIZE`/`noop_metrics`/`metrics_workflow_*`
-surface — drop-in).** The shim's vtable layout is byte-identical to the full dist's, so nothing
-downstream changes.
+A metrics-only shim (`src/vendor/majra_metrics.cyr`, just majra's self-contained `metrics.cyr`
+module) was shipped first to unblock `metrics.cyr` while the full dist was thought blocked. Once
+the bigint "blocker" proved false (§intro), the full dist was vendored and the shim **deleted**;
+`metrics.cyr` was repointed at `src/vendor/majra.cyr` (identical `METRICS_VTABLE_SIZE`/
+`noop_metrics`/`metrics_workflow_*` surface — it was a true drop-in, nothing downstream changed).
+`scripts/sync-majra-metrics.sh` was also removed, superseded by `scripts/sync-majra.sh`.
 
-## 7. Stdlib footprint to add to `main.cyr` (and the `[lib]` order) for the full dist
+## 7. Stdlib footprint actually needed (much smaller than the cyml hint implied)
 
-Beyond what `main.cyr` already includes, full majra needs: **`thread`, `net`, `bench`, `bigint`,
-`fs`, `patra`, `tls`, `sandhi`** (full majra stdlib: assert, alloc, freelist, vec, str, string, fmt,
-syscalls, hashmap, tagged, fnptr, thread, io, net, bench, bigint, fs, patra, tls, sandhi). All but
-`bigint` are present in `lib/` today (see §3). Add them in single-pass order before
-`src/vendor/majra.cyr`.
+The full `dist/majra.cyr` only needed **one** stdlib addition to `main.cyr`: **`lib/thread.cyr`**
+(provides `chan_*` + `mutex_*`; everything else — string/fmt/alloc/freelist/vec/str/hashmap/
+syscalls/tagged/result/fnptr/io/chrono — was already included). It references **none** of
+`bigint`/`tls`/`sandhi`/`patra`/`net`/`fs`/`bench`. Note: `lib/sync.cyr` also defines `mutex_*`,
+so include `thread` but **not** `sync` (else last-wins duplicate warnings on `mutex_new/lock/unlock`).
 
-## 8. Acceptance checklist (when this lands)
+## 8. Acceptance checklist — ✅ all done (2026-06-11)
 
-- [ ] `lib/bigint.cyr` resolved (§3).
-- [ ] `scripts/sync-majra.sh` written (§5a) + committed; produces `src/vendor/majra.cyr`.
-- [ ] Re-run the 9-collision `comm` check vs the pinned majra — confirm no NEW clashes.
-- [ ] `main.cyr` + `cyrius.cyml [lib]` include the §7 stdlib + `src/vendor/majra.cyr` in order.
-- [ ] `cyrius build --strict` clean (no undefined fns, no duplicate-symbol warnings).
-- [ ] Delete `src/vendor/majra_metrics.cyr`; repoint `src/metrics.cyr` at the full dist (§6).
-- [ ] CHANGELOG 2.0.0: note majra 2.4.5 vendored + the `MJ_`/`majra_` rename of its bundled
-      workflow surface.
+- [x] `lib/bigint.cyr` — N/A (core dist doesn't reference it; §intro).
+- [x] `scripts/sync-majra.sh` written (§5a) + committed; produces `src/vendor/majra.cyr` (3,131 lines).
+- [x] Re-ran the 9-collision `comm` check vs majra 2.4.6 — same 9 symbols, no NEW clashes.
+- [x] `main.cyr` includes `lib/thread.cyr` + `src/vendor/majra.cyr` in single-pass order.
+- [x] `cyrius build --strict` clean — full main (all szal modules + full majra) has **0 undefined
+      fns, 0 duplicate-symbol warnings**; `./build/szal` runs; 726 assertions green.
+- [x] Deleted `src/vendor/majra_metrics.cyr` + `scripts/sync-majra-metrics.sh`; repointed `metrics.cyr`.
+- [ ] **TODO (M5):** CHANGELOG 2.0.0 — note majra 2.4.6 vendored + the `MJ_`/`majra_` rename of its
+      bundled workflow surface. Also: `cyrius.cyml` pin says 2.4.5 but the checkout/vendor is 2.4.6 —
+      reconcile the pin at release (dist byte-identical, so functionally equal).

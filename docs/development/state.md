@@ -81,17 +81,20 @@ unblocked.
   the vtable ptr with `0 = None` (no-op guard). `MetricsSink = Option<Arc<dyn MajraMetrics>>` →
   vtable-ptr handle (AGNOS "hand the consumer the vtable" model). `tests/szal_metrics.tcyr` (13)
   mirrors the Rust none/noop tests + a dispatch proof (wrapper reaches vtable slot 136).
-  - **majra vendoring — interim shim only.** Full majra is blocked (9-symbol collision +
-    missing `lib/bigint.cyr`) and disproportionate for metrics, so only majra's self-contained
-    metrics module is vendored: `src/vendor/majra_metrics.cyr` (synced from majra **2.4.6** by
-    `scripts/sync-majra-metrics.sh`; cyrius.cyml still pins 2.4.5 — patch drift, metrics module
-    byte-stable). **Full majra is a REQUIRED, scheduled 2.0.0 deliverable** — complete spec +
-    blockers in `docs/development/majra-vendoring.md`, tracked in `roadmap.md` M2. When it lands,
-    delete the shim and repoint `metrics.cyr` (drop-in, identical vtable surface).
+- ✅ **Full majra vendored** `src/vendor/majra.cyr` (majra **2.4.6**, 3,131 lines) via
+  `scripts/sync-majra.sh`, with the 9-symbol szal-collision rename (`MJ_ERR_`/`MJ_STEP_`/
+  `MJ_TRIGGER_` + `majra_uuid_generate`/`majra_step_result_new`). The earlier "blockers" dissolved:
+  the core dist references **no** `bigint`/`tls`/`sandhi`/`patra`, so the only stdlib addition was
+  `lib/thread.cyr`. Full main (all szal modules + full majra) builds `--strict` with **0 undefined
+  fns, 0 duplicate-symbol warnings**. The interim metrics shim was **retired** (deleted; `metrics.cyr`
+  repointed — drop-in). This unblocks the majra-heavy rows (`engine_queue_runner`,
+  `engine_distributed`, M3 `stream`/`mcp_pool`). cyrius.cyml pin still reads 2.4.5 → reconcile at
+  M5 (dist byte-identical). Spec/maintenance record: `docs/development/majra-vendoring.md`.
 - ⏳ Next: row 11 `engine_core.cyr` (the big one: `engine/mod.rs` minus `sub_flow_handler` —
   FlowCtx/ExecCtx, EngineConfig, handler ABI, check_condition; needs no majra, holds `metrics_vt`
-  as an opaque slot). Then step_exec → sequential → dag → hierarchical (pure logic, unblocked);
-  parallel/hardware/queue_runner/distributed gated on Q9/Q10/Q11 + full majra.
+  as an opaque slot). Then step_exec → sequential → dag → hierarchical (pure logic, unblocked).
+  Parallel/hardware still gated on Q9/Q10/Q11; queue_runner/distributed now have majra (still need
+  the concurrency sign-off).
 
 ## Toolchain gotchas found during the port (for docs/cyrius-feedback.md)
 
@@ -121,7 +124,9 @@ warnings); only `cyrius build` verdicts are authoritative.
 - stdlib (88 modules via `cyrius lib sync`): string, fmt, alloc, freelist, vec, str, hashmap,
   syscalls, tagged, result, fnptr, chrono, bayan (JSON), sakshi/log, patra, sigil, …
 - `[deps.ai-hwaccel]` 2.3.9 (declared; overlaid by `cyrius deps` from M2 onward).
-- bote-core 2.7.3 + majra 2.4.5 — vendored at `src/vendor/` when engine/MCP land (M2/M3).
+- **majra 2.4.6 — VENDORED** at `src/vendor/majra.cyr` (full dist, 9-symbol collision rename; needs
+  `lib/thread.cyr`). Re-sync: `scripts/sync-majra.sh`. See [`majra-vendoring.md`](majra-vendoring.md).
+- bote-core 2.7.3 — vendored at `src/vendor/bote-core.cyr` when M3 MCP lands.
 
 ## Consumers
 

@@ -63,8 +63,8 @@ Foundation modules (no engine, no MCP — pure data + algorithms):
 
 - [x] `src/engine_result.cyr` — `FlowResult` (must precede storage; breaks the storage↔engine cycle) ✅
 - [x] `src/storage.cyr` — `WorkflowStorage` + `ExecutionStore` fn-pointer vtables, in-memory impls ✅
-- [ ] `src/metrics.cyr` — majra 22-slot metrics vtable + thin wrappers *(interim: over the metrics-only shim `src/vendor/majra_metrics.cyr`)*
-- [ ] **Full majra vendoring** (`src/vendor/majra.cyr` 2.4.5 + `scripts/sync-majra.sh`) — REQUIRED before `engine_queue_runner`/`engine_distributed` (and M3 `stream`/`mcp_pool`). Blocked on missing `lib/bigint.cyr`; needs a 9-symbol collision rename + 8 stdlib includes. **Full spec + blockers in [`majra-vendoring.md`](majra-vendoring.md) — do not re-discover.** When it lands, retire the metrics shim.
+- [x] `src/metrics.cyr` — majra 22-slot metrics vtable + thin wrappers ✅
+- [x] **Full majra vendoring** ✅ `src/vendor/majra.cyr` (majra 2.4.6, 3,131 lines) via `scripts/sync-majra.sh` — 9-symbol collision rename applied (`MJ_ERR_`/`MJ_STEP_`/`MJ_TRIGGER_` + `majra_uuid_generate`/`majra_step_result_new`); only `lib/thread.cyr` needed (bigint was a false alarm). Build clean, 0 dup-symbol warnings. Unblocks `engine_queue_runner`/`engine_distributed` + M3 `stream`/`mcp_pool`. See [`majra-vendoring.md`](majra-vendoring.md).
 - [ ] `src/engine_core.cyr` — `FlowCtx`/`ExecCtx`, `EngineConfig`, `check_condition`, (fn-ptr, ctx) handler ABI (everything in `engine/mod.rs` except `sub_flow_handler`)
 - [ ] `src/engine_step_exec.cyr` — retry/backoff/timeout via worker-thread + deadline (not `async_timeout` — it forks)
 - [ ] `src/engine_sequential.cyr` — in-order; exact skip-reason strings

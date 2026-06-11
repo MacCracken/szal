@@ -24,10 +24,12 @@ include "lib/bayan.cyr"
 include "lib/chrono.cyr"
 include "lib/sakshi.cyr"
 include "lib/log.cyr"
+include "lib/thread.cyr"
 
-# --- vendored deps (hoosh pattern). majra metrics is the interim shim; the FULL majra dist is a
-# deferred 2.0.0 deliverable — see docs/development/majra-vendoring.md. ---
-include "src/vendor/majra_metrics.cyr"
+# --- vendored deps (hoosh pattern). Full majra 2.4.6 dist with szal-collision renames applied
+# (MJ_ERR_/MJ_STEP_/MJ_TRIGGER_ + majra_uuid_generate/majra_step_result_new) — synced by
+# scripts/sync-majra.sh. See docs/development/majra-vendoring.md. ---
+include "src/vendor/majra.cyr"
 
 # --- szal foundation modules (port-plan §4 topological order) ---
 include "src/error.cyr"
