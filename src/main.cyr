@@ -1,0 +1,13 @@
+# szal — Cyrius port
+# Ported from 13172 lines of Rust
+
+# Stdlib auto-included via cyrius.cyml
+
+fn main() {
+    alloc_init();
+    println("szal ready");
+    return 0;
+}
+
+var r = main();
+syscall(SYS_EXIT, r);

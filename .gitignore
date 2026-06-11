@@ -17,3 +17,7 @@ criterion/
 .env
 .env.*
 .claude/
+
+# Cyrius port
+/rust-old/target/
+/build/
