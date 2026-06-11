@@ -1,0 +1,123 @@
+# szal_engine_sequential.tcyr — run_sequential (engine_sequential.cyr) unit tests.
+#
+# Ports the sequential executor semantics: in-order success, mid-failure cascade ("prior step
+# failed"), condition skip ("condition not met"), flow-timeout skip, and cancellation skip — with
+# the exact reason strings and Skipped result shape.
+#   cyrius build --strict --no-deps tests/szal_engine_sequential.tcyr build/test_engine_sequential
+#   ./build/test_engine_sequential
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_sequential.cyr"
+
+# Handler: fails (Err) for a step named "boom", else succeeds with Ok(1).
+fn _seq_handler(step, ctx) {
+    if (str_eq_cstr(step_name(step), "boom") == 1) { return Err(str_from("kaboom")); }
+    return Ok(bayan_json_v_int_new(1));
+}
+
+fn _mk_ctx() {
+    var handler = cb_new(&_seq_handler, 0);
+    var flow = flow_ctx_new(str_from("flow"), 0, 0);
+    return exec_ctx_new(handler, 0, flow, 0, 0, 0, cache_new());
+}
+
+fn _vec_of(a, b, c) {
+    var v = vec_new();
+    vec_push(v, a);
+    if (b != 0) { vec_push(v, b); }
+    if (c != 0) { vec_push(v, c); }
+    return v;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    # --- all pass, in order ---
+    test_group("all pass in order");
+    var steps1 = _vec_of(step_new(str_from("a")), step_new(str_from("b")), step_new(str_from("c")));
+    var r1 = run_sequential(steps1, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r1), 3, "three results");
+    assert_eq(step_result_status(vec_get(r1, 0)), STATUS_COMPLETED, "a Completed");
+    assert_eq(step_result_status(vec_get(r1, 1)), STATUS_COMPLETED, "b Completed");
+    assert_eq(step_result_status(vec_get(r1, 2)), STATUS_COMPLETED, "c Completed");
+
+    # --- mid failure -> subsequent steps skipped "prior step failed" ---
+    test_group("mid failure cascades");
+    var steps2 = _vec_of(step_new(str_from("a")), step_new(str_from("boom")), step_new(str_from("c")));
+    var r2 = run_sequential(steps2, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r2, 0)), STATUS_COMPLETED, "a Completed");
+    assert_eq(step_result_status(vec_get(r2, 1)), STATUS_FAILED, "boom Failed");
+    assert_eq(step_result_status(vec_get(r2, 2)), STATUS_SKIPPED, "c Skipped");
+    assert(str_eq_cstr(step_result_error(vec_get(r2, 2)), "prior step failed"),
+    "skip reason: prior step failed");
+
+    # --- condition not met -> skip ---
+    test_group("condition not met skip");
+    var build = step_new(str_from("build"));
+    # gate on build having FAILED; build will succeed, so the gate is not met
+    var gated = step_with_condition(step_new(str_from("gated")),
+    str_from("steps.build.status == 'failed'"));
+    var steps3 = _vec_of(build, gated, 0);
+    var r3 = run_sequential(steps3, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r3, 0)), STATUS_COMPLETED, "build Completed");
+    assert_eq(step_result_status(vec_get(r3, 1)), STATUS_SKIPPED, "gated Skipped");
+    assert(str_eq_cstr(step_result_error(vec_get(r3, 1)), "condition not met"),
+    "skip reason: condition not met");
+
+    # --- flow timeout exceeded -> skip (start in the past) ---
+    test_group("flow timeout skip");
+    var steps4 = _vec_of(step_new(str_from("a")), step_new(str_from("b")), 0);
+    var past = clock_now_ms() - 1000;
+    var r4 = run_sequential(steps4, 10, past, 0, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r4, 0)), STATUS_SKIPPED, "a Skipped (timeout)");
+    assert(str_eq_cstr(step_result_error(vec_get(r4, 0)), "flow timeout exceeded"),
+    "skip reason: flow timeout exceeded");
+    assert_eq(step_result_status(vec_get(r4, 1)), STATUS_SKIPPED, "b Skipped (timeout)");
+
+    # --- cancellation -> skip "cancelled" ---
+    test_group("cancellation skip");
+    var tok = cancel_token_new();
+    cancel_token_signal(tok);
+    var steps5 = _vec_of(step_new(str_from("a")), step_new(str_from("b")), 0);
+    var r5 = run_sequential(steps5, 60000, clock_now_ms(), tok, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r5, 0)), STATUS_SKIPPED, "a Skipped (cancelled)");
+    assert(str_eq_cstr(step_result_error(vec_get(r5, 0)), "cancelled"), "skip reason: cancelled");
+    assert_eq(step_result_status(vec_get(r5, 1)), STATUS_SKIPPED, "b Skipped (cancelled)");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

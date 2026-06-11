@@ -1,0 +1,160 @@
+# engine_parallel.cyr — parallel (bounded fan-out) flow execution
+#
+# Ports rust-old/src/engine/parallel.rs (run_parallel). port-plan §4 row 14. Runs steps concurrently
+# on worker threads, bounded by a `max_concurrency` permit semaphore, then joins in spawn order.
+#
+# Threading model (port-plan §1.7 + parity-notes §8): each step runs on its own worker thread
+# (`thread_create`); concurrency is capped by a counting semaphore built from a bounded channel
+# (`chan_new(N)` pre-filled with N tokens; acquire = `chan_recv`, release = `chan_send`). Cancel
+# tokens map 1:1 to Rust's `CancellationToken`. Two unavoidable thread deltas vs tokio (§8):
+#   - `thread_join` returns no value, so each worker writes its StepResult into a per-worker SLOT
+#     that the joiner reads — equivalent observable result.
+#   - at join, a cancelled/timed-out step is Skipped and its worker ORPHANED (OS threads can't be
+#     `handle.abort()`-ed). Safe: cancellation/timeout is monotonic, so once we start skipping every
+#     remaining step is skipped too — no later join blocks on a permit an orphan still holds.
+# Concurrent allocation (main spawning while workers run) is safe: `alloc()` is thread-safe
+# (lib/alloc global lock, v6.0.64); handler errors are per-worker isolated (`Err(message_Str)`).
+#
+# Note: a genuine handler CRASH cannot be caught across threads in Cyrius (no unwinding) — it aborts
+# the process, so Rust's "task panicked" recovery path is only reached here on a thread_create
+# failure (a real panic isn't observable). See parity-notes §8.
+#
+# Usage: include "src/engine_parallel.cyr" (after engine_core + engine_step_exec).
+# Requires: src/engine_core.cyr, src/engine_step_exec.cyr, src/step.cyr, src/bus.cyr, src/uuid.cyr,
+#   lib/thread.cyr (thread_create/join, chan_*), lib/async.cyr (cancel_token_check),
+#   lib/chrono.cyr (clock_now_ms), lib/vec.cyr.
+# Naming: public symbol is run_parallel; the worker + its arg/record layouts are internal.
+
+# Worker-thread argument: {step, ExecCtx, semaphore, result-slot}.
+enum ParArgL {
+    PA_SIZE = 32;
+    PA_STEP = 0;
+    PA_CTX = 8;
+    PA_SEM = 16;
+    PA_SLOT = 24;
+}
+
+# Per-spawned-step bookkeeping the joiner walks (in spawn order): {thread handle, step, result-slot}.
+enum ParRecL {
+    PR_REC_SIZE = 24;
+    PRR_T = 0;
+    PRR_STEP = 8;
+    PRR_SLOT = 16;
+}
+
+# Worker body: acquire a permit, run the step, publish its StepResult into the slot, release.
+fn _par_worker(arg) {
+    var sem = load64(arg + PA_SEM);
+    chan_recv(sem);
+    var res = execute_step_with_handler(load64(arg + PA_STEP), load64(arg + PA_CTX));
+    store64(load64(arg + PA_SLOT), res);
+    chan_send(sem, 1);
+    return 0;
+}
+
+# Emit step_skipped + push a Skipped StepResult (output null, duration 0, attempts 0, error=reason)
+# for `step` with cstr `reason` into `out`. Internal.
+fn _par_skip(out, event_sink, step, reason) {
+    var sid = uuid_to_str(step_id_hi(step), step_id_lo(step));
+    emit(event_sink, event_step_skipped(step_name(step), sid, str_from(reason)));
+    var sr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_SKIPPED,
+    bayan_json_v_null(), 0, 0);
+    step_result_set_error(sr, str_from(reason));
+    vec_push(out, sr);
+    return 0;
+}
+
+# Run `steps` (a vec of StepDef*) with up to `max_concurrency` concurrent workers under `ctx`.
+# `timeout_ms`/`start_ms` are the flow deadline budget + start timestamp; `token` is a cancel token
+# (0 = None). Returns a vec of StepResult*: condition-skipped steps FIRST (in order), then the
+# spawned steps in spawn order — matching run_parallel (parallel.rs 140-142). Conditions are
+# evaluated BEFORE spawning, against only the already-pre-skipped results (parallel.rs 30-57).
+fn run_parallel(steps, max_concurrency, timeout_ms, start_ms, token, ctx) {
+    var permits = max_concurrency;
+    if (permits < 1) { permits = 1; }
+    var sem = chan_new(permits);
+    var f = 0;
+    while (f < permits) {
+        chan_send(sem, 1);
+        f = f + 1;
+    }
+
+    var event_sink = exec_ctx_event_sink(ctx);
+    var cache = exec_ctx_condition_cache(ctx);
+    var pre_skipped = vec_new();
+    var handles = vec_new();
+    var n = vec_len(steps);
+
+    # Phase 1: condition pre-pass (Ok(false) -> skip before spawn; Err -> spawn anyway) + spawn.
+    var i = 0;
+    while (i < n) {
+        var step = vec_get(steps, i);
+        var skip = 0;
+        var cond = step_condition(step);
+        if (cond != 0) {
+            var cr = check_condition(step, pre_skipped, steps, cache);
+            if (is_ok(cr) == 1) {
+                if (result_unwrap(cr) == 0) { skip = 1; }
+            }
+        }
+        if (skip == 1) {
+            _par_skip(pre_skipped, event_sink, step, "condition not met");
+        } else {
+            var slot = alloc(8);
+            store64(slot, 0);
+            var arg = alloc(PA_SIZE);
+            store64(arg + PA_STEP, step);
+            store64(arg + PA_CTX, ctx);
+            store64(arg + PA_SEM, sem);
+            store64(arg + PA_SLOT, slot);
+            var rec = alloc(PR_REC_SIZE);
+            store64(rec + PRR_T, thread_create(&_par_worker, arg));
+            store64(rec + PRR_STEP, step);
+            store64(rec + PRR_SLOT, slot);
+            vec_push(handles, rec);
+        }
+        i = i + 1;
+    }
+
+    # Phase 2: join in spawn order. A cancelled/timed-out step is Skipped (worker orphaned).
+    var results = vec_new();
+    var hn = vec_len(handles);
+    var k = 0;
+    while (k < hn) {
+        var rec = vec_get(handles, k);
+        var step = load64(rec + PRR_STEP);
+        var cancelled = 0;
+        if (token != 0) {
+            if (cancel_token_check(token) == 1) { cancelled = 1; }
+        }
+        var timed_out = 0;
+        if (clock_now_ms() - start_ms > timeout_ms) { timed_out = 1; }
+        if (cancelled == 1) {
+            _par_skip(results, event_sink, step, "cancelled");
+        } elif (timed_out == 1) {
+            _par_skip(results, event_sink, step, "flow timeout exceeded");
+        } else {
+            thread_join(load64(rec + PRR_T));
+            var res = load64(load64(rec + PRR_SLOT));
+            if (res == 0) {
+                # No result published (thread_create failed) -> the "task panicked" path.
+                var fr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
+                bayan_json_v_null(), 0, 0);
+                step_result_set_error(fr, str_from("task panicked"));
+                vec_push(results, fr);
+            } else {
+                vec_push(results, res);
+            }
+        }
+        k = k + 1;
+    }
+
+    # Final order: condition-skipped first, then the spawned results (parallel.rs 141-142).
+    var m = 0;
+    var rn = vec_len(results);
+    while (m < rn) {
+        vec_push(pre_skipped, vec_get(results, m));
+        m = m + 1;
+    }
+    return pre_skipped;
+}

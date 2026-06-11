@@ -25,6 +25,7 @@ include "lib/chrono.cyr"
 include "lib/sakshi.cyr"
 include "lib/log.cyr"
 include "lib/thread.cyr"
+include "lib/async.cyr"
 
 # --- vendored deps (hoosh pattern). Full majra 2.4.6 dist with szal-collision renames applied
 # (MJ_ERR_/MJ_STEP_/MJ_TRIGGER_ + majra_uuid_generate/majra_step_result_new) — synced by
@@ -44,6 +45,13 @@ include "src/migration.cyr"
 include "src/engine_result.cyr"
 include "src/storage.cyr"
 include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_sequential.cyr"
+include "src/engine_hierarchical.cyr"
+include "src/engine_parallel.cyr"
+include "src/engine_dag.cyr"
+include "src/engine_queue_runner.cyr"
 
 fn main() {
     alloc_init();

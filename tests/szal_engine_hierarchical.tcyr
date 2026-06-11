@@ -1,0 +1,126 @@
+# szal_engine_hierarchical.tcyr — run_hierarchical (engine_hierarchical.cyr) unit tests.
+#
+# Ports the hierarchical executor semantics: pre-order success recursion, parent-failure skips its
+# subtree ("parent step failed"), sibling cascade ("prior step failed"), condition skip of a whole
+# subtree, and cancellation — with the exact reason strings and flat pre-order result order.
+#   cyrius build --strict --no-deps tests/szal_engine_hierarchical.tcyr build/test_engine_hierarchical
+#   ./build/test_engine_hierarchical
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_hierarchical.cyr"
+
+# Handler: fails for a step named "boom", else succeeds.
+fn _h_handler(step, ctx) {
+    if (str_eq_cstr(step_name(step), "boom") == 1) { return Err(str_from("kaboom")); }
+    return Ok(bayan_json_v_int_new(1));
+}
+
+fn _mk_ctx() {
+    var handler = cb_new(&_h_handler, 0);
+    var flow = flow_ctx_new(str_from("flow"), 0, 0);
+    return exec_ctx_new(handler, 0, flow, 0, 0, 0, cache_new());
+}
+
+fn _single(s) { var v = vec_new(); vec_push(v, s); return v; }
+
+# Build a parent step with two named children.
+fn _parent_with_two(pname, c1, c2) {
+    var p = step_new(str_from(pname));
+    return step_with_sub_step(step_with_sub_step(p, c1), c2);
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    # --- nested success: flat pre-order [parent, child1, child2] ---
+    test_group("nested success pre-order");
+    var p1 = _parent_with_two("p", step_new(str_from("c1")), step_new(str_from("c2")));
+    var r1 = run_hierarchical(_single(p1), 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r1), 3, "3 results (parent + 2 children)");
+    assert_eq(step_result_status(vec_get(r1, 0)), STATUS_COMPLETED, "parent Completed (pre-order first)");
+    assert_eq(step_result_status(vec_get(r1, 1)), STATUS_COMPLETED, "child1 Completed");
+    assert_eq(step_result_status(vec_get(r1, 2)), STATUS_COMPLETED, "child2 Completed");
+
+    # --- parent fails -> its children skipped "parent step failed" ---
+    test_group("parent failure skips subtree");
+    var p2 = _parent_with_two("boom", step_new(str_from("c1")), step_new(str_from("c2")));
+    var r2 = run_hierarchical(_single(p2), 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r2), 3, "parent + 2 skipped children");
+    assert_eq(step_result_status(vec_get(r2, 0)), STATUS_FAILED, "parent Failed");
+    assert_eq(step_result_status(vec_get(r2, 1)), STATUS_SKIPPED, "child1 Skipped");
+    assert(str_eq_cstr(step_result_error(vec_get(r2, 1)), "parent step failed"),
+    "child reason: parent step failed");
+    assert_eq(step_result_status(vec_get(r2, 2)), STATUS_SKIPPED, "child2 Skipped");
+
+    # --- sibling cascade: a, boom, c at top level ---
+    test_group("sibling cascade");
+    var sibs = vec_new();
+    vec_push(sibs, step_new(str_from("a")));
+    vec_push(sibs, step_new(str_from("boom")));
+    vec_push(sibs, step_new(str_from("c")));
+    var r3 = run_hierarchical(sibs, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r3, 0)), STATUS_COMPLETED, "a Completed");
+    assert_eq(step_result_status(vec_get(r3, 1)), STATUS_FAILED, "boom Failed");
+    assert_eq(step_result_status(vec_get(r3, 2)), STATUS_SKIPPED, "c Skipped");
+    assert(str_eq_cstr(step_result_error(vec_get(r3, 2)), "prior step failed"),
+    "c reason: prior step failed");
+
+    # --- condition skip: parent gated on an unmet condition -> parent + child skipped ---
+    test_group("condition skip cascades to subtree");
+    var gp = step_with_condition(step_new(str_from("gp")), str_from("steps.x.status == 'completed'"));
+    gp = step_with_sub_step(gp, step_new(str_from("gc")));
+    var r4 = run_hierarchical(_single(gp), 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r4), 2, "gated parent + skipped child");
+    assert_eq(step_result_status(vec_get(r4, 0)), STATUS_SKIPPED, "gp Skipped");
+    assert(str_eq_cstr(step_result_error(vec_get(r4, 0)), "condition not met"), "gp reason");
+    assert_eq(step_result_status(vec_get(r4, 1)), STATUS_SKIPPED, "gc Skipped");
+    assert(str_eq_cstr(step_result_error(vec_get(r4, 1)), "condition not met"),
+    "gc inherits condition not met");
+
+    # --- cancellation: whole subtree skipped "cancelled" ---
+    test_group("cancellation cascades");
+    var tok = cancel_token_new();
+    cancel_token_signal(tok);
+    var p5 = _parent_with_two("p", step_new(str_from("c1")), step_new(str_from("c2")));
+    var r5 = run_hierarchical(_single(p5), 60000, clock_now_ms(), tok, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r5, 0)), STATUS_SKIPPED, "parent Skipped (cancelled)");
+    assert(str_eq_cstr(step_result_error(vec_get(r5, 0)), "cancelled"), "parent reason cancelled");
+    assert_eq(step_result_status(vec_get(r5, 1)), STATUS_SKIPPED, "child Skipped (cancelled)");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

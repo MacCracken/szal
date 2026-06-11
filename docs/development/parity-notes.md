@@ -109,6 +109,35 @@ map with no lock.
 lands together with the parallel engine rows (`engine_parallel`/`engine_distributed`), not before.
 See `src/storage.cyr`.
 
+## 8. Step timeout: cooperative cancel (orphaned worker), not async abort
+
+**What:** Rust wraps each step attempt in `tokio::time::timeout(...)` (async; drops the future on
+the deadline). Cyrius runs the handler on a **worker thread** and polls its result channel against a
+`clock_now_ms()` deadline (`engine_step_exec.cyr`). On timeout, szal returns `StepTimeout` on time,
+but the orphaned worker thread runs to completion.
+
+**Divergence:** a handler that exceeds its deadline keeps executing in the background instead of
+being cancelled. Observable only if the handler has side effects after the deadline.
+
+**Why accepted (and why it's the *only* faithful option):** OS threads cannot be force-aborted —
+this is true of Rust's own `std::thread` (no `.abort()`); only async tasks are cancellable, and even
+`tokio::timeout` only cancels at `await` points (it cannot interrupt blocking work either). Cyrius
+has a cooperative async runtime (`lib/async.cyr`) but **`async_timeout` forks a child process**, so a
+step's shared-state mutations would be lost — wrong for steps. The port-plan §1.7 therefore
+prescribes exactly the worker-thread + deadline-poll approach used here. Token-based cancellation
+(`run_with_cancellation`) has **exact** parity: Rust's `tokio_util::CancellationToken` is itself
+cooperative/poll-based and maps 1:1 to `cancel_token_new/signal/check`. Only the *timeout abort*
+differs, and only for misbehaving handlers. See `src/engine_step_exec.cyr`.
+
+> Concurrency scope: in sequential execution the main thread only polls while a worker runs.
+> **For parallel execution (rows 14/15) both prerequisites are already satisfied:** (a) `alloc()`
+> is thread-safe — `lib/alloc.cyr` has a global allocation lock (v6.0.64) precisely because real
+> Cyrius threads share one process heap; (b) handler errors are per-worker isolated by design — the
+> handler ABI returns `Err(message_Str)` (no shared global error buffer). So `engine_parallel`/
+> `engine_dag` need only a permit-semaphore (build from a bounded `chan` or mutex+counter) +
+> `cancel_token_*` — no new allocator work. The model template is ai-hwaccel's `async_detect`
+> (`thread_create` + per-resource `mutex`).
+
 ---
 
 ### Disposition log
@@ -124,3 +153,34 @@ See `src/storage.cyr`.
   (WorkflowStorage / ExecutionStore / ExecutionRecord serde), auditors primed with this file's
   accepted-idiom list. **0 findings** — full behavioral + serde parity; the pointer-return (§6)
   and deferred-lock (§7) divergences were correctly classified as accepted, not regressions.
+- **2026-06-11 — M2 engine_core parity audit** (`engine_core.cyr` vs `engine/mod.rs`): 3 lenses
+  (config+context types / handler ABI + emit / check_condition). **0 findings** — field-for-field
+  parity. The (fn_ptr, ctx) callback pairs replacing `Arc<dyn Fn → BoxFuture>` (synchronous; no
+  async — port-plan §1.7) and the opaque i64 slots for not-yet-ported modules (hardware/heartbeat/
+  queue) were correctly classified as accepted design, not divergences.
+- **2026-06-11 — M2 engine_step_exec parity audit** (`engine_step_exec.cyr` vs `engine/step_exec.rs`):
+  3 lenses (retry/attempts/backoff / failure error messages / timeout + event-metric set).
+  **0 findings** — exact parity incl. max_attempts, per-attempt vs total duration, the RetryExhausted
+  vs last-error selection, the exact Display strings, and the dual `step_failed` on a final-attempt
+  timeout. The worker-thread timeout (§8) was correctly classified as accepted, not a divergence.
+- **2026-06-11 — M2 engine_sequential parity audit** (`engine_sequential.cyr` vs `sequential.rs`):
+  single-lens (skip order/reasons/shape + condition-Err-runs + failure cascade). **0 findings** —
+  exact skip-check order and reason strings, condition parse-error runs (not skips), failed cascade.
+- **2026-06-11 — M2 engine_hierarchical parity audit** (`engine_hierarchical.cyr` vs `hierarchical.rs`):
+  single-lens (pre-order results / subtree skip propagation / `parent step failed` vs `prior step
+  failed` / condition-Err-runs). **0 findings** — faithful recursive tree walk; plain recursion
+  replacing `Box::pin` futures is an accepted idiom with identical observable output.
+- **2026-06-11 — M2 engine_parallel parity audit** (`engine_parallel.cyr` vs `parallel.rs`): 2 lenses
+  (result order + condition pre-pass / semaphore + join + cancel-timeout). **0 findings** — exact
+  result order (pre_skipped-first ++ spawn-order), condition-against-pre_skipped, permit floor of 1,
+  spawn-order join, skip reasons. The thread/semaphore/worker-slot/orphan idioms (§8) were correctly
+  classified as accepted with identical observable output.
+- **2026-06-11 — M2 engine_dag parity audit** (`engine_dag.cyr` vs `dag.rs`): 2 lenses (Kahn
+  bookkeeping: in-degree/dependents/unlock + re-queue prevention / wave exec + transitive failure +
+  skips). **0 findings** — exact in-degree formula, MAX-sentinel double-run prevention, fixed-batch
+  waves, `dependency failed` transitive skips, cancel/timeout-stops-with-locked-steps-unrun. The
+  ordinal-arena-over-HashMap idiom (CLAUDE.md) was correctly classified as accepted.
+- **2026-06-11 — M2 engine_queue_runner parity audit** (`engine_queue_runner.cyr` vs
+  `queue_runner.rs`): single-lens (enqueue/dequeue/complete-fail loop + drain exit). **0 findings** —
+  Normal-priority enqueue, complete-vs-fail on Completed, one-result-per-step exit. The dropped
+  ResourcePool arg (port-plan §3.2) and item-keyed mq_complete/mq_fail were correctly classified as accepted.

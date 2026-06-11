@@ -1,0 +1,227 @@
+# engine_dag.cyr — DAG (dependency-ordered, wavefront-parallel) flow execution
+#
+# Ports rust-old/src/engine/dag.rs (run_dag + unlock_dependents). port-plan §4 row 15. Kahn-style
+# wavefront: steps with no unmet dependencies form a ready wave that runs concurrently (bounded by
+# max_concurrency); completing/skipping a step unlocks its dependents (decrement in-degree → ready
+# at 0). Failure propagates transitively — a step whose dependency failed is Skipped "dependency
+# failed" and itself enters the failed set.
+#
+# Per CLAUDE.md "Vec arena over HashMap": steps are indexed by ORDINAL (their position in `steps`),
+# with one id→ordinal map built once; `in_degree`/`failed` are ordinal-indexed i64 arrays and
+# `dependents` is a vec-of-vecs of ordinals. The wave's parallel batch reuses engine_parallel's
+# worker (`_par_worker`) + arg layout (`PA_*`) + semaphore/result-slot machinery (§8) — so this
+# module MUST be included after engine_parallel.
+#
+# Usage: include "src/engine_dag.cyr" (after engine_core, engine_step_exec, engine_parallel).
+# Requires: those + src/step.cyr (depends_on/trigger_mode accessors), src/bus.cyr, src/uuid.cyr,
+#   lib/thread.cyr, lib/async.cyr, lib/chrono.cyr, lib/hashmap.cyr, lib/vec.cyr.
+# Naming: public symbols are run_dag + unlock_dependents-equivalent (_dag_unlock); helpers use _.
+
+# Per-spawned-step join record: {thread handle, step ordinal, result-slot}.
+enum DagRecL {
+    DAG_REC_SIZE = 24;
+    DGR_T = 0;
+    DGR_ORD = 8;
+    DGR_SLOT = 16;
+}
+
+# Look up a step id's ordinal via the id→(ordinal+1) map. Returns the ordinal, or -1 if unknown.
+fn _dag_lookup(id_map, hi, lo) {
+    var v = map_get(id_map, uuid_to_str(hi, lo));
+    if (v == 0) { return 0 - 1; }
+    return v - 1;
+}
+
+# Emit step_skipped + push a Skipped StepResult (output null, duration 0, attempts 0, error=reason)
+# for `step` with cstr `reason`. Internal.
+fn _dag_skip(results, event_sink, step, reason) {
+    var sid = uuid_to_str(step_id_hi(step), step_id_lo(step));
+    emit(event_sink, event_step_skipped(step_name(step), sid, str_from(reason)));
+    var sr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_SKIPPED,
+    bayan_json_v_null(), 0, 0);
+    step_result_set_error(sr, str_from(reason));
+    vec_push(results, sr);
+    return 0;
+}
+
+# Decrement the in-degree of each dependent of step `ord`; a dependent that reaches 0 is pushed onto
+# `ready` and its in-degree set to STEP_I64_MAX so it can't be re-queued (matters for TriggerMode
+# Any). Mirrors unlock_dependents (dag.rs 216-234). `in_degree` is an i64 array; `dependents` a
+# vec-of-vecs of ordinals; `ready` a vec used as a FIFO.
+fn _dag_unlock(ord, dependents, in_degree, ready) {
+    var deps = vec_get(dependents, ord);
+    var n = vec_len(deps);
+    var i = 0;
+    while (i < n) {
+        var dep = vec_get(deps, i);
+        var deg = load64(in_degree + dep * 8);
+        if (deg > 0) { deg = deg - 1; }
+        store64(in_degree + dep * 8, deg);
+        if (deg == 0) {
+            vec_push(ready, dep);
+            store64(in_degree + dep * 8, STEP_I64_MAX);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Run `steps` as a DAG with up to `max_concurrency` concurrent workers per wave under `ctx`.
+# `timeout_ms`/`start_ms` are the flow deadline budget + start timestamp; `token` is a cancel token
+# (0 = None). Returns a vec of StepResult* in completion order (executed/skipped). On cancel/timeout
+# the remaining ready steps are Skipped and the run stops (still-locked steps get no result —
+# matching dag.rs's break). Mirrors run_dag (dag.rs 13-214).
+fn run_dag(steps, max_concurrency, timeout_ms, start_ms, token, ctx) {
+    var permits = max_concurrency;
+    if (permits < 1) { permits = 1; }
+    var sem = chan_new(permits);
+    var pf = 0;
+    while (pf < permits) {
+        chan_send(sem, 1);
+        pf = pf + 1;
+    }
+
+    var event_sink = exec_ctx_event_sink(ctx);
+    var cache = exec_ctx_condition_cache(ctx);
+    var results = vec_new();
+    var n = vec_len(steps);
+
+    # id→(ordinal+1) map + failed[] + dependents (vec-of-vecs), built before in-degree wiring.
+    var id_map = map_new_str();
+    var failed = alloc(n * 8);
+    var in_degree = alloc(n * 8);
+    var dependents = vec_new();
+    var i = 0;
+    while (i < n) {
+        var step = vec_get(steps, i);
+        map_set(id_map, uuid_to_str(step_id_hi(step), step_id_lo(step)), i + 1);
+        store64(failed + i * 8, 0);
+        vec_push(dependents, vec_new());
+        i = i + 1;
+    }
+    # in-degree (TriggerMode: All→deps; Any-with-deps→1; Any-no-deps→0) + dependents edges.
+    i = 0;
+    while (i < n) {
+        var step = vec_get(steps, i);
+        var dn = step_depends_on_len(step);
+        var deg = dn;
+        if (step_trigger_mode(step) == TRIGGER_ANY) {
+            if (dn > 0) { deg = 1; }
+        }
+        store64(in_degree + i * 8, deg);
+        var k = 0;
+        while (k < dn) {
+            var dep_ord = _dag_lookup(id_map, step_depends_on_hi(step, k), step_depends_on_lo(step, k));
+            if (dep_ord >= 0) { vec_push(vec_get(dependents, dep_ord), i); }
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    # Seed ready with no-dependency steps.
+    var ready = vec_new();
+    i = 0;
+    while (i < n) {
+        if (step_depends_on_len(vec_get(steps, i)) == 0) { vec_push(ready, i); }
+        i = i + 1;
+    }
+    var ready_head = 0;
+
+    while (ready_head < vec_len(ready)) {
+        var cancelled = 0;
+        if (token != 0) {
+            if (cancel_token_check(token) == 1) { cancelled = 1; }
+        }
+        var timed_out = 0;
+        if (clock_now_ms() - start_ms > timeout_ms) { timed_out = 1; }
+
+        if (cancelled == 1 || timed_out == 1) {
+            var reason = "flow timeout exceeded";
+            if (cancelled == 1) { reason = "cancelled"; }
+            while (ready_head < vec_len(ready)) {
+                var ord = vec_get(ready, ready_head);
+                ready_head = ready_head + 1;
+                _dag_skip(results, event_sink, vec_get(steps, ord), reason);
+            }
+        } else {
+            # Build + spawn the current wave (a fixed batch of the steps ready right now).
+            var batch_len = vec_len(ready) - ready_head;
+            var handles = vec_new();
+            var bi = 0;
+            while (bi < batch_len) {
+                var ord = vec_get(ready, ready_head);
+                ready_head = ready_head + 1;
+                var step = vec_get(steps, ord);
+
+                # Skip if any dependency failed (transitive failure).
+                var dep_failed = 0;
+                var dn = step_depends_on_len(step);
+                var di = 0;
+                while (di < dn) {
+                    var dep_ord = _dag_lookup(id_map, step_depends_on_hi(step, di),
+                    step_depends_on_lo(step, di));
+                    if (dep_ord >= 0) {
+                        if (load64(failed + dep_ord * 8) == 1) { dep_failed = 1; }
+                    }
+                    di = di + 1;
+                }
+                if (dep_failed == 1) {
+                    _dag_skip(results, event_sink, step, "dependency failed");
+                    store64(failed + ord * 8, 1);
+                    _dag_unlock(ord, dependents, in_degree, ready);
+                } else {
+                    var skip_cond = 0;
+                    var cond = step_condition(step);
+                    if (cond != 0) {
+                        var cr = check_condition(step, results, steps, cache);
+                        if (is_ok(cr) == 1) {
+                            if (result_unwrap(cr) == 0) { skip_cond = 1; }
+                        }
+                    }
+                    if (skip_cond == 1) {
+                        _dag_skip(results, event_sink, step, "condition not met");
+                        _dag_unlock(ord, dependents, in_degree, ready);
+                    } else {
+                        var slot = alloc(8);
+                        store64(slot, 0);
+                        var arg = alloc(PA_SIZE);
+                        store64(arg + PA_STEP, step);
+                        store64(arg + PA_CTX, ctx);
+                        store64(arg + PA_SEM, sem);
+                        store64(arg + PA_SLOT, slot);
+                        var rec = alloc(DAG_REC_SIZE);
+                        store64(rec + DGR_T, thread_create(&_par_worker, arg));
+                        store64(rec + DGR_ORD, ord);
+                        store64(rec + DGR_SLOT, slot);
+                        vec_push(handles, rec);
+                    }
+                }
+                bi = bi + 1;
+            }
+
+            # Join the wave in spawn order; record failure + unlock dependents.
+            var hn = vec_len(handles);
+            var hj = 0;
+            while (hj < hn) {
+                var rec = vec_get(handles, hj);
+                var ord = load64(rec + DGR_ORD);
+                var step = vec_get(steps, ord);
+                thread_join(load64(rec + DGR_T));
+                var res = load64(load64(rec + DGR_SLOT));
+                if (res == 0) {
+                    res = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
+                    bayan_json_v_null(), 0, 0);
+                    step_result_set_error(res, str_from("task panicked"));
+                    store64(failed + ord * 8, 1);
+                } else {
+                    if (step_result_status(res) != STATUS_COMPLETED) {
+                        store64(failed + ord * 8, 1);
+                    }
+                }
+                _dag_unlock(ord, dependents, in_degree, ready);
+                vec_push(results, res);
+                hj = hj + 1;
+            }
+        }
+    }
+    return results;
+}

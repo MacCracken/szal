@@ -1,0 +1,75 @@
+# engine_sequential.cyr — sequential (in-order) flow execution
+#
+# Ports rust-old/src/engine/sequential.rs (run_sequential). port-plan §4 row 13. Runs steps one at
+# a time; each step is either SKIPPED (with an exact reason string) or executed via
+# execute_step_with_handler. A failed step short-circuits the rest to "prior step failed" skips.
+#
+# Usage: include "src/engine_sequential.cyr" (after engine_core + engine_step_exec).
+# Requires: src/engine_core.cyr (ExecCtx accessors, emit, check_condition), src/engine_step_exec.cyr
+#   (execute_step_with_handler), src/step.cyr, src/bus.cyr (event_step_skipped), src/uuid.cyr,
+#   lib/async.cyr (cancel_token_check), lib/chrono.cyr (clock_now_ms), lib/vec.cyr, src/condition.cyr.
+# Naming: public symbol is run_sequential; the skip helper is internal.
+
+# Push a Skipped StepResult for `step` with `reason` (a cstr) and emit the step_skipped event.
+# The skip carries attempts=0, duration=0, output=null, error=reason — exactly like Rust
+# (sequential.rs 30-39). Internal.
+fn _seq_skip(results, ctx, step, name, sid, reason) {
+    emit(exec_ctx_event_sink(ctx), event_step_skipped(name, sid, str_from(reason)));
+    var sr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_SKIPPED,
+    bayan_json_v_null(), 0, 0);
+    step_result_set_error(sr, str_from(reason));
+    vec_push(results, sr);
+    return 0;
+}
+
+# Run `steps` (a vec of StepDef*) in order under `ctx` (an ExecCtx). `timeout_ms` is the flow
+# deadline budget; `start_ms` is the flow start timestamp (clock_now_ms); `token` is a cancel token
+# (0 = None). Returns a vec of StepResult* (one per step, in order). Mirrors run_sequential
+# (sequential.rs 8-97): a step is Skipped when cancelled / a prior step failed / the flow timeout is
+# exceeded / its condition is false; a condition PARSE error is logged-and-run (per Rust, the Err
+# arm warns and falls through). Order of the skip checks matches Rust exactly.
+fn run_sequential(steps, timeout_ms, start_ms, token, ctx) {
+    var results = vec_new();
+    var failed = 0;
+    var n = vec_len(steps);
+    var i = 0;
+    while (i < n) {
+        var step = vec_get(steps, i);
+        var name = step_name(step);
+        var sid = uuid_to_str(step_id_hi(step), step_id_lo(step));
+
+        # Determine the skip reason (0 = run the step). Check order mirrors Rust:
+        # cancelled -> prior-failed -> flow-timeout -> condition.
+        var reason = 0;
+        var cancelled = 0;
+        if (token != 0) {
+            if (cancel_token_check(token) == 1) { cancelled = 1; }
+        }
+        if (cancelled == 1) {
+            reason = "cancelled";
+        } elif (failed == 1) {
+            reason = "prior step failed";
+        } elif (clock_now_ms() - start_ms > timeout_ms) {
+            reason = "flow timeout exceeded";
+        } else {
+            var cond = step_condition(step);
+            if (cond != 0) {
+                var cr = check_condition(step, results, steps, exec_ctx_condition_cache(ctx));
+                # Ok(false) -> "condition not met"; Ok(true) -> run; Err -> warn + run anyway.
+                if (is_ok(cr) == 1) {
+                    if (result_unwrap(cr) == 0) { reason = "condition not met"; }
+                }
+            }
+        }
+
+        if (reason != 0) {
+            _seq_skip(results, ctx, step, name, sid, reason);
+        } else {
+            var res = execute_step_with_handler(step, ctx);
+            if (step_result_status(res) == STATUS_FAILED) { failed = 1; }
+            vec_push(results, res);
+        }
+        i = i + 1;
+    }
+    return results;
+}

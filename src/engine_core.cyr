@@ -1,0 +1,294 @@
+# engine_core.cyr — shared engine infrastructure: contexts, config, handler ABI, helpers
+#
+# Ports rust-old/src/engine/mod.rs EXCEPT sub_flow_handler, which lands later in engine_subflow
+# (roadmap.md M2 row 21 — it constructs an Engine, so it must follow engine_runner).
+# This is port-plan §4 row 11 — the foundation every executor (sequential/parallel/dag/...) shares.
+#
+# The central design move: Rust's async closure extension points
+#   `Option<Arc<dyn Fn(..) -> BoxFuture<..>>>`
+# become **(fn_ptr, ctx_ptr) callback pairs** (Cyrius closures capture nothing — port-plan §1.2).
+# A callback is a heap pair {fp, ctx} (16 bytes), or 0 for the Rust `None`. The fp's LAST parameter
+# is the captured ctx. A StepHandler/RollbackHandler fp returns a Result — `Ok(json_v)` on success
+# or `Err(message_Str)` on failure (the Err PAYLOAD is the message string itself, the faithful
+# analog of `Result<Value, String>` — NOT an szal_err code). Handlers are plain synchronous fns:
+# Cyrius has a cooperative async runtime (lib/async.cyr) but no async/await syntax or futures
+# (port-plan §1.7), so the Rust `BoxFuture` wrapping simply vanishes.
+#
+# Usage: include "src/engine_core.cyr"
+# Requires: lib/alloc, lib/fnptr (fncall2/fncall4), lib/result (Ok/is_ok), lib/str, lib/vec,
+#   src/error.cyr, src/uuid.cyr, src/step.cyr (StepDef/StepResult accessors), src/bus.cyr
+#   (WorkflowEvent for event sinks), src/condition.cyr (cond_build_step_context, cache_evaluate),
+#   src/flow.cyr (FlowDef accessors), src/storage.cyr + src/metrics.cyr (vtable slots in EngineConfig).
+# Naming: public symbols are cb_/flow_ctx_/exec_ctx_/engine_config_/step_progress_/
+#   progress_reporter_/emit_/check_condition-prefixed; internal helpers use _.
+
+# ===========================================================================
+# Callback (fn_ptr, ctx_ptr) pair — the Cyrius analog of Option<Arc<dyn Fn>>
+# ===========================================================================
+
+# A callback pair. fp is a function pointer; ctx is the captured-state pointer the fp receives as
+# its last argument (0 if the callback needs no state). The pair pointer itself is 0 for `None`.
+enum CallbackL {
+    CB_SIZE = 16;
+    CB_FP = 0;
+    CB_CTX = 8;
+}
+
+# Build a callback pair from a fn pointer + a context pointer (ctx may be 0). Returns 0 on OOM.
+fn cb_new(fp, ctx) {
+    var c = alloc(CB_SIZE);
+    if (c == 0) { return 0; }
+    store64(c + CB_FP, fp);
+    store64(c + CB_CTX, ctx);
+    return c;
+}
+
+# Accessors.
+fn cb_fp(c) { return load64(c + CB_FP); }
+fn cb_ctx(c) { return load64(c + CB_CTX); }
+
+# Invoke a StepHandler / RollbackHandler callback: fp(step, ctx) -> Result. The caller guarantees
+# h != 0 (an engine always has a handler). Mirrors the StepHandler/RollbackHandler ABI.
+fn handler_invoke(h, step) {
+    return fncall2(load64(h + CB_FP), step, load64(h + CB_CTX));
+}
+
+# ===========================================================================
+# FlowCtx — the flow identity threaded through executors (mod.rs 44-47)
+# ===========================================================================
+
+enum FlowCtxL {
+    FLC_SIZE = 24;
+    FLC_NAME = 0;
+    FLC_ID_HI = 8;
+    FLC_ID_LO = 16;
+}
+
+# Build a FlowCtx from a name (Str) + flow id halves. Returns 0 on OOM.
+fn flow_ctx_new(name, id_hi, id_lo) {
+    var fc = alloc(FLC_SIZE);
+    if (fc == 0) { return 0; }
+    store64(fc + FLC_NAME, name);
+    store64(fc + FLC_ID_HI, id_hi);
+    store64(fc + FLC_ID_LO, id_lo);
+    return fc;
+}
+
+# Convenience: build a FlowCtx straight from a FlowDef.
+fn flow_ctx_of(flow) {
+    return flow_ctx_new(flow_name(flow), flow_id_hi(flow), flow_id_lo(flow));
+}
+
+fn flow_ctx_name(fc) { return load64(fc + FLC_NAME); }
+fn flow_ctx_id_hi(fc) { return load64(fc + FLC_ID_HI); }
+fn flow_ctx_id_lo(fc) { return load64(fc + FLC_ID_LO); }
+
+# ===========================================================================
+# ExecCtx — shared execution context passed to all executor fns (mod.rs 50-62)
+# ===========================================================================
+#
+# Each field is a callback pair / vtable / cache pointer (0 = None where the Rust field is Option).
+#   handler            StepHandler callback (never 0)
+#   event_sink         EventSink callback (0 = None)
+#   flow               FlowCtx*
+#   metrics_vt         majra metrics vtable (0 = None)
+#   step_type_metrics  StepTypeMetricsFn callback (0 = None)
+#   progress_sink      ProgressSink callback (0 = None)
+#   condition_cache    ConditionCache*
+enum ExecCtxL {
+    EC_SIZE = 56;
+    EC_HANDLER = 0;
+    EC_EVENT_SINK = 8;
+    EC_FLOW = 16;
+    EC_METRICS_VT = 24;
+    EC_STEP_TYPE_METRICS = 32;
+    EC_PROGRESS_SINK = 40;
+    EC_CONDITION_CACHE = 48;
+}
+
+# Build an ExecCtx. handler is a callback pair (required); flow is a FlowCtx*; condition_cache is
+# a ConditionCache*; the rest are callback pairs / vtables or 0 (None). Returns 0 on OOM.
+fn exec_ctx_new(handler, event_sink, flow, metrics_vt, step_type_metrics, progress_sink,
+condition_cache) {
+    var ec = alloc(EC_SIZE);
+    if (ec == 0) { return 0; }
+    store64(ec + EC_HANDLER, handler);
+    store64(ec + EC_EVENT_SINK, event_sink);
+    store64(ec + EC_FLOW, flow);
+    store64(ec + EC_METRICS_VT, metrics_vt);
+    store64(ec + EC_STEP_TYPE_METRICS, step_type_metrics);
+    store64(ec + EC_PROGRESS_SINK, progress_sink);
+    store64(ec + EC_CONDITION_CACHE, condition_cache);
+    return ec;
+}
+
+fn exec_ctx_handler(ec) { return load64(ec + EC_HANDLER); }
+fn exec_ctx_event_sink(ec) { return load64(ec + EC_EVENT_SINK); }
+fn exec_ctx_flow(ec) { return load64(ec + EC_FLOW); }
+fn exec_ctx_metrics_vt(ec) { return load64(ec + EC_METRICS_VT); }
+fn exec_ctx_step_type_metrics(ec) { return load64(ec + EC_STEP_TYPE_METRICS); }
+fn exec_ctx_progress_sink(ec) { return load64(ec + EC_PROGRESS_SINK); }
+fn exec_ctx_condition_cache(ec) { return load64(ec + EC_CONDITION_CACHE); }
+
+# ===========================================================================
+# EngineConfig — execution engine configuration (mod.rs 173-241)
+# ===========================================================================
+#
+# Option fields are 0 = None. global_timeout_ms uses a present flag (Some(0) is a legal timeout,
+# like flow.timeout_ms). storage/execution_store are trait-object vtables; hardware/heartbeat/
+# queue are opaque pointers (their modules land later — held as slots now, 0 = None).
+enum EngineConfigL {
+    ENG_SIZE = 88;
+    ENG_MAX_CONCURRENCY = 0;
+    ENG_TIMEOUT_PRESENT = 8;
+    ENG_TIMEOUT_MS = 16;
+    ENG_STORAGE_VT = 24;
+    ENG_HARDWARE_CTX = 32;
+    ENG_METRICS_VT = 40;
+    ENG_HEARTBEAT = 48;
+    ENG_QUEUE = 56;
+    ENG_STEP_TYPE_METRICS = 64;
+    ENG_PROGRESS_SINK = 72;
+    ENG_EXECUTION_STORE_VT = 80;
+}
+
+# Default config: max_concurrency 16, every Option None (0), timeout absent. Mirrors
+# EngineConfig::default (mod.rs 221-240). Returns 0 on OOM.
+fn engine_config_default() {
+    var c = alloc(ENG_SIZE);
+    if (c == 0) { return 0; }
+    store64(c + ENG_MAX_CONCURRENCY, 16);
+    store64(c + ENG_TIMEOUT_PRESENT, 0);
+    store64(c + ENG_TIMEOUT_MS, 0);
+    store64(c + ENG_STORAGE_VT, 0);
+    store64(c + ENG_HARDWARE_CTX, 0);
+    store64(c + ENG_METRICS_VT, 0);
+    store64(c + ENG_HEARTBEAT, 0);
+    store64(c + ENG_QUEUE, 0);
+    store64(c + ENG_STEP_TYPE_METRICS, 0);
+    store64(c + ENG_PROGRESS_SINK, 0);
+    store64(c + ENG_EXECUTION_STORE_VT, 0);
+    return c;
+}
+
+# Accessors.
+fn engine_config_max_concurrency(c) { return load64(c + ENG_MAX_CONCURRENCY); }
+fn engine_config_timeout_present(c) { return load64(c + ENG_TIMEOUT_PRESENT); }
+fn engine_config_timeout_ms(c) { return load64(c + ENG_TIMEOUT_MS); }
+fn engine_config_storage_vt(c) { return load64(c + ENG_STORAGE_VT); }
+fn engine_config_hardware_ctx(c) { return load64(c + ENG_HARDWARE_CTX); }
+fn engine_config_metrics_vt(c) { return load64(c + ENG_METRICS_VT); }
+fn engine_config_heartbeat(c) { return load64(c + ENG_HEARTBEAT); }
+fn engine_config_queue(c) { return load64(c + ENG_QUEUE); }
+fn engine_config_step_type_metrics(c) { return load64(c + ENG_STEP_TYPE_METRICS); }
+fn engine_config_progress_sink(c) { return load64(c + ENG_PROGRESS_SINK); }
+fn engine_config_execution_store_vt(c) { return load64(c + ENG_EXECUTION_STORE_VT); }
+
+# Setters (the Engine builders in row 20 mutate config fields; struct-literal fields in Rust).
+# Each returns c for chaining.
+fn engine_config_set_max_concurrency(c, n) { store64(c + ENG_MAX_CONCURRENCY, n); return c; }
+fn engine_config_set_timeout_ms(c, ms) {
+    store64(c + ENG_TIMEOUT_PRESENT, 1);
+    store64(c + ENG_TIMEOUT_MS, ms);
+    return c;
+}
+fn engine_config_set_storage_vt(c, vt) { store64(c + ENG_STORAGE_VT, vt); return c; }
+fn engine_config_set_hardware_ctx(c, h) { store64(c + ENG_HARDWARE_CTX, h); return c; }
+fn engine_config_set_metrics_vt(c, vt) { store64(c + ENG_METRICS_VT, vt); return c; }
+fn engine_config_set_heartbeat(c, h) { store64(c + ENG_HEARTBEAT, h); return c; }
+fn engine_config_set_queue(c, q) { store64(c + ENG_QUEUE, q); return c; }
+fn engine_config_set_step_type_metrics(c, cb) { store64(c + ENG_STEP_TYPE_METRICS, cb); return c; }
+fn engine_config_set_progress_sink(c, cb) { store64(c + ENG_PROGRESS_SINK, cb); return c; }
+fn engine_config_set_execution_store_vt(c, vt) { store64(c + ENG_EXECUTION_STORE_VT, vt); return c; }
+
+# ===========================================================================
+# StepProgress + ProgressReporter (mod.rs 132-167)
+# ===========================================================================
+
+# A step progress event emitted mid-execution. data is a json_v.
+enum StepProgressL {
+    SP_SIZE = 24;
+    SP_STEP_NAME = 0;
+    SP_STEP_ID = 8;
+    SP_DATA = 16;
+}
+
+# Build a StepProgress. step_name/step_id are Str; data is a json_v. Returns 0 on OOM.
+fn step_progress_new(step_name, step_id, data) {
+    var sp = alloc(SP_SIZE);
+    if (sp == 0) { return 0; }
+    store64(sp + SP_STEP_NAME, step_name);
+    store64(sp + SP_STEP_ID, step_id);
+    store64(sp + SP_DATA, data);
+    return sp;
+}
+
+fn step_progress_step_name(sp) { return load64(sp + SP_STEP_NAME); }
+fn step_progress_step_id(sp) { return load64(sp + SP_STEP_ID); }
+fn step_progress_data(sp) { return load64(sp + SP_DATA); }
+
+# Handle passed to step handlers for reporting progress mid-execution (mod.rs 147-167).
+#   sink       ProgressSink callback (0 = None)
+#   step_name  Str
+#   step_id    Str
+enum ProgressReporterL {
+    PR_SIZE = 24;
+    PR_SINK = 0;
+    PR_STEP_NAME = 8;
+    PR_STEP_ID = 16;
+}
+
+# Build a ProgressReporter bound to a step. sink is a ProgressSink callback (0 = None). Returns 0
+# on OOM.
+fn progress_reporter_new(sink, step_name, step_id) {
+    var pr = alloc(PR_SIZE);
+    if (pr == 0) { return 0; }
+    store64(pr + PR_SINK, sink);
+    store64(pr + PR_STEP_NAME, step_name);
+    store64(pr + PR_STEP_ID, step_id);
+    return pr;
+}
+
+# Report progress data (json_v) for the current step. No-op if the reporter has no sink. Mirrors
+# ProgressReporter::report (mod.rs 157-166): builds a StepProgress and hands it to the sink fn.
+fn progress_reporter_report(pr, data) {
+    var sink = load64(pr + PR_SINK);
+    if (sink == 0) { return 0; }
+    var sp = step_progress_new(load64(pr + PR_STEP_NAME), load64(pr + PR_STEP_ID), data);
+    fncall2(load64(sink + CB_FP), sp, load64(sink + CB_CTX));
+    return 0;
+}
+
+# ===========================================================================
+# emit / emit_step_type_metric / check_condition (mod.rs 67-113)
+# ===========================================================================
+
+# Emit a WorkflowEvent through an EventSink callback if one is configured. No-op when sink == 0
+# (Rust None). Mirrors emit (mod.rs 69-73). The sink fn is fp(event, ctx).
+fn emit(sink, event) {
+    if (sink == 0) { return 0; }
+    fncall2(load64(sink + CB_FP), event, load64(sink + CB_CTX));
+    return 0;
+}
+
+# Emit a step-type metric if a callback is configured. step_type is a cstr, or 0 (Rust None) which
+# maps to "default". Mirrors emit_step_type_metric (mod.rs 84-94): fp(step_type, status, duration, ctx).
+fn emit_step_type_metric(sink, step_type, status, duration_ms) {
+    if (sink == 0) { return 0; }
+    var st = step_type;
+    if (st == 0) { st = "default"; }
+    fncall4(load64(sink + CB_FP), st, status, duration_ms, load64(sink + CB_CTX));
+    return 0;
+}
+
+# Check whether a step's condition passes. Returns Ok(true) if the step has no condition, else
+# builds the step context from prior results and evaluates the (cached, compiled) condition.
+# Returns a Result<bool, str> exactly like Rust check_condition (mod.rs 99-113) — a parse/eval
+# error surfaces as Err and the CALLER decides (the executors warn + run anyway). `results` and
+# `all_steps` are vecs of StepResult* / StepDef*; cache is a ConditionCache*.
+fn check_condition(step, results, all_steps, cache) {
+    var cond = step_condition(step);
+    if (cond == 0) { return Ok(1); }
+    var ctx = cond_build_step_context(results, all_steps);
+    return cache_evaluate(cache, cond, ctx);
+}

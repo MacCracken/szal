@@ -1,0 +1,137 @@
+# szal_engine_parallel.tcyr — run_parallel (engine_parallel.cyr) unit tests.
+#
+# Ports the parallel executor semantics: bounded concurrent completion, condition pre-skip ordered
+# FIRST, independent (no-cascade) failure, cancellation + flow-timeout skips at join. Ordering is
+# checked via step_id (StepResult carries the id, not the name).
+#   cyrius build --strict --no-deps tests/szal_engine_parallel.tcyr build/test_engine_parallel
+#   ./build/test_engine_parallel
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_parallel.cyr"
+
+fn _p_handler(step, ctx) {
+    if (str_eq_cstr(step_name(step), "boom") == 1) { return Err(str_from("kaboom")); }
+    return Ok(bayan_json_v_int_new(1));
+}
+
+fn _mk_ctx() {
+    var handler = cb_new(&_p_handler, 0);
+    var flow = flow_ctx_new(str_from("flow"), 0, 0);
+    return exec_ctx_new(handler, 0, flow, 0, 0, 0, cache_new());
+}
+
+# Does StepResult r belong to step s? (compare the 128-bit id)
+fn _is_step(r, s) {
+    if (step_result_id_hi(r) != step_id_hi(s)) { return 0; }
+    if (step_result_id_lo(r) != step_id_lo(s)) { return 0; }
+    return 1;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    # --- bounded concurrent completion (max_concurrency 2) ---
+    test_group("concurrent completion");
+    var a = step_new(str_from("a"));
+    var b = step_new(str_from("b"));
+    var c = step_new(str_from("c"));
+    var steps1 = vec_new();
+    vec_push(steps1, a);
+    vec_push(steps1, b);
+    vec_push(steps1, c);
+    var r1 = run_parallel(steps1, 2, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r1), 3, "3 results");
+    assert_eq(step_result_status(vec_get(r1, 0)), STATUS_COMPLETED, "a Completed");
+    assert_eq(step_result_status(vec_get(r1, 1)), STATUS_COMPLETED, "b Completed");
+    assert_eq(step_result_status(vec_get(r1, 2)), STATUS_COMPLETED, "c Completed");
+    assert_eq(_is_step(vec_get(r1, 0), a), 1, "spawn order: a first");
+    assert_eq(_is_step(vec_get(r1, 2), c), 1, "spawn order: c last");
+
+    # --- condition pre-skip is ordered FIRST, then spawned ---
+    test_group("condition pre-skip ordered first");
+    var gated = step_with_condition(step_new(str_from("gated")),
+    str_from("steps.x.status == 'completed'"));
+    var d = step_new(str_from("d"));
+    var e = step_new(str_from("e"));
+    var steps2 = vec_new();
+    vec_push(steps2, gated);
+    vec_push(steps2, d);
+    vec_push(steps2, e);
+    var r2 = run_parallel(steps2, 4, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r2), 3, "3 results");
+    assert_eq(_is_step(vec_get(r2, 0), gated), 1, "pre-skipped gated is FIRST");
+    assert_eq(step_result_status(vec_get(r2, 0)), STATUS_SKIPPED, "gated Skipped");
+    assert(str_eq_cstr(step_result_error(vec_get(r2, 0)), "condition not met"), "gated reason");
+    assert_eq(step_result_status(vec_get(r2, 1)), STATUS_COMPLETED, "d Completed");
+    assert_eq(step_result_status(vec_get(r2, 2)), STATUS_COMPLETED, "e Completed");
+
+    # --- independent failure: no cascade in parallel (all run) ---
+    test_group("independent failure (no cascade)");
+    var steps3 = vec_new();
+    vec_push(steps3, step_new(str_from("a")));
+    vec_push(steps3, step_new(str_from("boom")));
+    vec_push(steps3, step_new(str_from("c")));
+    var r3 = run_parallel(steps3, 2, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r3, 0)), STATUS_COMPLETED, "a Completed");
+    assert_eq(step_result_status(vec_get(r3, 1)), STATUS_FAILED, "boom Failed");
+    assert_eq(step_result_status(vec_get(r3, 2)), STATUS_COMPLETED, "c still runs (no cascade)");
+
+    # --- cancellation at join: all spawned steps Skipped "cancelled" ---
+    test_group("cancellation at join");
+    var tok = cancel_token_new();
+    cancel_token_signal(tok);
+    var steps4 = vec_new();
+    vec_push(steps4, step_new(str_from("a")));
+    vec_push(steps4, step_new(str_from("b")));
+    var r4 = run_parallel(steps4, 2, 60000, clock_now_ms(), tok, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r4, 0)), STATUS_SKIPPED, "a Skipped (cancelled)");
+    assert(str_eq_cstr(step_result_error(vec_get(r4, 0)), "cancelled"), "reason cancelled");
+    assert_eq(step_result_status(vec_get(r4, 1)), STATUS_SKIPPED, "b Skipped (cancelled)");
+
+    # --- flow timeout at join: start in the past ---
+    test_group("flow timeout at join");
+    var steps5 = vec_new();
+    vec_push(steps5, step_new(str_from("a")));
+    vec_push(steps5, step_new(str_from("b")));
+    var r5 = run_parallel(steps5, 2, 10, clock_now_ms() - 1000, 0, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r5, 0)), STATUS_SKIPPED, "a Skipped (timeout)");
+    assert(str_eq_cstr(step_result_error(vec_get(r5, 0)), "flow timeout exceeded"),
+    "reason flow timeout exceeded");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

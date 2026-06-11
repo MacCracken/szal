@@ -1,0 +1,56 @@
+# engine_queue_runner.cyr — execute steps through a majra ManagedQueue
+#
+# Ports rust-old/src/engine/queue_runner.rs (run_queued). port-plan §4 row 18. Enqueues every step
+# at Normal priority, then a single worker loop dequeues → executes via execute_step_with_handler →
+# marks complete/failed → collects results, exiting once all steps are processed.
+#
+# The Rust `ResourcePool` argument to `dequeue` is DROPPED (port-plan §3.2 — szal always passed an
+# empty pool; Cyrius majra's `mq_dequeue(mq)` takes no pool). Rust's async `yield_now()` (for the
+# multi-worker / resource-gated wait) becomes a brief `sleep_ms` — unreachable for the engine's
+# single-worker call, kept for fidelity.
+#
+# Usage: include "src/engine_queue_runner.cyr" (after engine_core, engine_step_exec, and the
+#   vendored majra). Requires: src/vendor/majra.cyr (mq_*, queue_item_payload, PRIORITY_NORMAL),
+#   src/engine_step_exec.cyr, src/step.cyr, lib/chrono.cyr (sleep_ms), lib/vec.cyr.
+# Naming: public symbol is run_queued.
+
+# Execute `steps` (a vec of StepDef*) through the majra ManagedQueue `queue` under `ctx` (ExecCtx).
+# Returns a vec of StepResult* in processing (dequeue) order. Mirrors run_queued (queue_runner.rs
+# 14-108): enqueue all at PRIORITY_NORMAL, then dequeue/execute/complete-or-fail until all `total`
+# steps have a result (or the queue drains with nothing queued or running).
+fn run_queued(steps, queue, ctx) {
+    var total = vec_len(steps);
+
+    # 1. Enqueue every step at Normal priority.
+    var i = 0;
+    while (i < total) {
+        mq_enqueue(queue, PRIORITY_NORMAL, vec_get(steps, i));
+        i = i + 1;
+    }
+
+    # 2. Worker loop: dequeue, execute, mark, collect.
+    var results = vec_new();
+    while (1 == 1) {
+        var item = mq_dequeue(queue);
+        if (item == 0) {
+            # Nothing dequeued: if the queue is truly drained, we are done.
+            if (mq_queued_count(queue) == 0) {
+                if (mq_running_count(queue) == 0) { return results; }
+            }
+            # Otherwise yield briefly (resource/concurrency wait — unreachable single-worker).
+            sleep_ms(1);
+        } else {
+            var step = queue_item_payload(item);
+            var result = execute_step_with_handler(step, ctx);
+            if (step_result_status(result) == STATUS_COMPLETED) {
+                mq_complete(queue, item);
+            } else {
+                mq_fail(queue, item);
+            }
+            vec_push(results, result);
+            # Exit once every step has been processed.
+            if (vec_len(results) >= total) { return results; }
+        }
+    }
+    return results;
+}

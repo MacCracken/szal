@@ -1,0 +1,177 @@
+# szal_engine_dag.tcyr — run_dag (engine_dag.cyr) unit tests.
+#
+# Ports the DAG executor semantics: linear + diamond wavefront ordering, transitive dependency-
+# failure skips ("dependency failed"), condition skip + unlock, cancellation (locked steps get no
+# result), and TriggerMode::Any (a step unlocked by either dep runs exactly once).
+#   cyrius build --strict --no-deps tests/szal_engine_dag.tcyr build/test_engine_dag && ./build/test_engine_dag
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_parallel.cyr"
+include "src/engine_dag.cyr"
+
+fn _d_handler(step, ctx) {
+    if (str_eq_cstr(step_name(step), "boom") == 1) { return Err(str_from("kaboom")); }
+    return Ok(bayan_json_v_int_new(1));
+}
+fn _mk_ctx() {
+    var handler = cb_new(&_d_handler, 0);
+    var flow = flow_ctx_new(str_from("flow"), 0, 0);
+    return exec_ctx_new(handler, 0, flow, 0, 0, 0, cache_new());
+}
+fn _is_step(r, s) {
+    if (step_result_id_hi(r) != step_id_hi(s)) { return 0; }
+    if (step_result_id_lo(r) != step_id_lo(s)) { return 0; }
+    return 1;
+}
+# count results belonging to step s (to detect double-runs)
+fn _count_of(results, s) {
+    var n = vec_len(results);
+    var c = 0;
+    var i = 0;
+    while (i < n) {
+        if (_is_step(vec_get(results, i), s) == 1) { c = c + 1; }
+        i = i + 1;
+    }
+    return c;
+}
+fn _dep(child, parent) {
+    step_depends_on_add(child, step_id_hi(parent), step_id_lo(parent));
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    # --- linear: build -> deploy ---
+    test_group("linear DAG order");
+    var build = step_new(str_from("build"));
+    var deploy = step_new(str_from("deploy"));
+    _dep(deploy, build);
+    var v1 = vec_new();
+    vec_push(v1, build);
+    vec_push(v1, deploy);
+    var r1 = run_dag(v1, 4, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r1), 2, "two results");
+    assert_eq(_is_step(vec_get(r1, 0), build), 1, "build runs first wave");
+    assert_eq(_is_step(vec_get(r1, 1), deploy), 1, "deploy runs after");
+    assert_eq(step_result_status(vec_get(r1, 1)), STATUS_COMPLETED, "deploy Completed");
+
+    # --- diamond: a -> {b,c} -> d ---
+    test_group("diamond DAG");
+    var a = step_new(str_from("a"));
+    var b = step_new(str_from("b"));
+    var c = step_new(str_from("c"));
+    var d = step_new(str_from("d"));
+    _dep(b, a);
+    _dep(c, a);
+    _dep(d, b);
+    _dep(d, c);
+    var v2 = vec_new();
+    vec_push(v2, a);
+    vec_push(v2, b);
+    vec_push(v2, c);
+    vec_push(v2, d);
+    var r2 = run_dag(v2, 4, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r2), 4, "four results");
+    assert_eq(_is_step(vec_get(r2, 0), a), 1, "a first");
+    assert_eq(_is_step(vec_get(r2, 3), d), 1, "d last");
+    assert_eq(_count_of(r2, d), 1, "d runs exactly once");
+
+    # --- transitive dependency failure ---
+    test_group("dependency failure propagates");
+    var fa = step_new(str_from("boom"));
+    var fb = step_new(str_from("b"));
+    _dep(fb, fa);
+    var v3 = vec_new();
+    vec_push(v3, fa);
+    vec_push(v3, fb);
+    var r3 = run_dag(v3, 4, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r3, 0)), STATUS_FAILED, "boom Failed");
+    assert_eq(step_result_status(vec_get(r3, 1)), STATUS_SKIPPED, "dependent Skipped");
+    assert(str_eq_cstr(step_result_error(vec_get(r3, 1)), "dependency failed"),
+    "reason: dependency failed");
+
+    # --- condition skip + unlock ---
+    test_group("condition skip in DAG");
+    var ga = step_new(str_from("a"));
+    var gb = step_with_condition(step_new(str_from("b")), str_from("steps.x.status == 'completed'"));
+    _dep(gb, ga);
+    var v4 = vec_new();
+    vec_push(v4, ga);
+    vec_push(v4, gb);
+    var r4 = run_dag(v4, 4, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(step_result_status(vec_get(r4, 0)), STATUS_COMPLETED, "a Completed");
+    assert_eq(step_result_status(vec_get(r4, 1)), STATUS_SKIPPED, "b condition-skipped");
+    assert(str_eq_cstr(step_result_error(vec_get(r4, 1)), "condition not met"), "b reason");
+
+    # --- cancellation: only the ready wave is skipped; locked steps get NO result ---
+    test_group("cancellation stops the DAG");
+    var ca = step_new(str_from("a"));
+    var cb = step_new(str_from("b"));
+    _dep(cb, ca);
+    var tok = cancel_token_new();
+    cancel_token_signal(tok);
+    var v5 = vec_new();
+    vec_push(v5, ca);
+    vec_push(v5, cb);
+    var r5 = run_dag(v5, 4, 60000, clock_now_ms(), tok, _mk_ctx());
+    assert_eq(vec_len(r5), 1, "only the ready step (a) gets a result");
+    assert_eq(step_result_status(vec_get(r5, 0)), STATUS_SKIPPED, "a Skipped");
+    assert(str_eq_cstr(step_result_error(vec_get(r5, 0)), "cancelled"), "a reason cancelled");
+
+    # --- TriggerMode::Any: d unlocked by either b or c runs exactly once ---
+    test_group("TriggerMode Any runs once");
+    var ya = step_new(str_from("a"));
+    var yb = step_new(str_from("b"));
+    var yc = step_new(str_from("c"));
+    var yd = step_with_trigger_mode(step_new(str_from("d")), TRIGGER_ANY);
+    _dep(yb, ya);
+    _dep(yc, ya);
+    _dep(yd, yb);
+    _dep(yd, yc);
+    var v6 = vec_new();
+    vec_push(v6, ya);
+    vec_push(v6, yb);
+    vec_push(v6, yc);
+    vec_push(v6, yd);
+    var r6 = run_dag(v6, 4, 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(_count_of(r6, yd), 1, "Any-trigger d runs exactly once");
+    assert_eq(vec_len(r6), 4, "all four steps have one result");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

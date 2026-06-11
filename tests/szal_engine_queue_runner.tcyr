@@ -1,0 +1,109 @@
+# szal_engine_queue_runner.tcyr — run_queued (engine_queue_runner.cyr) unit tests.
+#
+# Ports the queue executor semantics: all steps enqueued + processed via the majra ManagedQueue,
+# results in dequeue (FIFO-at-Normal-priority) order, complete/fail marking, independent failures.
+#   cyrius build --strict --no-deps tests/szal_engine_queue_runner.tcyr build/test_engine_queue_runner
+#   ./build/test_engine_queue_runner
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_queue_runner.cyr"
+
+fn _q_handler(step, ctx) {
+    if (str_eq_cstr(step_name(step), "boom") == 1) { return Err(str_from("kaboom")); }
+    return Ok(bayan_json_v_int_new(1));
+}
+fn _mk_ctx() {
+    var handler = cb_new(&_q_handler, 0);
+    var flow = flow_ctx_new(str_from("flow"), 0, 0);
+    return exec_ctx_new(handler, 0, flow, 0, 0, 0, cache_new());
+}
+fn _is_step(r, s) {
+    if (step_result_id_hi(r) != step_id_hi(s)) { return 0; }
+    if (step_result_id_lo(r) != step_id_lo(s)) { return 0; }
+    return 1;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    # --- all complete, dequeued in FIFO order ---
+    test_group("queue all complete");
+    var a = step_new(str_from("a"));
+    var b = step_new(str_from("b"));
+    var c = step_new(str_from("c"));
+    var steps1 = vec_new();
+    vec_push(steps1, a);
+    vec_push(steps1, b);
+    vec_push(steps1, c);
+    var q1 = mq_new(str_from("q1"), 4);
+    var r1 = run_queued(steps1, q1, _mk_ctx());
+    assert_eq(vec_len(r1), 3, "three results");
+    assert_eq(step_result_status(vec_get(r1, 0)), STATUS_COMPLETED, "a Completed");
+    assert_eq(step_result_status(vec_get(r1, 1)), STATUS_COMPLETED, "b Completed");
+    assert_eq(step_result_status(vec_get(r1, 2)), STATUS_COMPLETED, "c Completed");
+    assert_eq(_is_step(vec_get(r1, 0), a), 1, "FIFO: a first");
+    assert_eq(_is_step(vec_get(r1, 2), c), 1, "FIFO: c last");
+
+    # --- independent failure (queue processes all; no cascade) ---
+    test_group("queue mixed success/failure");
+    var steps2 = vec_new();
+    vec_push(steps2, step_new(str_from("a")));
+    vec_push(steps2, step_new(str_from("boom")));
+    vec_push(steps2, step_new(str_from("c")));
+    var q2 = mq_new(str_from("q2"), 2);
+    var r2 = run_queued(steps2, q2, _mk_ctx());
+    assert_eq(vec_len(r2), 3, "all three processed");
+    assert_eq(step_result_status(vec_get(r2, 0)), STATUS_COMPLETED, "a Completed");
+    assert_eq(step_result_status(vec_get(r2, 1)), STATUS_FAILED, "boom Failed");
+    assert_eq(step_result_status(vec_get(r2, 2)), STATUS_COMPLETED, "c Completed");
+
+    # --- queue drains: counts return to zero after processing ---
+    test_group("queue drains");
+    assert_eq(mq_queued_count(q2), 0, "queue empty after run");
+    assert_eq(mq_running_count(q2), 0, "nothing running after run");
+
+    # --- single step ---
+    test_group("queue single step");
+    var steps3 = vec_new();
+    vec_push(steps3, step_new(str_from("solo")));
+    var q3 = mq_new(str_from("q3"), 1);
+    var r3 = run_queued(steps3, q3, _mk_ctx());
+    assert_eq(vec_len(r3), 1, "one result");
+    assert_eq(step_result_status(vec_get(r3, 0)), STATUS_COMPLETED, "solo Completed");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

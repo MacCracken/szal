@@ -1,0 +1,180 @@
+# szal_engine_core.tcyr — engine_core.cyr (shared engine infra) unit tests.
+#
+# Covers EngineConfig defaults/setters, the callback (fn_ptr,ctx) ABI + handler_invoke, emit /
+# emit_step_type_metric (None-guard + dispatch), check_condition (no-cond / met / not-met /
+# parse-error), FlowCtx / ExecCtx accessors, and ProgressReporter dispatch. The behavioral engine
+# tests (run_sequential etc.) land with the executor rows.
+#   cyrius build --strict --no-deps tests/szal_engine_core.tcyr build/test_engine_core && ./build/test_engine_core
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/engine_core.cyr"
+
+# --- callbacks the tests install (fp signature ends in the captured ctx arg) ---
+
+var _event_count = 0;
+fn _count_event(event, ctx) { _event_count = _event_count + 1; return 0; }
+
+var _metric_count = 0;
+var _metric_last_type = 0;
+fn _count_metric(step_type, status, duration, ctx) {
+    _metric_count = _metric_count + 1;
+    _metric_last_type = step_type;
+    return 0;
+}
+
+var _progress_count = 0;
+var _progress_last = 0;
+fn _count_progress(sp, ctx) {
+    _progress_count = _progress_count + 1;
+    _progress_last = sp;
+    return 0;
+}
+
+# A step handler: returns Ok of a json int echoing the ctx value (proves ctx threading).
+fn _echo_handler(step, ctx) {
+    return Ok(bayan_json_v_int_new(ctx));
+}
+
+fn main() {
+    alloc_init();
+
+    # --- EngineConfig defaults (mirrors tests::engine_config_default) ---
+    test_group("EngineConfig default");
+    var cfg = engine_config_default();
+    assert_eq(engine_config_max_concurrency(cfg), 16, "default max_concurrency 16");
+    assert_eq(engine_config_timeout_present(cfg), 0, "default global_timeout None");
+    assert_eq(engine_config_storage_vt(cfg), 0, "default storage None");
+    assert_eq(engine_config_metrics_vt(cfg), 0, "default metrics None");
+    assert_eq(engine_config_progress_sink(cfg), 0, "default progress_sink None");
+    assert_eq(engine_config_execution_store_vt(cfg), 0, "default execution_store None");
+
+    test_group("EngineConfig setters");
+    engine_config_set_max_concurrency(cfg, 4);
+    assert_eq(engine_config_max_concurrency(cfg), 4, "set max_concurrency");
+    engine_config_set_timeout_ms(cfg, 0);
+    assert_eq(engine_config_timeout_present(cfg), 1, "timeout present after set (Some(0))");
+    assert_eq(engine_config_timeout_ms(cfg), 0, "timeout value 0 retained");
+    engine_config_set_storage_vt(cfg, 1234);
+    assert_eq(engine_config_storage_vt(cfg), 1234, "set storage_vt");
+
+    # --- callback ABI + handler_invoke ---
+    test_group("callback + handler_invoke");
+    var h = cb_new(&_echo_handler, 99);
+    assert_eq(cb_fp(h) != 0, 1, "cb_fp set");
+    assert_eq(cb_ctx(h), 99, "cb_ctx set");
+    var hr = handler_invoke(h, 0);
+    assert(is_ok(hr) == 1, "handler returns Ok");
+    assert_eq(bayan_json_v_int(result_unwrap(hr)), 99, "handler echoed its ctx (99)");
+
+    # --- emit: None-guard + dispatch ---
+    test_group("emit");
+    _event_count = 0;
+    emit(0, 0);
+    assert_eq(_event_count, 0, "emit(None) is a no-op");
+    var esink = cb_new(&_count_event, 0);
+    emit(esink, 0);
+    emit(esink, 0);
+    assert_eq(_event_count, 2, "emit dispatches to the sink");
+
+    # --- emit_step_type_metric: None type -> "default" ---
+    test_group("emit_step_type_metric");
+    _metric_count = 0;
+    emit_step_type_metric(0, 0, "completed", 10);
+    assert_eq(_metric_count, 0, "metric None sink no-op");
+    var msink = cb_new(&_count_metric, 0);
+    emit_step_type_metric(msink, "bash", "completed", 10);
+    assert_eq(_metric_count, 1, "metric dispatched");
+    assert(str_eq_cstr(str_from(_metric_last_type), "bash"), "step_type passed through");
+    emit_step_type_metric(msink, 0, "failed", 5);
+    assert(str_eq_cstr(str_from(_metric_last_type), "default"), "None step_type -> 'default'");
+
+    # --- check_condition: no condition -> Ok(true) ---
+    test_group("check_condition");
+    var cache = cache_new();
+    var noc = step_new(str_from("noc"));
+    var rno = check_condition(noc, vec_new(), vec_new(), cache);
+    assert(is_ok(rno) == 1, "no-condition is Ok");
+    assert_eq(result_unwrap(rno), 1, "no-condition is true");
+
+    # build a context: a completed "build" step + a "deploy" step gated on its status
+    var build = step_new(str_from("build"));
+    var deploy = step_with_condition(step_new(str_from("deploy")),
+    str_from("steps.build.status == 'completed'"));
+    var steps = vec_new();
+    vec_push(steps, build);
+    vec_push(steps, deploy);
+    var results = vec_new();
+    vec_push(results, step_result_new(step_id_hi(build), step_id_lo(build), STATUS_COMPLETED,
+    bayan_json_v_null(), 10, 1));
+    var rmet = check_condition(deploy, results, steps, cache);
+    assert(is_ok(rmet) == 1, "met condition is Ok");
+    assert_eq(result_unwrap(rmet), 1, "build completed -> condition true");
+
+    # not met: gate on 'failed'
+    var deploy2 = step_with_condition(step_new(str_from("deploy2")),
+    str_from("steps.build.status == 'failed'"));
+    var rnot = check_condition(deploy2, results, steps, cache);
+    assert(is_ok(rnot) == 1, "not-met condition still Ok");
+    assert_eq(result_unwrap(rnot), 0, "build not failed -> condition false");
+
+    # parse error -> Err (the caller warns + runs anyway; check_condition just surfaces it)
+    var bad = step_with_condition(step_new(str_from("bad")), str_from("== bad"));
+    var rbad = check_condition(bad, results, steps, cache);
+    assert(is_err_result(rbad) == 1, "malformed condition is Err");
+
+    # --- FlowCtx + ExecCtx accessors ---
+    test_group("FlowCtx + ExecCtx");
+    var flow = flow_new(str_from("pipeline"), FLOW_DAG);
+    var fc = flow_ctx_of(flow);
+    assert(str_eq_cstr(flow_ctx_name(fc), "pipeline"), "flow_ctx name");
+    assert_eq(flow_ctx_id_hi(fc), flow_id_hi(flow), "flow_ctx id hi");
+    var ec = exec_ctx_new(h, esink, fc, 0, msink, 0, cache);
+    assert_eq(exec_ctx_handler(ec), h, "exec_ctx handler");
+    assert_eq(exec_ctx_event_sink(ec), esink, "exec_ctx event_sink");
+    assert_eq(exec_ctx_flow(ec), fc, "exec_ctx flow");
+    assert_eq(exec_ctx_metrics_vt(ec), 0, "exec_ctx metrics None");
+    assert_eq(exec_ctx_condition_cache(ec), cache, "exec_ctx cache");
+
+    # --- ProgressReporter: None-guard + dispatch ---
+    test_group("ProgressReporter");
+    _progress_count = 0;
+    var pr0 = progress_reporter_new(0, str_from("s"), str_from("id"));
+    progress_reporter_report(pr0, bayan_json_v_null());
+    assert_eq(_progress_count, 0, "progress None sink no-op");
+    var psink = cb_new(&_count_progress, 0);
+    var pr = progress_reporter_new(psink, str_from("build"), str_from("id-1"));
+    progress_reporter_report(pr, bayan_json_v_int_new(50));
+    assert_eq(_progress_count, 1, "progress dispatched");
+    assert(str_eq_cstr(step_progress_step_name(_progress_last), "build"), "progress step_name");
+    assert_eq(bayan_json_v_int(step_progress_data(_progress_last)), 50, "progress data");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

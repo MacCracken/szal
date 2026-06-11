@@ -1,0 +1,153 @@
+# szal_engine_step_exec.tcyr — execute_step_with_handler (engine_step_exec.cyr) unit tests.
+#
+# Ports the step_exec behavioral semantics: success/attempts/output, retry-then-succeed, retry
+# exhausted (RetryExhausted message), no-retry failure (last error), per-attempt timeout (worker
+# thread + deadline), and the exact event emissions.
+#   cyrius build --strict --no-deps tests/szal_engine_step_exec.tcyr build/test_engine_step_exec
+#   ./build/test_engine_step_exec
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+
+# --- capturing event sink: count by EventType ---
+var _ev_started = 0;
+var _ev_completed = 0;
+var _ev_failed = 0;
+var _ev_retry = 0;
+fn _count_ev(event, ctx) {
+    var t = event_type(event);
+    if (t == STEP_STARTED) { _ev_started = _ev_started + 1; }
+    if (t == STEP_COMPLETED) { _ev_completed = _ev_completed + 1; }
+    if (t == STEP_FAILED) { _ev_failed = _ev_failed + 1; }
+    if (t == STEP_RETRY) { _ev_retry = _ev_retry + 1; }
+    return 0;
+}
+fn _reset_ev() { _ev_started = 0; _ev_completed = 0; _ev_failed = 0; _ev_retry = 0; return 0; }
+
+# --- test handlers (ctx-threaded, no capture) ---
+fn _ok_handler(step, ctx) { return Ok(bayan_json_v_int_new(42)); }
+fn _fail_handler(step, ctx) { return Err(str_from("boom")); }
+
+# fails `_fail_budget` times then succeeds (global counter simulates the Rust AtomicU32 fixture).
+var _fail_budget = 0;
+fn _flaky_handler(step, ctx) {
+    if (_fail_budget > 0) {
+        _fail_budget = _fail_budget - 1;
+        return Err(str_from("transient"));
+    }
+    return Ok(bayan_json_v_int_new(7));
+}
+
+# hangs longer than any test timeout, to trigger the deadline path.
+fn _hang_handler(step, ctx) {
+    sleep_ms(200);
+    return Ok(bayan_json_v_null());
+}
+
+# Build an ExecCtx with the given handler fn and the counting event sink (no metrics/cache use).
+fn _ctx_for(handler_fp) {
+    var handler = cb_new(handler_fp, 0);
+    var esink = cb_new(&_count_ev, 0);
+    var flow = flow_ctx_new(str_from("flow"), 0, 0);
+    return exec_ctx_new(handler, esink, flow, 0, 0, 0, cache_new());
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    # --- success on first attempt ---
+    test_group("success first attempt");
+    _reset_ev();
+    var s1 = step_new(str_from("ok"));
+    var r1 = execute_step_with_handler(s1, _ctx_for(&_ok_handler));
+    assert_eq(step_result_status(r1), STATUS_COMPLETED, "status Completed");
+    assert_eq(step_result_attempts(r1), 1, "attempts == 1");
+    assert_eq(bayan_json_v_int(step_result_output(r1)), 42, "output preserved");
+    assert_eq(step_result_error(r1), 0, "no error");
+    assert_eq(_ev_started, 1, "one step_started");
+    assert_eq(_ev_completed, 1, "one step_completed");
+    assert_eq(_ev_failed, 0, "no step_failed");
+
+    # --- retry then succeed (fail twice, succeed on the 3rd of 3 attempts) ---
+    test_group("retry then succeed");
+    _reset_ev();
+    _fail_budget = 2;
+    var s2 = step_with_retries(step_new(str_from("flaky")), 2, 1);
+    var r2 = execute_step_with_handler(s2, _ctx_for(&_flaky_handler));
+    assert_eq(step_result_status(r2), STATUS_COMPLETED, "eventually Completed");
+    assert_eq(step_result_attempts(r2), 3, "attempts == 3");
+    assert_eq(bayan_json_v_int(step_result_output(r2)), 7, "success output");
+    assert_eq(_ev_retry, 2, "two step_retry events");
+    assert_eq(_ev_completed, 1, "one step_completed");
+
+    # --- no-retry failure: error is the last handler error (NOT RetryExhausted) ---
+    test_group("no-retry failure -> last error");
+    _reset_ev();
+    var s3 = step_new(str_from("boom"));
+    var r3 = execute_step_with_handler(s3, _ctx_for(&_fail_handler));
+    assert_eq(step_result_status(r3), STATUS_FAILED, "status Failed");
+    assert_eq(step_result_attempts(r3), 1, "attempts == 1");
+    assert(str_eq_cstr(step_result_error(r3), "boom"), "error is the handler error");
+    assert_eq(_ev_retry, 0, "no retry");
+    assert_eq(_ev_failed, 1, "one step_failed");
+
+    # --- retries exhausted: error is the RetryExhausted message ---
+    test_group("retries exhausted -> RetryExhausted msg");
+    _reset_ev();
+    var s4 = step_with_retries(step_new(str_from("always")), 1, 1);
+    var r4 = execute_step_with_handler(s4, _ctx_for(&_fail_handler));
+    assert_eq(step_result_status(r4), STATUS_FAILED, "Failed after retries");
+    assert_eq(step_result_attempts(r4), 2, "attempts == 2 (max)");
+    assert(str_eq_cstr(step_result_error(r4), "retry exhausted: always after 2 attempts"),
+    "RetryExhausted message");
+    assert_eq(_ev_retry, 1, "one step_retry");
+    assert_eq(_ev_failed, 1, "one final step_failed");
+
+    # --- per-attempt timeout via worker thread + deadline ---
+    test_group("timeout");
+    _reset_ev();
+    var s5 = step_with_timeout(step_new(str_from("slow")), 10);
+    var r5 = execute_step_with_handler(s5, _ctx_for(&_hang_handler));
+    assert_eq(step_result_status(r5), STATUS_FAILED, "timed-out step Failed");
+    assert_eq(step_result_attempts(r5), 1, "one attempt");
+    assert(str_eq_cstr(step_result_error(r5), "step timeout: slow after 10ms"),
+    "StepTimeout message");
+    # the timeout branch emits step_failed (with duration) AND the final emission does too -> 2
+    assert_eq(_ev_failed, 2, "timeout emits step_failed twice (in-branch + final), per Rust");
+    assert_eq(_ev_completed, 0, "no completion");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

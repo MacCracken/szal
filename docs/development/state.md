@@ -90,11 +90,63 @@ unblocked.
   repointed — drop-in). This unblocks the majra-heavy rows (`engine_queue_runner`,
   `engine_distributed`, M3 `stream`/`mcp_pool`). cyrius.cyml pin still reads 2.4.5 → reconcile at
   M5 (dist byte-identical). Spec/maintenance record: `docs/development/majra-vendoring.md`.
-- ⏳ Next: row 11 `engine_core.cyr` (the big one: `engine/mod.rs` minus `sub_flow_handler` —
-  FlowCtx/ExecCtx, EngineConfig, handler ABI, check_condition; needs no majra, holds `metrics_vt`
-  as an opaque slot). Then step_exec → sequential → dag → hierarchical (pure logic, unblocked).
-  Parallel/hardware still gated on Q9/Q10/Q11; queue_runner/distributed now have majra (still need
-  the concurrency sign-off).
+- ✅ **row 11 `src/engine_core.cyr`** — `engine/mod.rs` minus `sub_flow_handler`. The shared engine
+  infra: `FlowCtx`/`ExecCtx`, `EngineConfig` (11 fields + default `max_concurrency`=16 + accessors/
+  setters), `StepProgress`/`ProgressReporter`+report, `emit`/`emit_step_type_metric`/`check_condition`.
+  Central ABI: every `Option<Arc<dyn Fn → BoxFuture>>` → a **(fn_ptr, ctx_ptr) callback pair** (0 =
+  None; handlers synchronous — no async, port-plan §1.7). `tests/szal_engine_core.tcyr` (38) covers
+  config/setters, handler_invoke, emit None-guard+dispatch, the `"default"` step-type fallback,
+  check_condition (no-cond/met/not-met/parse-err), FlowCtx/ExecCtx, ProgressReporter dispatch.
+  Adversarial parity-verify (3 lenses, oracle read-only): **0 findings** — field-for-field parity.
+- ✅ **row 12 `src/engine_step_exec.cyr`** — `execute_step_with_handler` (retry/backoff/per-attempt
+  timeout). The first module that actually **runs handlers on threads**. Timeout = worker thread +
+  `chan_try_recv` deadline poll (port-plan §1.7; `async_timeout` forks → loses step side effects).
+  **Q10 clarified, not a blocker:** Cyrius *does* have async (`lib/async.cyr`) + an exact-parity
+  `CancellationToken` (`cancel_token_*`); the only residual is the cooperative-cancel timeout delta
+  (an orphaned wedged handler runs on — inherent to OS threads; even `std::thread`/`tokio` share it),
+  documented in parity-notes **§8**. Handler ABI: `Ok(json_v)` | `Err(message_Str)`. Exact error
+  strings (`step timeout: …`, `retry exhausted: …`). `tests/szal_engine_step_exec.tcyr` (27) covers
+  success/attempts/output, retry-then-succeed, RetryExhausted, last-error, and the real worker-thread
+  timeout. Adversarial parity-verify (3 lenses): **0 findings**.
+- ✅ **row 13 `src/engine_sequential.cyr`** — `run_sequential`: in-order loop; skip on cancel /
+  `prior step failed` / `flow timeout exceeded` / `condition not met` (exact strings, exact check
+  order), else `execute_step_with_handler`; a Failed result cascades; a condition PARSE error is
+  logged-and-run (not skipped). `tests/szal_engine_sequential.tcyr` (17) covers all five paths +
+  the cancel token + the Skipped result shape. **The engine now runs a sequential flow end-to-end.**
+  Adversarial parity-verify (single-lens): **0 findings**.
+- ✅ **row 16 `src/engine_hierarchical.cyr`** — `run_hierarchical`: recursive pre-order tree walk
+  (plain recursion, no boxed futures); sequential siblings; a successful step recurses into its
+  `sub_steps`; a failed step skips its whole subtree (`parent step failed`) and cascades
+  (`prior step failed`) to later siblings; cancel/timeout/condition skip the step + its subtree.
+  Mutually-recursive skip helpers (Cyrius allows forward/mutual fn refs — proven by the condition
+  parser). `tests/szal_engine_hierarchical.tcyr` (21) covers all cascades + pre-order. Parity-verify
+  **running**. **The engine now runs sequential + hierarchical flows end-to-end.**
+- ✅ **row 14 `src/engine_parallel.cyr`** — `run_parallel`: real bounded thread fan-out. Each step on
+  a `thread_create` worker; concurrency capped by a counting semaphore (bounded `chan` pre-filled
+  with N tokens; acquire=`chan_recv`, release=`chan_send`); join in spawn order; condition pre-pass
+  collects `pre_skipped` FIRST; final order = pre_skipped ++ spawned. `thread_join` returns no value
+  so each worker publishes its StepResult into a per-worker slot (§8); cancel/timeout at join Skips +
+  orphans (cooperative). `tests/szal_engine_parallel.tcyr` (20) covers concurrent completion (spawn
+  order via id), pre-skip-first ordering, no-cascade failure, cancel, flow-timeout. Parity-verify
+  **running**. **The engine now runs sequential + hierarchical + parallel flows.**
+- ✅ **row 15 `src/engine_dag.cyr`** — `run_dag`: Kahn wavefront, each ready wave run as a parallel
+  batch (reuses engine_parallel's `_par_worker`/semaphore/slot), `unlock_dependents` (decrement
+  in-degree → ready at 0, `STEP_I64_MAX` sentinel prevents re-queue), transitive failure via a
+  `failed` set, `dependency failed` skips. Ordinal-indexed i64 arenas + one id→ordinal map (CLAUDE.md
+  vec-arena-over-hashmap). `tests/szal_engine_dag.tcyr` (19): linear, diamond (d runs once), transitive
+  failure, condition skip, cancellation (locked steps get no result), TriggerMode::Any-runs-once.
+  Parity-verify **running**. **ALL FIVE execution modes are now ported** (sequential/parallel/dag/
+  hierarchical + step_exec + core).
+- ✅ **row 18 `src/engine_queue_runner.cyr`** — `run_queued`: enqueue all steps at `PRIORITY_NORMAL`
+  into a majra `ManagedQueue`, single worker loop dequeues → `execute_step_with_handler` →
+  `mq_complete`/`mq_fail` → collect; exits when all processed or drained. **First functional use of
+  the vendored majra** (`mq_*` + `queue_item_payload`). ResourcePool arg dropped (port-plan §3.2).
+  `tests/szal_engine_queue_runner.tcyr` (14). Parity-verify **running**.
+- ⏳ **Next (plan order, user-chosen): row 19 `engine_distributed.cyr`** (431 Rust lines — fleet
+  workers + coordinator, majra `fleet_*`, reuses the DAG `unlock_dependents` bookkeeping) → then
+  row 20 `engine_runner.cyr` (the heart, 746 lines — `Engine` + builders, the run sequence with
+  mode dispatch / rollback / persistence / heartbeat, `run_with_cancellation`, `run_distributed`)
+  → row 21 `engine_subflow`. Still gated: row 17 `engine_hardware` on Q9 (`registry_new` collision).
 
 ## Toolchain gotchas found during the port (for docs/cyrius-feedback.md)
 

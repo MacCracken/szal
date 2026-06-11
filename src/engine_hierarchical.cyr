@@ -1,0 +1,103 @@
+# engine_hierarchical.cyr — hierarchical (recursive tree) flow execution
+#
+# Ports rust-old/src/engine/hierarchical.rs (run_hierarchical / execute_tree). port-plan §4 row 16.
+# Sequential siblings; a successful step recurses into its sub_steps; a failed step skips its whole
+# subtree ("parent step failed") and cascades "prior step failed" to later siblings. Results are a
+# flat vec in pre-order. Cyrius uses plain recursion (no boxed futures needed — port-plan §1.7).
+#
+# Usage: include "src/engine_hierarchical.cyr" (after engine_core + engine_step_exec).
+# Requires: src/engine_core.cyr (ExecCtx, emit, check_condition), src/engine_step_exec.cyr
+#   (execute_step_with_handler), src/step.cyr (sub_steps accessors), src/bus.cyr (event_step_skipped),
+#   src/uuid.cyr, lib/async.cyr (cancel_token_check), lib/chrono.cyr (clock_now_ms), lib/vec.cyr.
+# Naming: public symbol is run_hierarchical; the tree-walk + skip helpers are internal.
+
+# Skip a step and emit step_skipped, then recursively skip its whole sub-tree with the same reason.
+# Mirrors skip_step_and_children (hierarchical.rs 87-106). Mutually recursive with _hier_skip_children.
+fn _hier_skip_step_and_children(step, reason, ctx, results) {
+    var name = step_name(step);
+    var sid = uuid_to_str(step_id_hi(step), step_id_lo(step));
+    emit(exec_ctx_event_sink(ctx), event_step_skipped(name, sid, str_from(reason)));
+    var sr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_SKIPPED,
+    bayan_json_v_null(), 0, 0);
+    step_result_set_error(sr, str_from(reason));
+    vec_push(results, sr);
+    _hier_skip_children(step, reason, ctx, results);
+    return 0;
+}
+
+# Skip every sub-step (and its subtree) of `step` with `reason`. Mirrors skip_children
+# (hierarchical.rs 108-116).
+fn _hier_skip_children(step, reason, ctx, results) {
+    var subs = step_sub_steps(step);
+    var n = vec_len(subs);
+    var i = 0;
+    while (i < n) {
+        _hier_skip_step_and_children(vec_get(subs, i), reason, ctx, results);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Walk `steps` (a vec of StepDef*) in pre-order under `ctx`, appending StepResults to `results`.
+# Mirrors execute_tree (hierarchical.rs 24-85): sequential siblings; cancelled/prior-failed/
+# flow-timeout/condition-not-met skip the step AND its subtree; a successful step with sub_steps
+# recurses; a failed step skips its children "parent step failed" and cascades to later siblings.
+fn _hier_execute_tree(steps, timeout_ms, start_ms, token, ctx, results) {
+    var failed = 0;
+    var n = vec_len(steps);
+    var i = 0;
+    while (i < n) {
+        var step = vec_get(steps, i);
+
+        # Skip reason (0 = run). Order mirrors Rust: cancelled -> prior-failed -> timeout -> condition.
+        var reason = 0;
+        var cancelled = 0;
+        if (token != 0) {
+            if (cancel_token_check(token) == 1) { cancelled = 1; }
+        }
+        if (cancelled == 1) {
+            reason = "cancelled";
+        } elif (failed == 1) {
+            reason = "prior step failed";
+        } elif (clock_now_ms() - start_ms > timeout_ms) {
+            reason = "flow timeout exceeded";
+        } else {
+            var cond = step_condition(step);
+            if (cond != 0) {
+                var cr = check_condition(step, results, steps, exec_ctx_condition_cache(ctx));
+                # Ok(false) -> skip; Ok(true) -> run; Err -> warn + run anyway.
+                if (is_ok(cr) == 1) {
+                    if (result_unwrap(cr) == 0) { reason = "condition not met"; }
+                }
+            }
+        }
+
+        if (reason != 0) {
+            _hier_skip_step_and_children(step, reason, ctx, results);
+        } else {
+            var res = execute_step_with_handler(step, ctx);
+            var succeeded = 0;
+            if (step_result_status(res) == STATUS_COMPLETED) { succeeded = 1; }
+            vec_push(results, res);
+            if (succeeded == 1) {
+                if (step_sub_steps_len(step) != 0) {
+                    _hier_execute_tree(step_sub_steps(step), timeout_ms, start_ms, token, ctx, results);
+                }
+            } else {
+                _hier_skip_children(step, "parent step failed", ctx, results);
+                failed = 1;
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Run `steps` hierarchically under `ctx`. `timeout_ms` is the flow deadline budget; `start_ms` is
+# the flow start timestamp (clock_now_ms); `token` is a cancel token (0 = None). Returns a flat,
+# pre-order vec of StepResult*. Mirrors run_hierarchical (hierarchical.rs 11-22).
+fn run_hierarchical(steps, timeout_ms, start_ms, token, ctx) {
+    var results = vec_new();
+    _hier_execute_tree(steps, timeout_ms, start_ms, token, ctx, results);
+    return results;
+}
