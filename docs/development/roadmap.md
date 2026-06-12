@@ -25,7 +25,7 @@ Toolchain pinned at `cyrius = "6.1.35"` (was 6.1.33 at M0). `VERSION` is the sin
 | UUID | `{hi, lo}` i64 pair internal, RFC-4122 string only at JSON/MCP boundaries | ✅ decided |
 | SQL store | patra (stdlib) only; **postgres deferred**, prometheus passthrough dropped | ✅ decided |
 | Version | 2.0.0; keep `rust-old/` as parity oracle, retire in a 2.0.x patch | ✅ decided |
-| `registry_new` collision (bote-core × ai-hwaccel) | resolve before engine porting — vendor+rename locally (interim) or upstream ai-hwaccel rename (clean) | ⏳ open (blocks M2 hardware) |
+| `registry_new` collision (bote-core × ai-hwaccel) | upstream ai-hwaccel rename `registry_new`→`hw_registry_new` (clean, preferred) or vendor+rename locally (interim) — filed [`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md) (mirrored in bote + ai-hwaccel repos) | ⏳ **open — P2 blocker-from-completion** (only blocks M2 row 17 `engine_hardware`; rest of M2 shipped around it) |
 | Engine concurrency model | threads + permit-channel (bounded `chan`) + cancel tokens; cooperative cancel replaces `JoinHandle::abort()` (observable timeout/cancel delta) | ✅ decided + implemented (parallel/dag/queue verified; see parity-notes §8) |
 | Logging under threads | szal's own emit/metric/log calls stay on the MAIN thread (workers only run handlers), so sakshi is never touched cross-thread — no logging thread needed | ✅ decided + implemented |
 | Pub/sub lag semantics | majra bounded-chan drop-newest vs tokio broadcast drop-oldest — contract change | ⏳ open (M3 stream/bus) |
@@ -72,22 +72,22 @@ Foundation modules (no engine, no MCP — pure data + algorithms):
 - [x] `src/engine_parallel.cyr` — thread fan-out + permit-channel semaphore + cancel tokens ✅ (alloc thread-safe; cooperative-cancel §8)
 - [x] `src/engine_dag.cyr` — Kahn wavefront, `unlock_dependents`, transitive failure propagation ✅ (ordinal-indexed arenas; reuses the parallel worker/semaphore)
 - [x] `src/engine_hierarchical.cyr` — recursive tree walk ✅
-- [ ] `src/engine_hardware.cyr` — `HardwareContext` over ai-hwaccel cached registry *(needs `registry_new` fix)*
+- [ ] `src/engine_hardware.cyr` — `HardwareContext` over ai-hwaccel cached registry — **⛔ P2 BLOCKER-FROM-COMPLETION**: gated on the `registry_new` collision ([`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md)). M2 cannot fully close until this lands; all other M2 rows are done. Circle back after M3.
 - [x] `src/engine_queue_runner.cyr` — majra `mq_*` (ResourcePool param dropped) ✅ first functional majra-queue use
-- [ ] `src/engine_distributed.cyr` — fleet workers + coordinator, reuses `unlock_dependents`
-- [ ] `src/engine_runner.cyr` — `Engine`, `run`/`run_with_cancellation`/`run_distributed`, rollback, heartbeat guard, persistence (746 Rust lines — the heart)
-- [ ] `src/engine_subflow.cyr` — `sub_flow_handler` (deferred last; constructs `Engine`)
-- [ ] Engine test suites (`tests/szal_engine.tcyr` + per-mode) — the ~47 behavioral tests define semantics
+- [x] `src/engine_distributed.cyr` — fleet workers + coordinator, reuses `unlock_dependents` ✅ (poll-loop translation of `select!{biased}`; result-chan cap = total+1 ⇒ no deadlock)
+- [x] `src/engine_runner.cyr` — `Engine`, `run`/`run_with_cancellation`/`run_distributed`, rollback, heartbeat guard, persistence ✅ (queue-path + heartbeat-ticker + hw-check divergences documented in-module)
+- [x] `src/engine_subflow.cyr` — `sub_flow_handler` (constructs a fresh child `Engine`) ✅
+- [x] Engine test suites (per-module `tests/szal_engine_*.tcyr`) — ✅ 964 assertions across 24 files, 0 failures
 
 ### M3 — Streaming, persistence, MCP
 
-- [ ] `src/stream.cyr` — `ProgressHub`, SSE frame encoding
-- [ ] `src/sql_store.cyr` — patra-backed `ExecutionStore`, `szal_executions` table, synchronous writes
-- [ ] `src/vendor/bote-core.cyr` + `src/vendor/majra.cyr` — synced dist pins + `scripts/sync-*.sh`
-- [ ] `src/mcp.cyr` — `Tool` pairs, `register_tools` over bote-core dispatcher, `result_*` helpers, `validate_path` *(security)*
+- [x] `src/stream.cyr` — `ProgressHub` (per-subscriber chans) + SSE frame encoding ✅ (lag-semantics divergence in parity-notes §9)
+- [x] `src/sql_store.cyr` — patra-backed `ExecutionStore`, `szal_executions` table, synchronous writes ✅ (schema/upsert/sync divergences in parity-notes §10; Postgres dropped)
+- [x] `src/vendor/majra.cyr` (M2) + `src/vendor/bote-core.cyr` ✅ (bote 2.7.3 dist, 1-symbol rename `compiled_compile`→`bote_compiled_compile`; `scripts/sync-bote.sh`; collision scan clean)
+- [x] `src/mcp.cyr` **(core)** — `result_ok/ok_json/error/error_typed`, `McpErrorCode`, **`validate_path`** (lexical component-walk + CWD confinement; security), `mcp_tool_def`/`mcp_tool_new`, `register_tools[_with]` over bote-core dispatcher ✅ (`tests/szal_mcp.tcyr`, 26 — incl. traversal-rejection). The 54-tool `all_tools()` aggregator lands with the tool files.
 - [ ] `src/mcp_pool.cyr` + `src/mcp_tenant.cyr` — majra ratelimit buckets, tenant registry
-- [ ] `src/mcp_tools_*.cyr` (15 files, 54 tools) — security checks (SSRF guard, git-ref validation, path confinement, size/count caps) must not regress
-- [ ] MCP test suite (`tests/szal_mcp.tcyr`) + security/traversal tests
+- [ ] `src/mcp_tools_*.cyr` (15 files, 54 tools) — security checks (SSRF guard, git-ref validation, path confinement, size/count caps) must not regress; each tool is a `mcp_tool_new(mcp_tool_def(...), &handler)` pair, aggregated by `all_tools()` + `szal_register_tools()` in the last tool file
+- [x] MCP core test suite (`tests/szal_mcp.tcyr`) — result builders, error codes, validate_path traversal security, dispatcher registration ✅; per-tool security tests land with the tool files
 
 ### M4 — Verification
 

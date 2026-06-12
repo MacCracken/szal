@@ -1,0 +1,148 @@
+# szal_sql_store.tcyr — patra-backed ExecutionStore (sql_store.cyr) tests.
+#
+# Ports sql_store.rs tests: save/get roundtrip, upsert (delete-then-insert keeps one row),
+# list filtering by flow, remove returns-and-deletes, and engine_sink persistence through a real
+# engine_run. Writes are SYNCHRONOUS (unlike Rust's fire-and-forget), so no poll-for-persist loop.
+#   cyrius build --strict --no-deps tests/szal_sql_store.tcyr build/test_sql_store && ./build/test_sql_store
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "lib/patra.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/engine_result.cyr"
+include "src/storage.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_sequential.cyr"
+include "src/engine_hierarchical.cyr"
+include "src/engine_parallel.cyr"
+include "src/engine_dag.cyr"
+include "src/engine_queue_runner.cyr"
+include "src/engine_distributed.cyr"
+include "src/engine_runner.cyr"
+include "src/engine_subflow.cyr"
+include "src/sql_store.cyr"
+
+fn _h_ok(step, ctx) { return Ok(bayan_json_v_int_new(1)); }
+
+fn _rec(id, flow, state) {
+    return execution_record_new(str_from(id), str_from(flow), state, 0,
+    str_from("2026-06-10T00:00:00Z"), 0);
+}
+# Reset to an empty szal_executions table (drop if present, then create).
+fn _fresh(db) {
+    patra_exec(db, "DROP TABLE szal_executions");
+    sqlite_store_migrate(db);
+    return 0;
+}
+
+fn t_save_get(db) {
+    _fresh(db);
+    sqlite_store_save(db, _rec("e1", "deploy", STATE_RUNNING));
+    var got = sqlite_store_get(db, str_from("e1"));
+    assert(got != 0, "e1 found");
+    assert(str_eq_cstr(execution_record_flow_name(got), "deploy"), "flow_name deploy");
+    assert_eq(execution_record_state(got), STATE_RUNNING, "state Running");
+    assert_eq(sqlite_store_get(db, str_from("missing")), 0, "missing id -> 0");
+    return 0;
+}
+fn t_upsert(db) {
+    _fresh(db);
+    sqlite_store_save(db, _rec("e1", "deploy", STATE_RUNNING));
+    sqlite_store_save(db, _rec("e1", "deploy", STATE_COMPLETED));
+    var got = sqlite_store_get(db, str_from("e1"));
+    assert_eq(execution_record_state(got), STATE_COMPLETED, "upsert -> Completed");
+    assert_eq(vec_len(sqlite_store_list(db, 0)), 1, "still a single row");
+    return 0;
+}
+fn t_list_filter(db) {
+    _fresh(db);
+    sqlite_store_save(db, _rec("e1", "deploy", STATE_COMPLETED));
+    sqlite_store_save(db, _rec("e2", "test", STATE_FAILED));
+    sqlite_store_save(db, _rec("e3", "deploy", STATE_ROLLED_BACK));
+    assert_eq(vec_len(sqlite_store_list(db, 0)), 3, "list all = 3");
+    assert_eq(vec_len(sqlite_store_list(db, str_from("deploy"))), 2, "filter deploy = 2");
+    assert_eq(vec_len(sqlite_store_list(db, str_from("test"))), 1, "filter test = 1");
+    assert_eq(vec_len(sqlite_store_list(db, str_from("missing"))), 0, "filter missing = 0");
+    return 0;
+}
+fn t_remove(db) {
+    _fresh(db);
+    sqlite_store_save(db, _rec("e1", "x", STATE_CREATED));
+    var removed = sqlite_store_remove(db, str_from("e1"));
+    assert(removed != 0, "remove returns the record");
+    assert(str_eq_cstr(execution_record_execution_id(removed), "e1"), "removed id e1");
+    assert_eq(sqlite_store_get(db, str_from("e1")), 0, "e1 gone after remove");
+    assert_eq(sqlite_store_remove(db, str_from("e1")), 0, "second remove -> 0");
+    return 0;
+}
+fn t_engine_sink(db) {
+    _fresh(db);
+    var sink = sqlite_store_engine_sink(db);
+    var flow = flow_new(str_from("persist"), FLOW_SEQUENTIAL);
+    flow_add_step(flow, step_new(str_from("a")));
+    var exec_id = uuid_to_str(flow_id_hi(flow), flow_id_lo(flow));
+    var e = engine_with_execution_store(engine_new(engine_config_default(), cb_new(&_h_ok, 0)), sink);
+    var fr = result_unwrap(engine_run(e, flow));
+    assert_eq(flow_result_success(fr), 1, "engine_sink run success");
+    # Synchronous writes -> already persisted, no poll needed.
+    var rec = sqlite_store_get(db, exec_id);
+    assert(rec != 0, "execution persisted to patra");
+    assert_eq(execution_record_state(rec), STATE_COMPLETED, "persisted state Completed");
+    assert(str_eq_cstr(execution_record_flow_name(rec), "persist"), "persisted flow_name");
+    assert(execution_record_finished_at(rec) != 0, "finished_at set");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    var db = sqlite_store_connect("/tmp/szal_sqlstore_test.patra");
+    assert(db != 0, "patra db opens");
+
+    test_group("save / get / upsert");
+    t_save_get(db);
+    t_upsert(db);
+
+    test_group("list / remove");
+    t_list_filter(db);
+    t_remove(db);
+
+    test_group("engine sink persistence");
+    t_engine_sink(db);
+
+    sqlite_store_close(db);
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

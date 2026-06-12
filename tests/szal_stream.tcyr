@@ -1,0 +1,137 @@
+# szal_stream.tcyr — ProgressHub + SSE encoding (stream.cyr) tests.
+#
+# Ports stream.rs tests: sse_frame basic/multiline/absent-fields, progress_to_sse shape, and the
+# ProgressHub fan-out (deliver, multi-subscriber, no-subscriber no-op, capacity clamp).
+#   cyrius build --strict --no-deps tests/szal_stream.tcyr build/test_stream && ./build/test_stream
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/engine_result.cyr"
+include "src/storage.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/stream.cyr"
+
+fn _pdata(pct) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("percent"), bayan_json_v_int_new(pct));
+    return o;
+}
+fn _prog(name, id, data) {
+    return step_progress_new(str_from(name), str_from(id), data);
+}
+# Invoke a ProgressSink callback pair the way the engine does: fp(sp, ctx).
+fn _emit(sink, sp) {
+    return fncall2(cb_fp(sink), sp, cb_ctx(sink));
+}
+
+fn t_sse_basic() {
+    var f = sse_frame(str_from("step_progress"), str_from("s1"), str_from("{\"x\":1}"));
+    assert(str_eq_cstr(f, "event: step_progress\nid: s1\ndata: {\"x\":1}\n\n"), "sse basic frame");
+    return 0;
+}
+fn t_sse_multiline() {
+    var f = sse_frame(0, 0, str_from("a\nb\nc"));
+    assert(str_eq_cstr(f, "data: a\ndata: b\ndata: c\n\n"), "sse multiline data");
+    return 0;
+}
+fn t_sse_absent() {
+    var f = sse_frame(0, str_from("9"), str_from("hi"));
+    assert(str_eq_cstr(f, "id: 9\ndata: hi\n\n"), "sse omits absent event");
+    return 0;
+}
+fn t_progress_to_sse() {
+    var fr = progress_to_sse(_prog("upload", "upload-id", _pdata(50)));
+    assert(str_starts_with(fr, str_from("event: step_progress\n")), "starts with event line");
+    assert(str_contains(fr, str_from("id: upload-id\n")), "contains id line");
+    assert(str_contains(fr, str_from("\"percent\":50")), "contains percent data");
+    assert(str_ends_with(fr, str_from("\n\n")), "ends with blank line");
+    return 0;
+}
+fn t_hub_delivers() {
+    var hub = hub_new(16);
+    var rx = hub_subscribe(hub);
+    var sink = hub_sink(hub);
+    _emit(sink, _prog("a", "a-id", _pdata(10)));
+    _emit(sink, _prog("b", "b-id", _pdata(20)));
+    var first = chan_recv(rx);
+    var second = chan_recv(rx);
+    assert(str_eq_cstr(step_progress_step_name(first), "a"), "first event is a");
+    var d2 = step_progress_data(second);
+    assert_eq(bayan_json_v_int(bayan_json_v_obj_get(d2, "percent")), 20, "second percent 20");
+    return 0;
+}
+fn t_hub_fans_out() {
+    var hub = hub_new(16);
+    var rx1 = hub_subscribe(hub);
+    var rx2 = hub_subscribe(hub);
+    assert_eq(hub_subscriber_count(hub), 2, "two subscribers");
+    _emit(hub_sink(hub), _prog("x", "x-id", bayan_json_v_null()));
+    var s1 = chan_recv(rx1);
+    var s2 = chan_recv(rx2);
+    assert(str_eq_cstr(step_progress_step_name(s1), "x"), "rx1 sees x");
+    assert(str_eq_cstr(step_progress_step_name(s2), "x"), "rx2 sees x");
+    return 0;
+}
+fn t_hub_no_subscribers() {
+    var hub = hub_new(4);
+    _emit(hub_sink(hub), _prog("orphan", "o-id", bayan_json_v_null()));
+    assert_eq(hub_subscriber_count(hub), 0, "no subscribers, send is a no-op");
+    return 0;
+}
+fn t_hub_capacity_clamped() {
+    var hub = hub_new(0);
+    var rx = hub_subscribe(hub);
+    assert_eq(hub_subscriber_count(hub), 1, "capacity 0 clamped, subscribe works");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    test_group("SSE frame encoding");
+    t_sse_basic();
+    t_sse_multiline();
+    t_sse_absent();
+    t_progress_to_sse();
+
+    test_group("ProgressHub fan-out");
+    t_hub_delivers();
+    t_hub_fans_out();
+    t_hub_no_subscribers();
+    t_hub_capacity_clamped();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

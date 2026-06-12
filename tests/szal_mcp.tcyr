@@ -1,0 +1,114 @@
+# szal_mcp.tcyr — MCP core (mcp.cyr) tests: result builders, error codes, validate_path security,
+# and dispatcher registration over vendored bote-core.
+#   cyrius build --strict --no-deps tests/szal_mcp.tcyr build/test_mcp && ./build/test_mcp
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+
+fn _ping(args, claims) {
+    var r = result_ok(str_from("pong"));
+    return str_data(r);
+}
+
+fn t_result_ok() {
+    var r = result_ok(str_from("hello"));
+    assert(str_contains(r, str_from("\"isError\":false")), "ok -> isError false");
+    assert(str_contains(r, str_from("hello")), "ok carries text");
+    assert(str_contains(r, str_from("\"type\":\"text\"")), "ok content type text");
+    return 0;
+}
+fn t_result_ok_json() {
+    var v = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(v, str_from("k"), bayan_json_v_int_new(7));
+    var r = result_ok_json(v);
+    assert(str_contains(r, str_from("\"isError\":false")), "ok_json isError false");
+    assert(str_contains(r, str_from("\\\"k\\\"")), "ok_json embeds escaped value text");
+    return 0;
+}
+fn t_result_error() {
+    var r = result_error(str_from("boom"));
+    assert(str_contains(r, str_from("\"isError\":true")), "err -> isError true");
+    assert(str_contains(r, str_from("boom")), "err carries msg");
+    return 0;
+}
+fn t_result_error_typed() {
+    var r = result_error_typed(MCP_TIMEOUT, str_from("slow"));
+    assert(str_contains(r, str_from("\"error_code\":\"timeout\"")), "typed code timeout");
+    assert(str_contains(r, str_from("\"retryable\":true")), "timeout is retryable");
+    var v = result_error_typed(MCP_VALIDATION, str_from("bad"));
+    assert(str_contains(v, str_from("\"error_code\":\"validation\"")), "typed code validation");
+    assert(str_contains(v, str_from("\"retryable\":false")), "validation not retryable");
+    return 0;
+}
+fn t_errcode() {
+    assert(streq(mcp_err_name(MCP_NOT_FOUND), "not_found"), "name not_found");
+    assert(streq(mcp_err_name(MCP_PERMISSION_DENIED), "permission_denied"), "name permission_denied");
+    assert_eq(mcp_err_retryable(MCP_IO_ERROR), 1, "io_error retryable");
+    assert_eq(mcp_err_retryable(MCP_INTERNAL), 1, "internal retryable");
+    assert_eq(mcp_err_retryable(MCP_PERMISSION_DENIED), 0, "permission_denied not retryable");
+    assert_eq(mcp_err_retryable(MCP_VALIDATION), 0, "validation not retryable");
+    return 0;
+}
+fn t_validate_path() {
+    assert_eq(is_ok(validate_path(str_from("."))), 1, "'.' resolves under cwd");
+    var r2 = validate_path(str_from("/etc/passwd"));
+    assert_eq(is_err_result(r2), 1, "absolute /etc/passwd rejected");
+    assert(str_contains(err_code_of(r2), str_from("outside working directory")), "outside-cwd message");
+    assert_eq(is_err_result(validate_path(str_from("../../etc/passwd"))), 1, "traversal rejected");
+    assert_eq(is_ok(validate_path(str_from("newfile.txt"))), 1, "new file in cwd ok");
+    assert_eq(is_ok(validate_path(str_from("sub/dir/x.txt"))), 1, "nested new file in cwd ok");
+    return 0;
+}
+fn t_register() {
+    var tools = vec_new();
+    vec_push(tools, mcp_tool_new(mcp_tool_def("szal_ping", "ping tool", vec_new(), vec_new()), &_ping));
+    var d = register_tools(tools);
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_ping"), 1, "szal_ping registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 1, "one tool in registry");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    test_group("result builders");
+    t_result_ok();
+    t_result_ok_json();
+    t_result_error();
+    t_result_error_typed();
+
+    test_group("error codes");
+    t_errcode();
+
+    test_group("validate_path security");
+    t_validate_path();
+
+    test_group("dispatcher registration");
+    t_register();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

@@ -138,6 +138,52 @@ differs, and only for misbehaving handlers. See `src/engine_step_exec.cyr`.
 > `cancel_token_*` — no new allocator work. The model template is ai-hwaccel's `async_detect`
 > (`thread_create` + per-resource `mutex`).
 
+## 9. ProgressHub: per-subscriber channels back-pressure, not drop-oldest (`stream.cyr`)
+
+**What:** Rust's `ProgressHub` is a `tokio::sync::broadcast` channel — lossy under back-pressure: a
+slow subscriber observes `RecvError::Lagged` and the producer never stalls (the oldest buffered
+events are dropped for that subscriber). The Cyrius port (`stream.cyr`) fans each event out to a
+per-subscriber bounded `chan_new(capacity)` (port-plan §4 row 22's documented alternative).
+
+**Divergence:** Cyrius has only a **blocking `chan_send`** (no `chan_try_send`), so when a
+subscriber's channel is full the producer BLOCKS until that subscriber drains, rather than dropping
+the oldest event and continuing. A wedged slow subscriber back-pressures the engine's progress
+emission instead of losing events.
+
+**Why accepted:** the stdlib offers no non-blocking bounded send, and the alternatives (a background
+drain thread per subscriber, or a custom ring buffer) add real machinery for a fan-out whose only
+caller is fire-and-forget progress telemetry. Per-subscriber channels give exact `subscriber_count`,
+a configurable per-subscriber backlog (`capacity`, clamped ≥1 like Rust), and the no-subscribers-is-
+a-no-op behavior — all of which the Rust tests assert. Only the *lag policy* differs (block vs
+drop-oldest), and only for a subscriber that has stopped reading. Bound `capacity` for the expected
+backlog. This is the M3 "pub/sub lag semantics" open question from roadmap.md, resolved for the
+progress path. (The same block-vs-drop delta applies to any future majra-pubsub-backed `EventBus`.)
+See `src/stream.cyr`.
+
+## 10. SQL store: patra column model + DELETE-then-INSERT upsert + synchronous writes (`sql_store.cyr`)
+
+**What:** Rust's `sql_store.rs` is sqlx-backed (SQLite + a feature-gated Postgres twin) with a
+`TEXT TEXT TEXT` schema, `INSERT ... ON CONFLICT DO UPDATE` upsert, and an async fire-and-forget
+`engine_sink` (ordered background writer + in-memory mirror to preserve submission order). The port
+(`sql_store.cyr`) targets the stdlib **patra** engine.
+
+**Divergences (all behavior-preserving):**
+1. **Schema `execution_id STR, flow_name STR, data TEXT`** (not `TEXT TEXT TEXT`). patra's
+   variable-length `TEXT` column is chain-page-backed and **not WHERE-matchable**, and patra has no
+   `PRIMARY KEY`. The two filtered columns must be the fixed 256-byte `STR` type; only the large
+   serialized record uses `TEXT`. A UUID id (36 chars) + a flow name both fit in 256 bytes.
+2. **Upsert = DELETE-then-INSERT.** patra has no `ON CONFLICT`, and only `INSERT` writes a `TEXT`
+   column. `save` deletes any existing row for the id then inserts. One-row-per-id preserved.
+3. **Postgres dropped** for 2.0.0 (roadmap Q6); the Rust `macro_rules!` twin collapses to one store.
+4. **Synchronous writes — no SpawnSink.** patra writes synchronously (port-plan §3.4 recommends
+   exactly this), so the ordered-writer/mirror/`Once` machinery is unnecessary and the
+   "Running must not overwrite a later Completed" guarantee (ADR 0001) holds trivially. Tests need
+   no poll-for-persist loop (Rust's did, because its writes were fire-and-forget).
+
+**Why accepted:** patra is the chosen SQL backend (port-plan §2/§3.4); each divergence is forced by
+patra's column/SQL model and the synchronous-store decision, and all five Rust behavioral tests pass
+unchanged in shape. See `src/sql_store.cyr`.
+
 ---
 
 ### Disposition log

@@ -26,11 +26,13 @@ include "lib/sakshi.cyr"
 include "lib/log.cyr"
 include "lib/thread.cyr"
 include "lib/async.cyr"
+include "lib/patra.cyr"
 
 # --- vendored deps (hoosh pattern). Full majra 2.4.6 dist with szal-collision renames applied
 # (MJ_ERR_/MJ_STEP_/MJ_TRIGGER_ + majra_uuid_generate/majra_step_result_new) — synced by
 # scripts/sync-majra.sh. See docs/development/majra-vendoring.md. ---
 include "src/vendor/majra.cyr"
+include "src/vendor/bote-core.cyr"
 
 # --- szal foundation modules (port-plan §4 topological order) ---
 include "src/error.cyr"
@@ -55,6 +57,9 @@ include "src/engine_queue_runner.cyr"
 include "src/engine_distributed.cyr"
 include "src/engine_runner.cyr"
 include "src/engine_subflow.cyr"
+include "src/stream.cyr"
+include "src/sql_store.cyr"
+include "src/mcp.cyr"
 
 fn main() {
     alloc_init();

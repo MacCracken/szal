@@ -1,0 +1,257 @@
+# mcp.cyr — MCP tool infrastructure: result helpers, error codes, validate_path, registration
+#
+# Ports rust-old/src/mcp/mod.rs (port-plan §4 row 24). szal implements MCP *tools*; bote owns the
+# protocol/dispatch/transport. This module is the glue: response builders, the structured error-code
+# taxonomy, the **validate_path security boundary**, a ToolDef helper, and the dispatcher-registration
+# machinery over the vendored bote-core. The 54 tools themselves live in src/mcp_tools_*.cyr and are
+# aggregated by an all_tools() that the final tools file defines (kept out of here so the single-pass
+# include order has no forward ref).
+#
+# Handler ABI (bote dispatcher): a tool handler is `fn(args_cstr, claims) -> result_cstr` — it takes
+# the request arguments + caller claims and returns a JSON result string. The result_* builders below
+# produce exactly that string. (Rust returns `serde_json::Value`; the Cyrius handlers return the
+# serialized Str — no async/block_on bridge needed since handlers are synchronous.)
+#
+# SECURITY — validate_path: Rust uses `tokio::fs::canonicalize` (resolves symlinks + `..`). Cyrius has
+# no fs canonicalize, so this is a **lexical** normalizer (component-walk resolving `.`/`..`) + CWD
+# confinement (port-plan §4 row 24). It rejects absolute paths outside cwd and `..` escapes — the
+# exact traversal cases the Rust tests assert. Symlink resolution is NOT performed (the roadmap
+# "validate_path symlink semantics" open question; lexical is the 2.0.0 choice). Every file tool MUST
+# route through this before touching the filesystem.
+#
+# Naming: bote owns bare `registry_*`/`dispatcher_*`; szal must NOT export bare `mcp_*` protocol
+# symbols (daimon owns that family — roadmap consumer contract). Public szal symbols here are
+# result_*/validate_path/mcp_tool_*/register_tools*/McpErrorCode consts; helpers use _.
+#
+# Usage: include "src/mcp.cyr" (after src/vendor/bote-core.cyr + lib/bayan + lib/str + lib/result).
+# Requires: src/vendor/bote-core.cyr (registry_new/dispatcher_*/tool_def_new/schema_new),
+#   lib/bayan.cyr (json_v build), lib/str.cyr, lib/vec.cyr, lib/result.cyr (Ok/Err),
+#   lib/syscalls.cyr (raw getcwd), src/error.cyr is NOT needed (MCP codes are their own taxonomy).
+
+# ── McpErrorCode — structured error taxonomy (mod.rs 104-138) ───────────────
+# Permanent: Validation/NotFound/PermissionDenied. Transient (retryable): Timeout/IoError/Internal.
+enum McpErrorCode {
+    MCP_VALIDATION = 0;
+    MCP_NOT_FOUND = 1;
+    MCP_PERMISSION_DENIED = 2;
+    MCP_TIMEOUT = 3;
+    MCP_IO_ERROR = 4;
+    MCP_INTERNAL = 5;
+}
+
+# The wire string for an McpErrorCode (mirrors McpErrorCode::as_str).
+fn mcp_err_name(code) {
+    if (code == MCP_VALIDATION) { return "validation"; }
+    if (code == MCP_NOT_FOUND) { return "not_found"; }
+    if (code == MCP_PERMISSION_DENIED) { return "permission_denied"; }
+    if (code == MCP_TIMEOUT) { return "timeout"; }
+    if (code == MCP_IO_ERROR) { return "io_error"; }
+    if (code == MCP_INTERNAL) { return "internal"; }
+    return "internal";
+}
+
+# 1 if the code is transient/retryable (Timeout/IoError/Internal). Mirrors McpErrorCode::is_retryable.
+fn mcp_err_retryable(code) {
+    if (code == MCP_TIMEOUT) { return 1; }
+    if (code == MCP_IO_ERROR) { return 1; }
+    if (code == MCP_INTERNAL) { return 1; }
+    return 0;
+}
+
+# --- Result builders ---
+# Each returns a JSON object Str: {"content":[{"type":"text","text":<text>}],"isError":<bool>}.
+
+# Build the inner content array [{"type":"text","text":text}] (text is a Str). Internal.
+fn _mcp_content(text) {
+    var arr = bayan_json_v_arr_new();
+    var item = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(item, str_from("type"), bayan_json_v_str_new(str_from("text")));
+    bayan_json_v_obj_set(item, str_from("text"), bayan_json_v_str_new(text));
+    bayan_json_v_arr_push(arr, item);
+    return arr;
+}
+
+# A successful MCP tool response carrying `text` (a Str). Mirrors result_ok.
+fn result_ok(text) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("content"), _mcp_content(text));
+    bayan_json_v_obj_set(o, str_from("isError"), bayan_json_v_bool_new(0));
+    var s = bayan_json_v_build(o);
+    return s;
+}
+
+# A successful response whose text is `value` (a json_v) pretty-printed once. Mirrors result_ok_json.
+fn result_ok_json(value) {
+    var text = bayan_json_v_build_pretty(value, 2);
+    return result_ok(text);
+}
+
+# An error MCP tool response carrying message `msg` (a Str). Mirrors result_error.
+fn result_error(msg) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("content"), _mcp_content(msg));
+    bayan_json_v_obj_set(o, str_from("isError"), bayan_json_v_bool_new(1));
+    var s = bayan_json_v_build(o);
+    return s;
+}
+
+# An error response with a structured error code: adds "_meta":{"error_code","retryable"}. `code` is
+# an McpErrorCode, `msg` a Str. Mirrors result_error_typed.
+fn result_error_typed(code, msg) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("content"), _mcp_content(msg));
+    bayan_json_v_obj_set(o, str_from("isError"), bayan_json_v_bool_new(1));
+    var meta = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(meta, str_from("error_code"), bayan_json_v_str_new(str_from(mcp_err_name(code))));
+    bayan_json_v_obj_set(meta, str_from("retryable"), bayan_json_v_bool_new(mcp_err_retryable(code)));
+    bayan_json_v_obj_set(o, str_from("_meta"), meta);
+    var s = bayan_json_v_build(o);
+    return s;
+}
+
+# --- validate_path: the filesystem security boundary ---
+
+# Current working directory as a cstr (kernel NUL-terminates), or 0 on failure. Linux SYS_getcwd=79.
+fn _mcp_getcwd() {
+    var buf = alloc(4096);
+    if (buf == 0) { return 0; }
+    var n = syscall(79, buf, 4096);
+    if (n <= 0) { return 0; }
+    return buf;
+}
+
+# Lexically normalize an absolute path Str: split on '/', drop ""/"." components, pop on ".."
+# (bounded at root), rejoin "/"-prefixed. No symlink resolution (see module header). Internal.
+fn _mcp_normalize(abs) {
+    var parts = str_split(abs, 47);
+    var comps = vec_new();
+    var n = vec_len(parts);
+    var i = 0;
+    while (i < n) {
+        var p = vec_get(parts, i);
+        if (str_len(p) == 0) {
+            i = i;
+        } elif (str_eq_cstr(p, ".") == 1) {
+            i = i;
+        } elif (str_eq_cstr(p, "..") == 1) {
+            if (vec_len(comps) > 0) { vec_pop(comps); }
+        } else {
+            vec_push(comps, p);
+        }
+        i = i + 1;
+    }
+    var m = vec_len(comps);
+    var sb = str_builder_new();
+    if (m == 0) {
+        str_builder_add_cstr(sb, "/");
+        var root = str_builder_build(sb);
+        return root;
+    }
+    var k = 0;
+    while (k < m) {
+        str_builder_add_byte(sb, 47);
+        str_builder_add(sb, vec_get(comps, k));
+        k = k + 1;
+    }
+    var out = str_builder_build(sb);
+    return out;
+}
+
+# Validate that `path` (a Str) resolves under the current working directory. Returns Ok(normalized
+# absolute path Str) or Err(message Str). Rejects absolute paths outside cwd and `..` escapes.
+# Mirrors validate_path (mod.rs 156-193), lexically (no fs canonicalize in Cyrius).
+fn validate_path(path) {
+    var cwdc = _mcp_getcwd();
+    if (cwdc == 0) { return Err(str_from("failed to get cwd")); }
+    var cwd = str_from(cwdc);
+
+    # Build the absolute candidate: absolute path as-is, else cwd + "/" + path.
+    var is_abs = 0;
+    if (str_len(path) > 0) {
+        if (load8(str_data(path)) == 47) { is_abs = 1; }
+    }
+    var abs = path;
+    if (is_abs == 0) {
+        var ab = str_builder_new();
+        str_builder_add(ab, cwd);
+        str_builder_add_byte(ab, 47);
+        str_builder_add(ab, path);
+        abs = str_builder_build(ab);
+    }
+
+    var norm = _mcp_normalize(abs);
+    # Confinement: normalized == cwd, or normalized starts with cwd + "/".
+    if (str_eq(norm, cwd) == 1) { return Ok(norm); }
+    var pb = str_builder_new();
+    str_builder_add(pb, cwd);
+    str_builder_add_byte(pb, 47);
+    var prefix = str_builder_build(pb);
+    if (str_starts_with(norm, prefix) == 1) { return Ok(norm); }
+
+    var eb = str_builder_new();
+    str_builder_add_cstr(eb, "path '");
+    str_builder_add(eb, path);
+    str_builder_add_cstr(eb, "' is outside working directory");
+    var emsg = str_builder_build(eb);
+    return Err(emsg);
+}
+
+# --- ToolDef helper + Tool pair + registration ---
+
+# Build a bote ToolDef (object schema). name/description are cstrs; properties is a vec of
+# schema_prop_new(key_cstr, raw_json_value_cstr) pairs; required is a vec of cstr names. Mirrors
+# the Rust tool_def helper (adapted to bote's native cstr/schema_prop shape — port-plan §3.2).
+fn mcp_tool_def(name, description, properties, required) {
+    return tool_def_new(name, description, schema_new("object", properties, required));
+}
+
+# A Tool = a (ToolDef, handler_fp) pair (port-plan §4 row 24's "Tool = (def_fn, call_fn) pair").
+enum McpToolL {
+    MCP_TOOL_SIZE = 16;
+    MT_DEF = 0;
+    MT_HANDLER = 8;
+}
+
+# Build a Tool from a bote ToolDef + a handler fn pointer (fn(args_cstr, claims) -> result_cstr).
+fn mcp_tool_new(def, handler) {
+    var t = alloc(MCP_TOOL_SIZE);
+    if (t == 0) { return 0; }
+    store64(t + MT_DEF, def);
+    store64(t + MT_HANDLER, handler);
+    return t;
+}
+
+# Get the bote ToolDef of a Tool pair.
+fn mcp_tool_def_of(t) { return load64(t + MT_DEF); }
+# Get the handler fn pointer of a Tool pair.
+fn mcp_tool_handler_of(t) { return load64(t + MT_HANDLER); }
+
+# Register a vec of Tool pairs into a fresh bote dispatcher, with optional audit/event sinks (0 =
+# None). Mirrors register_tools_with (mod.rs 47-82): build a registry, register every ToolDef, make
+# the dispatcher, attach sinks, then wire each handler. Returns the ready dispatcher.
+fn register_tools_with(tools, audit, events) {
+    var reg = registry_new();
+    var n = vec_len(tools);
+    var i = 0;
+    while (i < n) {
+        registry_register(reg, mcp_tool_def_of(vec_get(tools, i)));
+        i = i + 1;
+    }
+    var d = dispatcher_new(reg);
+    if (audit != 0) { dispatcher_set_audit(d, audit); }
+    if (events != 0) { dispatcher_set_events(d, events); }
+    i = 0;
+    while (i < n) {
+        var t = vec_get(tools, i);
+        dispatcher_handle(d, tool_def_name(mcp_tool_def_of(t)), mcp_tool_handler_of(t));
+        i = i + 1;
+    }
+    return d;
+}
+
+# Register `tools` with no audit/event sinks. Mirrors register_tools (the no-sink convenience).
+# The 54-tool aggregator (all_tools / szal_register_tools) lives in the final mcp_tools_* file so
+# this module has no forward reference to the not-yet-included tool builders.
+fn register_tools(tools) {
+    return register_tools_with(tools, 0, 0);
+}

@@ -11,10 +11,11 @@
 
 ## Toolchain
 
-- **Cyrius pin**: `6.1.37` (in `cyrius.cyml [package].cyrius`). The full suite (964 assertions across
-  24 test files) + main + the top-level `szal.tcyr` smoke are green under **6.1.37** (2026-06-11); the
-  pin matches the installed wrapper — drift cleared. (Silence any future drift warning per-invocation
-  with `CYRIUS_NO_WARN_PIN_DRIFT=1`.) History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37.
+- **Cyrius pin**: `6.1.37` (in `cyrius.cyml [package].cyrius`). The full suite (1024 assertions across
+  26 module test files + the `szal.tcyr` smoke) + main are green under **6.1.37** (2026-06-11); the
+  pin matches the installed wrapper — drift cleared. (Silence drift / lib-shadow notes per-invocation
+  with `CYRIUS_NO_WARN_PIN_DRIFT=1` / `CYRIUS_NO_WARN_SHADOW_LIB=1`.) History: 6.1.33 (M0) → 6.1.34 →
+  6.1.35 → 6.1.36 → 6.1.37.
 
 ## Milestone
 
@@ -55,6 +56,48 @@ in practice** — the parallel/dag/queue/distributed rows shipped on the coopera
 thread-safe-`alloc` model (parity-notes §8); only **Q9 (`registry_new` collision)** still gates
 `engine_hardware` (row 17). The `Engine` (row 20) drives all six modes end-to-end, and
 `sub_flow_handler` (row 21) runs nested flows — **M2 is feature-complete except the gated row 17.**
+
+**M3 — Streaming, persistence, MCP. ⏳ in progress (rows 22–23 done; bote vendored + MCP core done;
+MCP pool/tenant + the 54 tools remain).**
+- ✅ **row 22 `src/stream.cyr`** — `ProgressHub` + SSE encoding. Rust's `tokio::broadcast` →
+  **per-subscriber bounded channels** (port-plan's documented alternative): `hub_new(cap≥1)`/
+  `hub_subscribe`(→`chan_new(cap)`)/`hub_sink`(ProgressSink cb pair fanning to every subscriber)/
+  `hub_subscriber_count`. `sse_frame(event/0, id/0, data)` (multi-line `data` → multiple `data:`
+  lines + blank-line terminator), `progress_to_sse` (event=`SSE_EVENT_NAME`, id=step id, data=
+  serialized StepProgress), `SSE_EVENT_NAME="step_progress"`. ONE lag-semantics divergence
+  (parity-notes §9): `chan_send` blocks when a subscriber is full vs tokio drop-oldest (no
+  `chan_try_send` in stdlib). `tests/szal_stream.tcyr` (14). lint/fmt/doc clean.
+- ✅ **row 23 `src/sql_store.cyr`** — patra-backed `ExecutionStore`. Schema
+  `execution_id STR, flow_name STR, data TEXT` (patra TEXT isn't WHERE-matchable + no PRIMARY KEY →
+  keyed/filtered cols are 256-byte STR; only the JSON record is TEXT). Upsert = DELETE-then-INSERT
+  (no `ON CONFLICT`; only INSERT writes TEXT). `sqlite_store_connect/migrate/save/get/list/remove/
+  engine_sink/close`; `engine_sink` is a **synchronous** ExecutionStore vtable (no SpawnSink mirror/
+  writer — patra writes synchronously, so ADR-0001 ordering holds trivially). Postgres dropped (Q6).
+  Divergences in parity-notes §10. `tests/szal_sql_store.tcyr` (20, incl. a real `engine_run`
+  persistence check through `engine_sink`). lint/fmt/doc clean. **First functional use of stdlib patra.**
+- ✅ **bote-core vendored** `src/vendor/bote-core.cyr` (bote 2.7.3 `dist/bote-core.cyr`, 2,025 lines)
+  via `scripts/sync-bote.sh`, with a 1-symbol rename `compiled_compile`→`bote_compiled_compile` (vs
+  szal's condition compiler; full fn/var collision scan otherwise clean — bote's `registry_new` is
+  kept since ai-hwaccel isn't vendored). NOT blocked by Q9 (that collision is bote × ai-hwaccel; MCP
+  uses bote-core's `registry_new` alone). hoosh pattern (no `[deps.bote]` block → no recursive bloat).
+- ✅ **row 24 (core) `src/mcp.cyr`** — `result_ok/ok_json/error/error_typed` (JSON `{content,isError}`
+  + `_meta.error_code/retryable`), `McpErrorCode` (6; Timeout/IoError/Internal retryable),
+  **`validate_path`** (the SECURITY boundary: lexical component-walk resolving `.`/`..` + CWD
+  confinement via raw `getcwd` syscall 79 — no fs canonicalize in Cyrius; symlink resolution is the
+  roadmap open Q, lexical is the 2.0.0 choice), `mcp_tool_def`/`mcp_tool_new` (Tool = (ToolDef,
+  handler_fp) pair), `register_tools[_with]` over the bote-core dispatcher. Handler ABI
+  `fn(args_cstr, claims) → result_cstr`. `tests/szal_mcp.tcyr` (26: result builders, error codes,
+  validate_path traversal rejection `/etc/passwd` + `../../`, dispatcher registration). lint/fmt/doc
+  clean. The 54-tool `all_tools()`/`szal_register_tools()` aggregator is deferred to the last tool
+  file (single-pass: no forward ref).
+- ⏳ **Next: MCP pool/tenant + the 54 tools.** `mcp_pool.cyr` (3 majra `ratelimit_new` buckets: HTTP
+  10/s b50, DNS 100/s b200, Port 50/s b100, fixed-point ×1000; lazy global `pool()`) + `mcp_tenant.cyr`
+  (TenantQuota/TenantCtx/TenantRegistry mutex map; unknown tenant → permissive Ok). Then
+  `mcp_tools_*.cyr` (15 files, 54 tools — each a `mcp_tool_new(mcp_tool_def(...), &handler)`;
+  **security checks must not regress**: validate_path on all file ops, 1 MiB read cap / 10k dir
+  entries / depth 20; process: no shell, reject `..`/`/`, 30s timeout; git: `validate_git_ref` rejects
+  leading `-`, log cap 100; net: `is_safe_url` SSRF guard — metadata/localhost/RFC1918 — + rate
+  limits). Port + test in tool-group batches; aggregate with `all_tools()` in the final file.
 
 - ✅ **row 8 `src/engine_result.cyr` (`FlowResult`)** — ported + wired into `main`, cross-checked
   vs `engine/result.rs`. `FlowResult {flow_name, steps vec, total_duration_ms, success,
@@ -230,7 +273,8 @@ warnings); only `cyrius build` verdicts are authoritative.
 - `[deps.ai-hwaccel]` 2.3.9 (declared; overlaid by `cyrius deps` from M2 onward).
 - **majra 2.4.6 — VENDORED** at `src/vendor/majra.cyr` (full dist, 9-symbol collision rename; needs
   `lib/thread.cyr`). Re-sync: `scripts/sync-majra.sh`. See [`majra-vendoring.md`](majra-vendoring.md).
-- bote-core 2.7.3 — vendored at `src/vendor/bote-core.cyr` when M3 MCP lands.
+- **bote-core 2.7.3 — VENDORED** at `src/vendor/bote-core.cyr` (2,025 lines; 1-symbol rename
+  `compiled_compile`→`bote_compiled_compile`). Re-sync: `scripts/sync-bote.sh`.
 
 ## Consumers
 
@@ -238,31 +282,41 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 ## Next — ▶ START HERE (handoff)
 
-**Done so far (M1 ✅ + M2 rows 8–21 ✅, all parity-verified 0-findings): 23 modules, 964 assertions,
-0 failures, oracle pristine. Pin 6.1.37.** ALL engine modules are ported: six execution modes
-(sequential/parallel/dag/hierarchical/queue/distributed) + core + step_exec, the `Engine` (row 20)
-drives them end-to-end with rollback/persistence/cancellation, and `sub_flow_handler` (row 21) runs
-nested flows. **M2 is feature-complete except the GATED row 17.** Full majra 2.4.6 vendored. Build
-recipe + gotchas above.
+**Done so far (M1 ✅ + M2 rows 8–21 ✅ + M3 rows 22–23 + bote vendoring + MCP core ✅, all
+parity-verified 0-findings): 26 modules, 1024 assertions, 0 failures, oracle pristine. Pin 6.1.37.**
+All engine modules ported (six modes + core + step_exec + Engine + sub_flow). M3: streaming
+(`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` — result/errcode/
+**validate_path security**/registration) done; bote-core 2.7.3 vendored. Full majra 2.4.6 vendored.
+Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence the lib-shadow note).
 
-**Pick up at: row 17 `engine_hardware.cyr` (GATED) — or start M3.**
+**Pick up at: MCP pool/tenant + the 54 tools (M3) — or the gated row 17 `engine_hardware` (P2).**
 
-Row 17 `engine_hardware.cyr` (rust-old/src/engine/hardware.rs, ~170 lines) is the ONLY unported §4
-engine row. It is **blocked on Q9** (port-plan §3.3): both bote-core and ai-hwaccel export
-`registry_new` (a 24-byte tool registry vs a 32-byte profile registry), and ai-hwaccel's
-`registry_detect*` call `registry_new()` internally, so include order can't fix it. **Resolve first:**
-sed-rename `registry_new`→`hw_registry_new` in szal's vendored/synced ai-hwaccel copy (the hoosh
-vendoring pattern, like the 9-symbol majra rename), OR an upstream ai-hwaccel rename. Once resolved:
-`HardwareContext` over `cached_registry_new(300)`; `hw_check_requirements(steps)` (first unsatisfiable
-→ ERR_HW_UNAVAILABLE — wire into engine_runner's deferred check at engine_run/run_distributed/
-run_with_cancellation, where `config.hardware != 0`); `hw_effective_concurrency(steps, base)` (min 1;
-latent — never called by the engine, port anyway). Dep: the ai-hwaccel bundle (`[deps.ai-hwaccel]`
-2.3.9, normal git block — no vendoring needed; it has zero sub-deps).
+MCP infra is in place: bote-core vendored, `mcp.cyr` core (incl. `validate_path` + `register_tools`)
+tested. Remaining MCP:
+1. **`src/mcp_pool.cyr`** (mcp/pool.rs): `NetworkPool` = 3 majra `ratelimit_new` buckets (HTTP 10/s
+   b50, DNS 100/s b200, Port 50/s b100 — fixed-point ×1000) + `check_http/dns/port(key)`; lazy global
+   `var _pool = 0; fn pool() { if (_pool==0){...} }`.
+2. **`src/mcp_tenant.cyr`** (mcp/tenant.rs): TenantQuota/TenantCtx/TenantRegistry (mutex map),
+   `check_tenant_quota` (unknown → permissive Ok), `check_tenant_tool_access`.
+3. **`src/mcp_tools_*.cyr`** (15 files, 54 tools, ~4,300 ln) — order-free; suggested system →
+   encoding → hash → template → conversion → math → json → file → process → git → net → state → step
+   → flow → engine. Each tool: `mcp_tool_new(mcp_tool_def(name, desc, props_vec, required_vec),
+   &handler)` with handler `fn(args_cstr, claims) → result_cstr` returning a `result_*` string. The
+   LAST file defines `all_tools()` (aggregates every group's tools into one vec) + `szal_register_tools()`
+   = `register_tools(all_tools())`. Tool names are `szal_*` (≥1 underscore); do NOT export bare `mcp_*`
+   (daimon owns that). **Security checks must NOT regress:** `validate_path` (done — use it) on all
+   file ops, 1 MiB read cap / 10k dir entries / depth 20; process: no shell, reject `..`/`/`, 30s
+   timeout; git: `validate_git_ref` rejects leading `-`, log cap 100; net: `is_safe_url` SSRF guard
+   (metadata endpoints + localhost + RFC1918) + the pool rate-limit checks. Port + test per tool group.
 
-**Or start M3 surface modules** (no gate): `stream.cyr` (row 22, ProgressHub over majra pubsub),
-`sql_store.cyr` (row 23, patra-backed ExecutionStore), then `mcp*` (rows 24-26, needs vendored
-bote-core). See port-plan §4 + roadmap.md M3.
+**Gated row 17 `engine_hardware.cyr`** (P2 blocker-from-completion, see
+[`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md)):
+blocked on the `registry_new` collision. Resolve via sed-rename `registry_new`→`hw_registry_new` in a
+vendored ai-hwaccel copy (hoosh pattern) or upstream ai-hwaccel 2.4.0. Then `HardwareContext` over
+`cached_registry_new(300)`; `hw_check_requirements(steps)` (first unsatisfiable → ERR_HW_UNAVAILABLE,
+wire into engine_runner's deferred check where `config.hardware != 0`); `hw_effective_concurrency`
+(latent — port anyway). Circle back after MCP.
 
-See [`roadmap.md`](roadmap.md) M2, [`port-plan.md`](port-plan.md) §4 (per-module spec),
-[`parity-notes.md`](parity-notes.md) (accepted divergences §1–8 + audit log), and
+See [`roadmap.md`](roadmap.md) M3, [`port-plan.md`](port-plan.md) §4 (per-module spec),
+[`parity-notes.md`](parity-notes.md) (accepted divergences §1–10 + audit log), and
 [`majra-vendoring.md`](majra-vendoring.md) (re-sync).

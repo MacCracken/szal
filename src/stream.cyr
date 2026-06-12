@@ -1,0 +1,125 @@
+# stream.cyr — streaming step progress: ProgressHub + SSE frame encoding
+#
+# Ports rust-old/src/stream.rs (port-plan §4 row 22). The engine emits StepProgress through a
+# ProgressSink (engine_core); this module fans those events out to many clients without pulling a
+# web server into the engine, and encodes them as Server-Sent-Events frames.
+#
+# ProgressHub: Rust uses a `tokio::sync::broadcast` channel. The port uses **per-subscriber bounded
+# channels** (port-plan §4 row 22's documented alternative): hub_subscribe() hands back a fresh
+# `chan_new(capacity)`; the sink fans each event out to every subscriber's channel. This gives exact
+# `subscriber_count`, a configurable per-subscriber backlog, and the no-subscribers-is-a-no-op
+# behavior. ONE lag-semantics divergence vs tokio broadcast (parity-notes §9): Cyrius `chan_send`
+# BLOCKS when a subscriber's channel is full, whereas tokio broadcast drops the oldest and lets the
+# slow subscriber observe `Lagged`. Cyrius has no non-blocking `chan_try_send`, so a wedged slow
+# subscriber back-pressures the producer instead of losing events. Bound `capacity` accordingly.
+#
+# Usage: include "src/stream.cyr" (after engine_core — uses StepProgress accessors + cb_new).
+# Requires: src/engine_core.cyr (StepProgress accessors, cb_new), lib/thread.cyr (chan_new/chan_send),
+#   lib/vec.cyr, lib/str.cyr (str_builder, str_split, str_from), lib/bayan.cyr (json_v build).
+# Naming: public symbols are hub_/progress_to_sse/sse_frame/SSE_EVENT_NAME; internal helpers use _.
+
+# The SSE `event:` name used by progress_to_sse (mirrors stream.rs SSE_EVENT_NAME).
+var SSE_EVENT_NAME = "step_progress";
+
+# ProgressHub — fans StepProgress events out to many per-subscriber channels.
+# Byte layout (16 bytes): {capacity@0 (>=1), subscribers@8 (vec of subscriber chans)}.
+enum ProgressHubL {
+    HUB_SIZE = 16;
+    HUB_CAP = 0;
+    HUB_SUBS = 8;
+}
+
+# Create a hub buffering up to `capacity` events per subscriber (clamped to >= 1, mirroring
+# ProgressHub::new's `capacity.max(1)`). Returns 0 on OOM.
+fn hub_new(capacity) {
+    var cap = capacity;
+    if (cap < 1) { cap = 1; }
+    var h = alloc(HUB_SIZE);
+    if (h == 0) { return 0; }
+    store64(h + HUB_CAP, cap);
+    store64(h + HUB_SUBS, vec_new());
+    return h;
+}
+
+# Subscribe a new receiver. Returns a bounded channel (capacity = the hub's) to chan_recv from;
+# it sees every event published after it subscribed. Mirrors ProgressHub::subscribe.
+fn hub_subscribe(h) {
+    var ch = chan_new(load64(h + HUB_CAP));
+    vec_push(load64(h + HUB_SUBS), ch);
+    return ch;
+}
+
+# Number of currently active subscribers. Mirrors ProgressHub::subscriber_count.
+fn hub_subscriber_count(h) {
+    return vec_len(load64(h + HUB_SUBS));
+}
+
+# ProgressSink callback body: deliver `sp` (a StepProgress*) to every subscriber channel. With no
+# subscribers this is a no-op (mirrors broadcast send returning Err with no receivers — fine).
+# `h` is the hub (the callback ctx). Internal — installed via hub_sink's cb pair.
+fn _hub_publish(sp, h) {
+    var subs = load64(h + HUB_SUBS);
+    var n = vec_len(subs);
+    var i = 0;
+    while (i < n) {
+        chan_send(vec_get(subs, i), sp);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# A ProgressSink callback pair that publishes every reported event to the hub. Plug into
+# EngineConfig's progress_sink (engine_with_progress_sink). Mirrors ProgressHub::sink.
+fn hub_sink(h) {
+    return cb_new(&_hub_publish, h);
+}
+
+# Serialize a StepProgress to a JSON object Str: {step_name, step_id, data} (struct/serde order).
+# data is the json_v subtree as-is. Internal helper for progress_to_sse.
+fn _step_progress_to_json(sp) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("step_name"),
+    bayan_json_v_str_new(step_progress_step_name(sp)));
+    bayan_json_v_obj_set(o, str_from("step_id"),
+    bayan_json_v_str_new(step_progress_step_id(sp)));
+    bayan_json_v_obj_set(o, str_from("data"), step_progress_data(sp));
+    return bayan_json_v_build(o);
+}
+
+# Build a single SSE frame. `event`/`id` are Str or 0 (absent); `data` is a Str. Multi-line `data`
+# is split across multiple `data:` lines (SSE spec); the frame ends with the terminating blank line,
+# so frames concatenate into a text/event-stream body. Mirrors sse_frame (stream.rs 159-174).
+fn sse_frame(event, id, data) {
+    var sb = str_builder_new();
+    if (event != 0) {
+        str_builder_add_cstr(sb, "event: ");
+        str_builder_add(sb, event);
+        str_builder_add_byte(sb, 10);
+    }
+    if (id != 0) {
+        str_builder_add_cstr(sb, "id: ");
+        str_builder_add(sb, id);
+        str_builder_add_byte(sb, 10);
+    }
+    var lines = str_split(data, 10);
+    var n = vec_len(lines);
+    var i = 0;
+    while (i < n) {
+        str_builder_add_cstr(sb, "data: ");
+        str_builder_add(sb, vec_get(lines, i));
+        str_builder_add_byte(sb, 10);
+        i = i + 1;
+    }
+    str_builder_add_byte(sb, 10);
+    return str_builder_build(sb);
+}
+
+# Encode a StepProgress as an SSE frame: event = SSE_EVENT_NAME, id = the step id, data = the
+# JSON-serialized progress. Ends with the SSE blank-line terminator. Mirrors progress_to_sse
+# (stream.rs 141-145).
+fn progress_to_sse(progress) {
+    var data = _step_progress_to_json(progress);
+    var ev = str_from(SSE_EVENT_NAME);
+    var id = step_progress_step_id(progress);
+    return sse_frame(ev, id, data);
+}
