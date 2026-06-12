@@ -25,7 +25,7 @@ Toolchain pinned at `cyrius = "6.1.35"` (was 6.1.33 at M0). `VERSION` is the sin
 | UUID | `{hi, lo}` i64 pair internal, RFC-4122 string only at JSON/MCP boundaries | ✅ decided |
 | SQL store | patra (stdlib) only; **postgres deferred**, prometheus passthrough dropped | ✅ decided |
 | Version | 2.0.0; keep `rust-old/` as parity oracle, retire in a 2.0.x patch | ✅ decided |
-| `registry_new` collision (bote-core × ai-hwaccel) | upstream ai-hwaccel rename `registry_new`→`hw_registry_new` (clean, preferred) or vendor+rename locally (interim) — filed [`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md) (mirrored in bote + ai-hwaccel repos) | ⏳ **open — P2 blocker-from-completion** (only blocks M2 row 17 `engine_hardware`; rest of M2 shipped around it) |
+| `registry_new` collision (bote-core × ai-hwaccel) | upstream ai-hwaccel rename `registry_new`→`hw_registry_new` (clean, preferred) or vendor+rename locally (interim) — filed [`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md) (mirrored in bote + ai-hwaccel repos) | ⏳ **upstream fix IN PROGRESS** (2026-06-11 — owner pursuing the ai-hwaccel rename) · P2 blocker-from-completion (only blocks M2 row 17 `engine_hardware`; rest of M2 shipped around it) |
 | Engine concurrency model | threads + permit-channel (bounded `chan`) + cancel tokens; cooperative cancel replaces `JoinHandle::abort()` (observable timeout/cancel delta) | ✅ decided + implemented (parallel/dag/queue verified; see parity-notes §8) |
 | Logging under threads | szal's own emit/metric/log calls stay on the MAIN thread (workers only run handlers), so sakshi is never touched cross-thread — no logging thread needed | ✅ decided + implemented |
 | Pub/sub lag semantics | majra bounded-chan drop-newest vs tokio broadcast drop-oldest — contract change | ⏳ open (M3 stream/bus) |
@@ -77,7 +77,7 @@ Foundation modules (no engine, no MCP — pure data + algorithms):
 - [x] `src/engine_distributed.cyr` — fleet workers + coordinator, reuses `unlock_dependents` ✅ (poll-loop translation of `select!{biased}`; result-chan cap = total+1 ⇒ no deadlock)
 - [x] `src/engine_runner.cyr` — `Engine`, `run`/`run_with_cancellation`/`run_distributed`, rollback, heartbeat guard, persistence ✅ (queue-path + heartbeat-ticker + hw-check divergences documented in-module)
 - [x] `src/engine_subflow.cyr` — `sub_flow_handler` (constructs a fresh child `Engine`) ✅
-- [x] Engine test suites (per-module `tests/szal_engine_*.tcyr`) — ✅ 964 assertions across 24 files, 0 failures
+- [x] Engine test suites (per-module `tests/szal_engine_*.tcyr`) — ✅ all six modes + core/step_exec/runner/subflow covered, 0 failures (live suite totals in [`state.md`](state.md))
 
 ### M3 — Streaming, persistence, MCP
 

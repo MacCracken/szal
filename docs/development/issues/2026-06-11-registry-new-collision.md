@@ -1,5 +1,8 @@
 # `registry_new` symbol collision — bote-core × ai-hwaccel
 
+**Status:** ⏳ **upstream fix in progress (2026-06-11)** — the preferred resolution (the ai-hwaccel
+rename, option 1 below) is being actively pursued. szal's interim vendored-copy rename is the
+fallback if the upstream rename isn't ready when row 17 `engine_hardware` is picked up.
 **Filed:** 2026-06-11 during the szal Rust→Cyrius port (M2 engine arc)
 **Severity:** Medium — **blocks szal `engine_hardware` (port-plan §4 row 17)**;
 the rest of M2 shipped around it. Tracked as a **P2 blocker-from-completion** in

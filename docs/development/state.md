@@ -311,8 +311,10 @@ tested. Remaining MCP:
 
 **Gated row 17 `engine_hardware.cyr`** (P2 blocker-from-completion, see
 [`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md)):
-blocked on the `registry_new` collision. Resolve via sed-rename `registry_new`→`hw_registry_new` in a
-vendored ai-hwaccel copy (hoosh pattern) or upstream ai-hwaccel 2.4.0. Then `HardwareContext` over
+blocked on the `registry_new` collision. **Status (2026-06-11): the upstream fix is being actively
+pursued** — the preferred resolution is the ai-hwaccel rename `registry_new`→`hw_registry_new`
+(owner working it); the vendored-copy sed-rename (hoosh pattern) remains the interim fallback if the
+upstream rename isn't ready when row 17 is picked up. When unblocked: `HardwareContext` over
 `cached_registry_new(300)`; `hw_check_requirements(steps)` (first unsatisfiable → ERR_HW_UNAVAILABLE,
 wire into engine_runner's deferred check where `config.hardware != 0`); `hw_effective_concurrency`
 (latent — port anyway). Circle back after MCP.
