@@ -11,11 +11,11 @@
 
 ## Toolchain
 
-- **Cyrius pin**: `6.1.35` (in `cyrius.cyml [package].cyrius`). All 882 assertions + main were last
-  verified green under **6.1.35**. **Drift watch (2026-06-11, late):** the installed wrapper has since
-  moved to **6.1.36** — the next session should re-verify the suite under 6.1.36 and bump the pin to
-  match (the prior 6.1.33→6.1.34→6.1.35 bumps were each a quick re-verify; silence the warning
-  per-invocation with `CYRIUS_NO_WARN_PIN_DRIFT=1`). History: 6.1.33 (M0) → 6.1.34 → 6.1.35.
+- **Cyrius pin**: `6.1.36` (in `cyrius.cyml [package].cyrius`). All 882 assertions + main + the
+  top-level `szal.tcyr` smoke were re-verified green under **6.1.36** (2026-06-11) and the pin was
+  bumped 6.1.35→6.1.36 to match the installed wrapper — drift cleared. (Silence any future drift
+  warning per-invocation with `CYRIUS_NO_WARN_PIN_DRIFT=1`.) History: 6.1.33 (M0) → 6.1.34 → 6.1.35
+  → 6.1.36.
 
 ## Milestone
 
@@ -50,10 +50,11 @@ modules ported, tested, wired into `main`; adversarial parity audit run + both f
     Some(0) from None; Rust struct has no `skip_serializing_if`, so serde emits `0`). Fix: added
     `WE_DURATION_SET` presence flag (mirrors the existing `WE_ATTEMPT_SET`); WE_SIZE 72→80; +3 assertions.
 
-**M2 — Engine core + executors. ⏳ in progress (rows 8–18 done; 19/20/21 + 17 remain).** Porting
+**M2 — Engine core + executors. ⏳ in progress (rows 8–19 done; 20/21 + 17 remain).** Porting
 port-plan §4 rows 8–21 in topological order. **Q10 (concurrency) + Q11 (logging) are RESOLVED in
-practice** — the parallel/dag/queue rows shipped on the cooperative-cancel + thread-safe-`alloc`
-model (parity-notes §8); only **Q9 (`registry_new` collision)** still gates `engine_hardware` (row 17).
+practice** — the parallel/dag/queue/distributed rows shipped on the cooperative-cancel +
+thread-safe-`alloc` model (parity-notes §8); only **Q9 (`registry_new` collision)** still gates
+`engine_hardware` (row 17).
 
 - ✅ **row 8 `src/engine_result.cyr` (`FlowResult`)** — ported + wired into `main`, cross-checked
   vs `engine/result.rs`. `FlowResult {flow_name, steps vec, total_duration_ms, success,
@@ -143,11 +144,26 @@ model (parity-notes §8); only **Q9 (`registry_new` collision)** still gates `en
   `mq_complete`/`mq_fail` → collect; exits when all processed or drained. **First functional use of
   the vendored majra** (`mq_*` + `queue_item_payload`). ResourcePool arg dropped (port-plan §3.2).
   `tests/szal_engine_queue_runner.tcyr` (14). Parity-verify **running**.
-- ⏳ **Next (plan order, user-chosen): row 19 `engine_distributed.cyr`** (431 Rust lines — fleet
-  workers + coordinator, majra `fleet_*`, reuses the DAG `unlock_dependents` bookkeeping) → then
-  row 20 `engine_runner.cyr` (the heart, 746 lines — `Engine` + builders, the run sequence with
-  mode dispatch / rollback / persistence / heartbeat, `run_with_cancellation`, `run_distributed`)
-  → row 21 `engine_subflow`. Still gated: row 17 `engine_hardware` on Q9 (`registry_new` collision).
+- ✅ **row 19 `src/engine_distributed.cyr`** — `run_distributed_dag`: multi-node coordinator over a
+  majra `FleetQueue`. One worker thread per registered node (`fleet_node_queue` via `map_keys`)
+  loops {`done` cancel-check → `mq_dequeue` → `execute_step_with_handler` → `mq_complete`/`mq_fail`
+  → report StepResult over a result `chan`}; the coordinator submits ready steps via `fleet_submit`
+  (0 → Failed `no fleet node available`), `chan_try_recv`-polls completions, `_dag_unlock`s
+  dependents, and `fleet_rebalance`s per completion. **Reuses engine_dag's bookkeeping wholesale**
+  (`_dag_lookup`/`_dag_unlock`/`_dag_skip` + the id→ordinal map / ordinal in_degree[]·failed[] /
+  vec-of-vecs dependents). Rust's two `select!{biased}` → poll loops (parity-notes §8). Skip reasons
+  exact: `dependency failed`, `condition not met`, `no fleet node available` (Failed), post-loop
+  `cancelled`/`flow timeout exceeded`/`not scheduled`. Safety: result `chan` cap = total+1 ⇒
+  `chan_send` never blocks ⇒ workers always reach `done` ⇒ `thread_join` can't deadlock.
+  `tests/szal_engine_distributed.tcyr` (14): diamond/2-node, 13-step fan-out/3-node, dependency-
+  failure (1 Failed + 2 Skipped), condition-false skip, no-nodes-all-Failed — **stable across 20
+  concurrent runs**. lint/fmt/doc clean. Self-parity-checked branch-for-branch vs `distributed.rs`
+  (oracle pristine); the `rejects_non_dag_mode` Rust test guards the Engine wrapper → deferred to
+  row 20. **The engine now runs sequential/parallel/dag/hierarchical/queue/distributed.**
+- ⏳ **Next (plan order): row 20 `engine_runner.cyr`** (the heart, 746 lines — `Engine` + builders,
+  the run sequence with mode dispatch / rollback / persistence / heartbeat,
+  `run_with_cancellation`, `run_distributed`) → then row 21 `engine_subflow`. Still gated: row 17
+  `engine_hardware` on Q9 (`registry_new` collision).
 
 ## Toolchain gotchas found during the port (for docs/cyrius-feedback.md)
 
@@ -187,34 +203,34 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 ## Next — ▶ START HERE (handoff)
 
-**Done so far (M1 ✅ + M2 rows 8–18 ✅, all parity-verified 0-findings): 20 modules, 882 assertions,
-0 failures, oracle pristine.** All five execution modes run (sequential/parallel/dag/hierarchical/
-queue) + core + step_exec. Full majra 2.4.6 vendored. Build recipe + gotchas above.
+**Done so far (M1 ✅ + M2 rows 8–19 ✅, all parity-verified 0-findings): 21 modules, 896 assertions,
+0 failures, oracle pristine. Toolchain re-verified + pin bumped to 6.1.36.** All SIX execution modes
+run (sequential/parallel/dag/hierarchical/queue/distributed) + core + step_exec. Full majra 2.4.6
+vendored. Build recipe + gotchas above.
 
-**Pick up at row 19 `src/engine_distributed.cyr`** (rust-old/src/engine/distributed.rs, ~285 non-test
-lines — the hardest module; scouted, not yet written). Notes to start warm:
-- **Shape:** a multi-worker coordinator. Spawn one worker thread per fleet node; each worker drains
-  its node's majra queue and reports each StepResult back over a result CHANNEL. A coordinator loop
-  submits ready steps to the fleet, polls the channel for completions, `unlock_dependents`, and
-  `fleet_rebalance` per completion.
-- **Reuse:** the DAG Kahn bookkeeping is identical — reuse the ordinal-arena in_degree/dependents +
-  `_dag_unlock` pattern from `engine_dag.cyr`, and `engine_parallel`'s worker/PA_* if helpful.
-- **majra fleet API (vendored):** `fleet_submit(fq, priority, payload)` → the item, or **0** if no
-  node accepts; `fleet_node_queue(fq, node_id)` → that node's mq (enumerate node ids via
-  `map_keys(load64(fq))`); `fleet_rebalance(fq)`; `fleet_node_count(fq)`. Node mq dequeue =
-  `mq_dequeue` (+ `queue_item_payload`, `mq_complete`/`mq_fail`).
-- **Concurrency translation (port-plan §1.7 + parity-notes §8):** Rust's two `tokio::select!{biased}`
-  become POLL loops. Worker: check a `done` cancel token (`cancel_token_new/signal/check`), else
-  `mq_dequeue` its node queue, else `sleep_ms(2)`. Coordinator: `chan_try_recv` the result channel,
-  else check token/timeout (`clock_now_ms`), else brief sleep. After the loop: `done` cancel +
-  join workers; skip-everything-unseen with reason `cancelled`/`flow timeout exceeded`/`not scheduled`.
-- **Skip reasons (exact):** `dependency failed`, `condition not met`, `no fleet node available` (Failed),
-  and the post-loop `cancelled`/`flow timeout exceeded`/`not scheduled`.
-- **Testing caveat:** it's genuinely nondeterministic (real concurrent workers) — keep handlers fast;
-  assert on the result SET + statuses, not strict ordering. `alloc()` is thread-safe (global lock)
-  and majra fleet/mq + `chan_*` are mutex/futex-guarded, so concurrent access is safe.
+**Pick up at row 20 `src/engine_runner.cyr`** (rust-old/src/engine/runner.rs, 746 lines — the heart;
+the largest remaining module). It ties every executor together behind `Engine`. Notes to start warm:
+- **Shape:** `Engine {config, handler, rollback_handler/0, event_sink/0, condition_cache}` + builder
+  fns (`engine_new` + `engine_with_rollback/storage/event_sink/event_bus/metrics/heartbeat/queue/
+  execution_store/progress_sink/step_type_metrics`). Builders all return the engine ptr (chainable).
+- **`engine_run(e, flow)` EXACT sequence (runner.rs):** validate (`flow_validate`) → hw check (skip
+  until row 17 lands — Option field is 0) → emit `flow_started` → save Running `ExecutionRecord`
+  (execution_id = flow id string, started_at) → metrics run_started → heartbeat guard (majra; can
+  no-op — register + 10s heartbeat thread, stop+deregister on exit; RAII → explicit stop call) →
+  resolve timeout (global ‖ flow ‖ max) → **mode dispatch**: queue path (`run_queued`) OR by
+  FlowMode to `run_sequential`/`run_parallel`/`run_dag`/`run_hierarchical` → has_failures →
+  `rollback_completed_steps` (reverse order, rollbackable+Completed only, emit `step_rollback` each;
+  no handler → false) → emit `flow_rolled_back`/`flow_failed`/`flow_completed` → build `FlowResult`
+  → save final record → return.
+- **Also:** `engine_run_with_cancellation(e, flow, token)` (was_cancelled = signalled && any
+  Skipped/"cancelled"; does NOT persist) and `engine_run_distributed(e, flow, fleet)` (Dag-mode
+  only — reject otherwise; calls `run_distributed_dag`; shares the `finalize`/`rollback` path).
+  Build an ExecCtx (`exec_ctx_new`) from the engine's config/handler/sinks to hand to the executors.
+- **Reuse:** all six executors are done and take `(steps, …, ctx)`; this module is mostly the
+  orchestration/persistence/rollback wrapper around them. ~47 Rust behavioral tests define semantics.
 
-**Then:** row 20 `engine_runner.cyr` (the heart, 746 lines — `Engine` + builders, the run sequence:
+**Context on the run sequence (row 20 detail, kept from the original brief):**
+row 20 `engine_runner.cyr` (the heart, 746 lines — `Engine` + builders, the run sequence:
 validate → flow_started → save Running `ExecutionRecord` → metrics → heartbeat guard (majra; can
 no-op) → resolve timeout → **mode dispatch** to the executors (incl. the queue path via `run_queued`
 and `run_distributed_dag`) → rollback completed steps on failure → flow_completed/failed/rolled_back

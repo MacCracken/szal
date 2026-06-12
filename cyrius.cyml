@@ -5,7 +5,7 @@ description = "szal — workflow engine: step/flow execution with branching, ret
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/szal"
 language = "cyrius"
-cyrius = "6.1.35"
+cyrius = "6.1.36"
 
 [build]
 entry = "src/main.cyr"

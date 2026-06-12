@@ -1,0 +1,297 @@
+# engine_distributed.cyr — distributed DAG execution across a majra fleet
+#
+# Ports rust-old/src/engine/distributed.rs (run_distributed_dag). port-plan §4 row 19. Where run_dag
+# runs each ready wave on local worker threads, this coordinator distributes ready steps across the
+# nodes of a majra FleetQueue: every node owns a ManagedQueue, one worker thread per node dequeues
+# and executes via the shared step handler and reports each StepResult back over a result channel;
+# the coordinator unlocks dependents, submits the next ready steps, and rebalances per completion.
+#
+# DAG bookkeeping is IDENTICAL to run_dag and is reused wholesale: the id->(ordinal+1) map, the
+# ordinal-indexed in_degree[]/failed[] arrays, the vec-of-vecs dependents, and the helpers
+# `_dag_lookup`/`_dag_unlock`/`_dag_skip` all come from engine_dag.cyr — so this module MUST be
+# included after engine_dag (and after the vendored majra for the fleet/mq API).
+#
+# Concurrency translation (port-plan §1.7 + parity-notes §8): Rust's two `tokio::select!{biased}`
+# become poll loops. A worker polls its `done` cancel token, else `mq_dequeue`s its node queue, else
+# `sleep_ms(2)`. The coordinator `chan_try_recv`s the result channel, else checks the flow token /
+# timeout, else briefly sleeps. After the loop the coordinator signals `done`, joins the workers, and
+# Skips every still-unseen step with the post-loop reason. `thread_join` returns no value, so workers
+# publish each StepResult over the result channel (cap = total+1, so `chan_send` never blocks — at
+# most `total` steps are ever submitted). `alloc()` and majra fleet/mq + `chan_*` are all
+# thread-safe, so concurrent coordinator-submits-while-workers-execute is safe.
+#
+# Nondeterminism: real concurrent workers across nodes — assert on the result SET + statuses, never
+# on ordering (the Rust tests do the same).
+#
+# Usage: include "src/engine_distributed.cyr" (after engine_core, engine_step_exec, engine_parallel,
+#   engine_dag, and the vendored majra).
+# Requires: src/engine_dag.cyr (_dag_lookup/_dag_unlock/_dag_skip + bookkeeping idiom),
+#   src/engine_step_exec.cyr (execute_step_with_handler), src/engine_core.cyr (ExecCtx accessors,
+#   emit, check_condition), src/step.cyr, src/bus.cyr, src/uuid.cyr, src/vendor/majra.cyr (fleet_*,
+#   mq_*, queue_item_payload, PRIORITY_NORMAL), lib/thread.cyr (thread_*, chan_*),
+#   lib/async.cyr (cancel_token_*), lib/chrono.cyr (clock_now_ms, sleep_ms), lib/vec.cyr,
+#   lib/hashmap.cyr (map_keys).
+# Naming: public symbol is run_distributed_dag; the per-node worker + its arg layout are internal.
+
+# Per-node worker argument: {node ManagedQueue, done cancel token, ExecCtx, result channel}.
+enum DistArgL {
+    DIST_ARG_SIZE = 32;
+    DA_MQ = 0;
+    DA_DONE = 8;
+    DA_CTX = 16;
+    DA_CHAN = 24;
+}
+
+# Per-node worker body (distributed.rs 96-142): until `done` is signalled, dequeue this node's queue,
+# execute the step, mark it complete/failed on the queue, and publish the StepResult to the result
+# channel. An empty queue means "wait briefly for work or shutdown" (the inner select! → sleep_ms(2)).
+fn _dist_worker(arg) {
+    var mq = load64(arg + DA_MQ);
+    var done = load64(arg + DA_DONE);
+    var ctx = load64(arg + DA_CTX);
+    var ch = load64(arg + DA_CHAN);
+    while (1 == 1) {
+        if (cancel_token_check(done) == 1) { return 0; }
+        var item = mq_dequeue(mq);
+        if (item == 0) {
+            if (cancel_token_check(done) == 1) { return 0; }
+            sleep_ms(2);
+        } else {
+            var step = queue_item_payload(item);
+            var res = execute_step_with_handler(step, ctx);
+            if (step_result_status(res) == STATUS_COMPLETED) {
+                mq_complete(mq, item);
+            } else {
+                mq_fail(mq, item);
+            }
+            chan_send(ch, res);
+        }
+    }
+    return 0;
+}
+
+# Coordinate DAG execution of `steps` (a vec of StepDef*) across the nodes of `fleet` (a majra
+# FleetQueue) under `ctx` (ExecCtx). `timeout_ms`/`start_ms` are the flow deadline budget + start
+# timestamp; `token` is the flow cancel token (0 = None). Returns one StepResult* per step (executed
+# or Skipped). Steps whose dependency failed or whose condition evaluated false are Skipped without
+# being submitted; a step no node can accept is Failed "no fleet node available". On cancel/timeout
+# the loop stops and every unseen step is Skipped with the post-loop reason. Mirrors
+# run_distributed_dag (distributed.rs 35-269).
+fn run_distributed_dag(steps, fleet, timeout_ms, start_ms, token, ctx) {
+    var event_sink = exec_ctx_event_sink(ctx);
+    var cache = exec_ctx_condition_cache(ctx);
+    var results = vec_new();
+    var total = vec_len(steps);
+    if (total == 0) { return results; }
+
+    # DAG bookkeeping (identical to run_dag): id->(ordinal+1) map, failed[], dependents (vec-of-vecs).
+    var id_map = map_new_str();
+    var failed = alloc(total * 8);
+    var in_degree = alloc(total * 8);
+    var dependents = vec_new();
+    var i = 0;
+    while (i < total) {
+        var step = vec_get(steps, i);
+        map_set(id_map, uuid_to_str(step_id_hi(step), step_id_lo(step)), i + 1);
+        store64(failed + i * 8, 0);
+        vec_push(dependents, vec_new());
+        i = i + 1;
+    }
+    # in-degree (TriggerMode: All->deps; Any-with-deps->1; Any-no-deps->0) + dependents edges.
+    i = 0;
+    while (i < total) {
+        var step = vec_get(steps, i);
+        var dn = step_depends_on_len(step);
+        var deg = dn;
+        if (step_trigger_mode(step) == TRIGGER_ANY) {
+            if (dn > 0) { deg = 1; }
+        }
+        store64(in_degree + i * 8, deg);
+        var k = 0;
+        while (k < dn) {
+            var dep_ord = _dag_lookup(id_map, step_depends_on_hi(step, k), step_depends_on_lo(step, k));
+            if (dep_ord >= 0) { vec_push(vec_get(dependents, dep_ord), i); }
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    # Seed ready with no-dependency steps.
+    var ready = vec_new();
+    i = 0;
+    while (i < total) {
+        if (step_depends_on_len(vec_get(steps, i)) == 0) { vec_push(ready, i); }
+        i = i + 1;
+    }
+    var ready_head = 0;
+
+    # Result channel (cap = total+1 so chan_send never blocks) + per-node-worker shutdown token.
+    var ch = chan_new(total + 1);
+    var done = cancel_token_new();
+
+    # Spawn one worker per registered node (distributed.rs 82-143).
+    var node_ids = map_keys(load64(fleet));
+    var nnodes = vec_len(node_ids);
+    var workers = vec_new();
+    var w = 0;
+    while (w < nnodes) {
+        var node_id = vec_get(node_ids, w);
+        var mq = fleet_node_queue(fleet, node_id);
+        if (mq != 0) {
+            var arg = alloc(DIST_ARG_SIZE);
+            store64(arg + DA_MQ, mq);
+            store64(arg + DA_DONE, done);
+            store64(arg + DA_CTX, ctx);
+            store64(arg + DA_CHAN, ch);
+            vec_push(workers, thread_create(&_dist_worker, arg));
+        }
+        w = w + 1;
+    }
+
+    # Coordinator loop (distributed.rs 146-240).
+    var in_flight = 0;
+    while (1 == 1) {
+        # Submit or skip every currently-ready step.
+        while (ready_head < vec_len(ready)) {
+            var ord = vec_get(ready, ready_head);
+            ready_head = ready_head + 1;
+            var step = vec_get(steps, ord);
+
+            # Skip if any dependency failed (transitive failure).
+            var dep_failed = 0;
+            var dn = step_depends_on_len(step);
+            var di = 0;
+            while (di < dn) {
+                var dep_ord = _dag_lookup(id_map, step_depends_on_hi(step, di),
+                step_depends_on_lo(step, di));
+                if (dep_ord >= 0) {
+                    if (load64(failed + dep_ord * 8) == 1) { dep_failed = 1; }
+                }
+                di = di + 1;
+            }
+            if (dep_failed == 1) {
+                _dag_skip(results, event_sink, step, "dependency failed");
+                store64(failed + ord * 8, 1);
+                _dag_unlock(ord, dependents, in_degree, ready);
+            } else {
+                var skip_cond = 0;
+                var cond = step_condition(step);
+                if (cond != 0) {
+                    var cr = check_condition(step, results, steps, cache);
+                    if (is_ok(cr) == 1) {
+                        if (result_unwrap(cr) == 0) { skip_cond = 1; }
+                    }
+                }
+                if (skip_cond == 1) {
+                    _dag_skip(results, event_sink, step, "condition not met");
+                    _dag_unlock(ord, dependents, in_degree, ready);
+                } else {
+                    var item = fleet_submit(fleet, PRIORITY_NORMAL, step);
+                    if (item != 0) {
+                        in_flight = in_flight + 1;
+                    } else {
+                        # No node could accept the step (distributed.rs 192-204).
+                        var fr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
+                        bayan_json_v_null(), 0, 0);
+                        step_result_set_error(fr, str_from("no fleet node available"));
+                        vec_push(results, fr);
+                        store64(failed + ord * 8, 1);
+                        _dag_unlock(ord, dependents, in_degree, ready);
+                    }
+                }
+            }
+        }
+
+        if (vec_len(results) >= total) { return _dist_finish(results, steps, total, id_map,
+        event_sink, token, timeout_ms, start_ms, done, workers); }
+        if (in_flight == 0) { return _dist_finish(results, steps, total, id_map, event_sink, token,
+        timeout_ms, start_ms, done, workers); }
+
+        var cancelled = 0;
+        if (token != 0) {
+            if (cancel_token_check(token) == 1) { cancelled = 1; }
+        }
+        var timed_out = 0;
+        if (clock_now_ms() - start_ms > timeout_ms) { timed_out = 1; }
+        if (cancelled == 1 || timed_out == 1) {
+            return _dist_finish(results, steps, total, id_map, event_sink, token, timeout_ms,
+            start_ms, done, workers);
+        }
+
+        # Wait for the next completion, the flow timeout, or cancellation (distributed.rs 219-224).
+        var res = 0;
+        while (1 == 1) {
+            res = chan_try_recv(ch);
+            if (res != 0) {
+                # Got a completion.
+                var ord2 = _dag_lookup(id_map, step_result_id_hi(res), step_result_id_lo(res));
+                in_flight = in_flight - 1;
+                if (step_result_status(res) != STATUS_COMPLETED) {
+                    if (ord2 >= 0) { store64(failed + ord2 * 8, 1); }
+                }
+                vec_push(results, res);
+                if (ord2 >= 0) { _dag_unlock(ord2, dependents, in_degree, ready); }
+                # Rebalance so idle nodes steal from any backlog.
+                fleet_rebalance(fleet);
+                break;
+            }
+            var cstop = 0;
+            if (token != 0) {
+                if (cancel_token_check(token) == 1) { cstop = 1; }
+            }
+            if (clock_now_ms() - start_ms > timeout_ms) { cstop = 1; }
+            if (cstop == 1) {
+                # timeout / cancellation: stop the coordinator (distributed.rs 238).
+                return _dist_finish(results, steps, total, id_map, event_sink, token, timeout_ms,
+                start_ms, done, workers);
+            }
+            sleep_ms(1);
+        }
+    }
+    return _dist_finish(results, steps, total, id_map, event_sink, token, timeout_ms, start_ms, done,
+    workers);
+}
+
+# Post-loop finalize (distributed.rs 242-268): Skip every step that never got a result, signal the
+# worker shutdown token, and join the workers. Reason mirrors the Rust ordering: cancelled first,
+# then flow-timeout, else "not scheduled". Returns `results`.
+fn _dist_finish(results, steps, total, id_map, event_sink, token, timeout_ms, start_ms, done,
+workers) {
+    if (vec_len(results) < total) {
+        # seen[ordinal] = 1 for every result already collected.
+        var seen = alloc(total * 8);
+        var i = 0;
+        while (i < total) {
+            store64(seen + i * 8, 0);
+            i = i + 1;
+        }
+        var rn = vec_len(results);
+        i = 0;
+        while (i < rn) {
+            var r = vec_get(results, i);
+            var ord = _dag_lookup(id_map, step_result_id_hi(r), step_result_id_lo(r));
+            if (ord >= 0) { store64(seen + ord * 8, 1); }
+            i = i + 1;
+        }
+        var reason = "not scheduled";
+        if (token != 0) {
+            if (cancel_token_check(token) == 1) { reason = "cancelled"; }
+        }
+        if (str_eq_cstr(reason, "not scheduled") == 1) {
+            if (clock_now_ms() - start_ms > timeout_ms) { reason = "flow timeout exceeded"; }
+        }
+        i = 0;
+        while (i < total) {
+            if (load64(seen + i * 8) == 0) { _dag_skip(results, event_sink, vec_get(steps, i), reason); }
+            i = i + 1;
+        }
+    }
+
+    cancel_token_signal(done);
+    var wn = vec_len(workers);
+    var j = 0;
+    while (j < wn) {
+        thread_join(vec_get(workers, j));
+        j = j + 1;
+    }
+    return results;
+}

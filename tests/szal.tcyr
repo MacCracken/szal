@@ -1,4 +1,9 @@
-# szal test suite
+# szal test suite — top-level smoke (the real integration test is szal_core.tcyr).
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/assert.cyr"
 
 fn main() {
     alloc_init();

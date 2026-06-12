@@ -1,0 +1,178 @@
+# szal_engine_distributed.tcyr — run_distributed_dag (engine_distributed.cyr) unit tests.
+#
+# Ports the distributed-DAG executor semantics (distributed.rs tests): diamond across two nodes,
+# fan-out runs every step once across three nodes, transitive dependency-failure skips, and a false
+# condition skips. The Rust `distributed_rejects_non_dag_mode` test guards the Engine wrapper's mode
+# dispatch (engine_runner, row 20) — not run_distributed_dag — so it is deferred to that module.
+#
+# Execution is genuinely concurrent (one worker thread per fleet node), so assertions are on the
+# result SET + statuses (counts), never on ordering — mirroring the Rust tests.
+#   cyrius build --strict --no-deps tests/szal_engine_distributed.tcyr build/test_engine_distributed && ./build/test_engine_distributed
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_parallel.cyr"
+include "src/engine_dag.cyr"
+include "src/engine_distributed.cyr"
+
+fn _h(step, ctx) {
+    if (str_eq_cstr(step_name(step), "boom") == 1) { return Err(str_from("kaboom")); }
+    return Ok(bayan_json_v_int_new(1));
+}
+fn _mk_ctx() {
+    var handler = cb_new(&_h, 0);
+    var flow = flow_ctx_new(str_from("flow"), 0, 0);
+    return exec_ctx_new(handler, 0, flow, 0, 0, 0, cache_new());
+}
+fn _mk_fleet(n) {
+    var fq = fleet_new(fleet_config_new(5, 10, 16));
+    if (n >= 1) { fleet_register_node(fq, "node-0"); }
+    if (n >= 2) { fleet_register_node(fq, "node-1"); }
+    if (n >= 3) { fleet_register_node(fq, "node-2"); }
+    return fq;
+}
+fn _dep(child, parent) {
+    step_depends_on_add(child, step_id_hi(parent), step_id_lo(parent));
+    return 0;
+}
+fn _count_status(results, status) {
+    var n = vec_len(results);
+    var c = 0;
+    var i = 0;
+    while (i < n) {
+        if (step_result_status(vec_get(results, i)) == status) { c = c + 1; }
+        i = i + 1;
+    }
+    return c;
+}
+fn _is_step(r, s) {
+    if (step_result_id_hi(r) != step_id_hi(s)) { return 0; }
+    if (step_result_id_lo(r) != step_id_lo(s)) { return 0; }
+    return 1;
+}
+fn _count_of(results, s) {
+    var n = vec_len(results);
+    var c = 0;
+    var i = 0;
+    while (i < n) {
+        if (_is_step(vec_get(results, i), s) == 1) { c = c + 1; }
+        i = i + 1;
+    }
+    return c;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    # --- diamond across two nodes: a -> {b,c} -> d, all complete ---
+    test_group("distributed diamond across two nodes");
+    var a = step_new(str_from("a"));
+    var b = step_new(str_from("b"));
+    var c = step_new(str_from("c"));
+    var d = step_new(str_from("d"));
+    _dep(b, a);
+    _dep(c, a);
+    _dep(d, b);
+    _dep(d, c);
+    var v1 = vec_new();
+    vec_push(v1, a);
+    vec_push(v1, b);
+    vec_push(v1, c);
+    vec_push(v1, d);
+    var r1 = run_distributed_dag(v1, _mk_fleet(2), 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r1), 4, "four results");
+    assert_eq(_count_status(r1, STATUS_COMPLETED), 4, "all four Completed");
+    assert_eq(_count_of(r1, d), 1, "d runs exactly once");
+
+    # --- fan-out: one root, 12 leaves, three nodes; every step runs once ---
+    test_group("distributed fan-out runs every step once");
+    var root = step_new(str_from("root"));
+    var v2 = vec_new();
+    vec_push(v2, root);
+    var li = 0;
+    while (li < 12) {
+        var leaf = step_new(str_from("leaf"));
+        _dep(leaf, root);
+        vec_push(v2, leaf);
+        li = li + 1;
+    }
+    var r2 = run_distributed_dag(v2, _mk_fleet(3), 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r2), 13, "thirteen results");
+    assert_eq(_count_status(r2, STATUS_COMPLETED), 13, "all thirteen Completed");
+
+    # --- dependency failure: boom -> test -> deploy; 1 failed, 2 skipped ---
+    test_group("distributed dependency failure propagates");
+    var boom = step_new(str_from("boom"));
+    var tst = step_new(str_from("test"));
+    var dep = step_new(str_from("deploy"));
+    _dep(tst, boom);
+    _dep(dep, tst);
+    var v3 = vec_new();
+    vec_push(v3, boom);
+    vec_push(v3, tst);
+    vec_push(v3, dep);
+    var r3 = run_distributed_dag(v3, _mk_fleet(2), 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r3), 3, "three results");
+    assert_eq(_count_status(r3, STATUS_FAILED), 1, "one Failed (boom)");
+    assert_eq(_count_status(r3, STATUS_SKIPPED), 2, "two Skipped (dependents)");
+
+    # --- condition false: a; b(depends a, 'steps.a.status == failed'); b skipped ---
+    test_group("distributed condition false skips");
+    var ca = step_new(str_from("a"));
+    var cb = step_with_condition(step_new(str_from("b")), str_from("steps.a.status == 'failed'"));
+    _dep(cb, ca);
+    var v4 = vec_new();
+    vec_push(v4, ca);
+    vec_push(v4, cb);
+    var r4 = run_distributed_dag(v4, _mk_fleet(1), 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r4), 2, "two results");
+    assert_eq(_count_status(r4, STATUS_COMPLETED), 1, "a Completed");
+    assert_eq(_count_status(r4, STATUS_SKIPPED), 1, "b condition-skipped");
+
+    # --- no fleet node available: every step Failed "no fleet node available" ---
+    test_group("distributed with no nodes fails every step");
+    var na = step_new(str_from("a"));
+    var v5 = vec_new();
+    vec_push(v5, na);
+    var r5 = run_distributed_dag(v5, _mk_fleet(0), 60000, clock_now_ms(), 0, _mk_ctx());
+    assert_eq(vec_len(r5), 1, "one result");
+    assert_eq(step_result_status(vec_get(r5, 0)), STATUS_FAILED, "Failed");
+    assert(str_eq_cstr(step_result_error(vec_get(r5, 0)), "no fleet node available"),
+    "reason: no fleet node available");
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
