@@ -54,6 +54,7 @@ include "src/engine_dag.cyr"
 include "src/engine_queue_runner.cyr"
 include "src/engine_distributed.cyr"
 include "src/engine_runner.cyr"
+include "src/engine_subflow.cyr"
 
 fn main() {
     alloc_init();

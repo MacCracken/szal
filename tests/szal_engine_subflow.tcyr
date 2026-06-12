@@ -1,0 +1,156 @@
+# szal_engine_subflow.tcyr — sub_flow_handler (engine_subflow.cyr) tests.
+#
+# Ports the mod.rs sub_flow tests: a sub_flow step runs a registered sub-flow on a fresh child
+# engine and returns its FlowResult as the step output; a missing config.flow_name and an unknown
+# flow name each fail the step with the exact error substring.
+#   cyrius build --strict --no-deps tests/szal_engine_subflow.tcyr build/test_engine_subflow && ./build/test_engine_subflow
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/engine_result.cyr"
+include "src/storage.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_sequential.cyr"
+include "src/engine_hierarchical.cyr"
+include "src/engine_parallel.cyr"
+include "src/engine_dag.cyr"
+include "src/engine_queue_runner.cyr"
+include "src/engine_distributed.cyr"
+include "src/engine_runner.cyr"
+include "src/engine_subflow.cyr"
+
+fn _h_ok(step, ctx) { return Ok(bayan_json_v_int_new(1)); }
+
+# config json_v with {"flow_name": <name cstr>}; pass 0 for an empty {} config.
+fn _cfg(name) {
+    var o = bayan_json_v_obj_new();
+    if (name != 0) {
+        bayan_json_v_obj_set(o, str_from("flow_name"), bayan_json_v_str_new(str_from(name)));
+    }
+    return o;
+}
+
+# A sub_flow step named `n` carrying config.flow_name = `target` (or an empty config if 0).
+fn _subflow_step(n, target) {
+    return step_with_config(step_with_step_type(step_new(str_from(n)), str_from("sub_flow")),
+    _cfg(target));
+}
+
+# --- sub_flow_execution: registered sub-flow runs, output is its FlowResult ---
+fn t_subflow_exec() {
+    var storage = in_memory_storage_new();
+    var sub = flow_new(str_from("deploy-infra"), FLOW_SEQUENTIAL);
+    flow_add_step(sub, step_new(str_from("provision")));
+    flow_add_step(sub, step_new(str_from("configure")));
+    in_memory_storage_insert(storage, sub);
+
+    var handler = sub_flow_handler(storage, cb_new(&_h_ok, 0));
+
+    var flow = flow_new(str_from("pipeline"), FLOW_SEQUENTIAL);
+    flow_add_step(flow, step_new(str_from("build")));
+    flow_add_step(flow, _subflow_step("infra", "deploy-infra"));
+    flow_add_step(flow, step_new(str_from("smoke-test")));
+
+    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), handler), flow));
+    assert_eq(flow_result_success(fr), 1, "pipeline success");
+    assert_eq(flow_result_completed_count(fr), 3, "pipeline completed 3");
+
+    # The infra step's output is the sub-flow's serialized FlowResult.
+    var out = step_result_output(flow_result_step_at(fr, 1));
+    var fn_v = bayan_json_v_obj_get(out, "flow_name");
+    assert_eq(bayan_json_v_is_str(fn_v), 1, "output has flow_name string");
+    assert(str_eq_cstr(bayan_json_v_str(fn_v), "deploy-infra"), "output flow_name == deploy-infra");
+    var su_v = bayan_json_v_obj_get(out, "success");
+    assert_eq(bayan_json_v_is_bool(su_v), 1, "output has success bool");
+    assert_eq(bayan_json_v_bool(su_v), 1, "output success == true");
+    return 0;
+}
+
+# --- delegation: a non-sub_flow step goes straight to the inner handler ---
+fn t_subflow_delegates() {
+    var storage = in_memory_storage_new();
+    var flow = flow_new(str_from("plain"), FLOW_SEQUENTIAL);
+    flow_add_step(flow, step_new(str_from("a")));
+    flow_add_step(flow, step_new(str_from("b")));
+    var handler = sub_flow_handler(storage, cb_new(&_h_ok, 0));
+    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), handler), flow));
+    assert_eq(flow_result_success(fr), 1, "plain flow success via inner handler");
+    assert_eq(flow_result_completed_count(fr), 2, "plain completed 2");
+    return 0;
+}
+
+# --- missing config.flow_name -> step fails, error mentions flow_name ---
+fn t_subflow_missing_name() {
+    var storage = in_memory_storage_new();
+    var handler = sub_flow_handler(storage, cb_new(&_h_ok, 0));
+    var flow = flow_new(str_from("bad"), FLOW_SEQUENTIAL);
+    flow_add_step(flow, _subflow_step("no-config", 0));
+    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), handler), flow));
+    assert_eq(flow_result_success(fr), 0, "missing flow_name not success");
+    var err = step_result_error(flow_result_step_at(fr, 0));
+    assert(err != 0, "step has an error");
+    assert(str_contains(err, str_from("flow_name")), "error mentions flow_name");
+    return 0;
+}
+
+# --- unknown flow name -> step fails, error mentions "not found" ---
+fn t_subflow_not_found() {
+    var storage = in_memory_storage_new();
+    var handler = sub_flow_handler(storage, cb_new(&_h_ok, 0));
+    var flow = flow_new(str_from("bad"), FLOW_SEQUENTIAL);
+    flow_add_step(flow, _subflow_step("missing", "nonexistent"));
+    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), handler), flow));
+    assert_eq(flow_result_success(fr), 0, "unknown flow not success");
+    var err = step_result_error(flow_result_step_at(fr, 0));
+    assert(err != 0, "step has an error");
+    assert(str_contains(err, str_from("not found")), "error mentions not found");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    test_group("sub_flow execution + delegation");
+    t_subflow_exec();
+    t_subflow_delegates();
+
+    test_group("sub_flow error paths");
+    t_subflow_missing_name();
+    t_subflow_not_found();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

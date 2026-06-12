@@ -1,0 +1,113 @@
+# engine_subflow.cyr — sub_flow_handler: a StepHandler that runs nested flows
+#
+# Ports rust-old/src/engine/mod.rs `sub_flow_handler` (split out of engine_core because it
+# constructs an `Engine` — see docs/development/port-plan.md §4 row 21, the LAST engine file). It
+# wraps an inner StepHandler:
+# a step whose `step_type == "sub_flow"` is resolved to a registered FlowDef (via a WorkflowStorage
+# trait object) and run on a FRESH default-config child Engine using the same inner handler; its
+# FlowResult is returned as the step's JSON output. Every other step delegates to the inner handler.
+#
+# Cyrius closures capture nothing, so the higher-order Rust closure becomes a named dispatch fn plus
+# a captured-context struct {storage_vt, inner_handler} handed back as a callback pair (engine_core
+# cb_new). The handler ABI is `fn(step, ctx) -> Result<json_v, Str>` (Ok = the sub-flow FlowResult as
+# a json_v; Err = a message Str), exactly the StepHandler contract execute_step_with_handler expects.
+#
+# Exact error strings (mirroring mod.rs 366/370/381-384):
+#   - no config.flow_name           -> "sub_flow step requires config.flow_name"
+#   - flow_name not in storage       -> "sub-flow '<name>' not found in storage"
+#   - child engine_run returns Err   -> "sub-flow '<name>' failed: <detail>" (detail = last-error buf)
+#   - child ran but !success         -> "sub-flow '<name>' failed: <n> step(s) failed"
+# The success branch serializes the child FlowResult with flow_result_to_json then reparses it to a
+# json_v (the build-then-parse idiom used across engine_result/storage).
+#
+# Usage: include "src/engine_subflow.cyr" (after engine_runner — it calls engine_new/engine_run).
+# Requires: src/engine_runner.cyr (engine_new/engine_run), src/engine_core.cyr (cb_new/
+#   handler_invoke), src/storage.cyr (workflow_storage_get_by_name), src/engine_result.cyr
+#   (flow_result_to_json/flow_result_success/flow_result_failed_count), src/step.cyr
+#   (step_step_type/step_config), src/error.cyr (szal_get_err_msg), lib/result.cyr (Ok/Err/
+#   is_err_result/result_unwrap), lib/bayan.cyr (json_v obj get/parse), lib/str.cyr (str_builder).
+# Naming: public symbol is sub_flow_handler; the dispatch fn + ctx layout are internal.
+
+# Captured context for the sub_flow dispatch handler: {WorkflowStorage trait obj, inner StepHandler}.
+enum SubFlowCtxL {
+    SUBFLOW_CTX_SIZE = 16;
+    SF_STORAGE = 0;
+    SF_INNER = 8;
+}
+
+# The dispatch handler body (mod.rs 356-386). step is a StepDef; ctx is a SubFlowCtx. Returns a
+# Result<json_v, Str> per the StepHandler ABI. Internal — installed via sub_flow_handler's cb pair.
+fn _sub_flow_dispatch(step, ctx) {
+    var storage = load64(ctx + SF_STORAGE);
+    var inner = load64(ctx + SF_INNER);
+
+    # Non-sub_flow steps (incl. step_type None == 0) delegate straight to the inner handler.
+    var st = step_step_type(step);
+    if (st == 0) { return handler_invoke(inner, step); }
+    if (str_eq_cstr(st, "sub_flow") == 0) { return handler_invoke(inner, step); }
+
+    # Extract config.flow_name (config absent / not a string -> the flow_name error).
+    var flow_name = 0;
+    var config = step_config(step);
+    if (config != 0) {
+        var fnv = bayan_json_v_obj_get(config, "flow_name");
+        if (bayan_json_v_is_str(fnv) == 1) { flow_name = bayan_json_v_str(fnv); }
+    }
+    if (flow_name == 0) {
+        return Err(str_from("sub_flow step requires config.flow_name"));
+    }
+
+    # Resolve the sub-flow from storage.
+    var flow = workflow_storage_get_by_name(storage, flow_name);
+    if (flow == 0) {
+        var nf = str_builder_new();
+        str_builder_add_cstr(nf, "sub-flow '");
+        str_builder_add(nf, flow_name);
+        str_builder_add_cstr(nf, "' not found in storage");
+        var nfmsg = str_builder_build(nf);
+        return Err(nfmsg);
+    }
+
+    # Run the sub-flow on a fresh default-config child engine with the same inner handler.
+    var child = engine_new(engine_config_default(), inner);
+    var rr = engine_run(child, flow);
+    if (is_err_result(rr) == 1) {
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "sub-flow '");
+        str_builder_add(eb, flow_name);
+        str_builder_add_cstr(eb, "' failed: ");
+        str_builder_add(eb, szal_get_err_msg());
+        var emsg = str_builder_build(eb);
+        return Err(emsg);
+    }
+
+    var result = result_unwrap(rr);
+    if (flow_result_success(result) == 1) {
+        var json = flow_result_to_json(result);
+        var v = bayan_json_v_parse(json);
+        return Ok(v);
+    }
+
+    # Ran but failed: report how many steps failed.
+    var fb = str_builder_new();
+    str_builder_add_cstr(fb, "sub-flow '");
+    str_builder_add(fb, flow_name);
+    str_builder_add_cstr(fb, "' failed: ");
+    str_builder_add_int(fb, flow_result_failed_count(result));
+    str_builder_add_cstr(fb, " step(s) failed");
+    var fmsg = str_builder_build(fb);
+    return Err(fmsg);
+}
+
+# Build a StepHandler callback pair that delegates `step_type == "sub_flow"` steps to nested-flow
+# execution via the `storage` WorkflowStorage trait object, forwarding all other steps to the
+# `inner` StepHandler callback pair. The sub-flow runs on a fresh default-config Engine using
+# `inner`; its FlowResult is the step's JSON output. Mirrors sub_flow_handler (mod.rs 349-388).
+# Returns the callback pair, or 0 on OOM.
+fn sub_flow_handler(storage, inner) {
+    var ctx = alloc(SUBFLOW_CTX_SIZE);
+    if (ctx == 0) { return 0; }
+    store64(ctx + SF_STORAGE, storage);
+    store64(ctx + SF_INNER, inner);
+    return cb_new(&_sub_flow_dispatch, ctx);
+}

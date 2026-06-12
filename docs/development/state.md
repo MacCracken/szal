@@ -11,11 +11,10 @@
 
 ## Toolchain
 
-- **Cyrius pin**: `6.1.37` (in `cyrius.cyml [package].cyrius`). The full suite (950 assertions across
-  23 test files) + main + the top-level `szal.tcyr` smoke were re-verified green under **6.1.37**
-  (2026-06-11) and the pin was bumped to match the installed wrapper — drift cleared. (Silence any
-  future drift warning per-invocation with `CYRIUS_NO_WARN_PIN_DRIFT=1`.) History: 6.1.33 (M0) →
-  6.1.34 → 6.1.35 → 6.1.36 → 6.1.37.
+- **Cyrius pin**: `6.1.37` (in `cyrius.cyml [package].cyrius`). The full suite (964 assertions across
+  24 test files) + main + the top-level `szal.tcyr` smoke are green under **6.1.37** (2026-06-11); the
+  pin matches the installed wrapper — drift cleared. (Silence any future drift warning per-invocation
+  with `CYRIUS_NO_WARN_PIN_DRIFT=1`.) History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37.
 
 ## Milestone
 
@@ -50,11 +49,12 @@ modules ported, tested, wired into `main`; adversarial parity audit run + both f
     Some(0) from None; Rust struct has no `skip_serializing_if`, so serde emits `0`). Fix: added
     `WE_DURATION_SET` presence flag (mirrors the existing `WE_ATTEMPT_SET`); WE_SIZE 72→80; +3 assertions.
 
-**M2 — Engine core + executors. ⏳ in progress (rows 8–20 done; 21 + 17 remain).** Porting
-port-plan §4 rows 8–21 in topological order. **Q10 (concurrency) + Q11 (logging) are RESOLVED in
-practice** — the parallel/dag/queue/distributed rows shipped on the cooperative-cancel +
+**M2 — Engine core + executors. ⏳ in progress (rows 8–21 done; only the GATED row 17 remains).**
+Ported port-plan §4 rows 8–21 in topological order. **Q10 (concurrency) + Q11 (logging) are RESOLVED
+in practice** — the parallel/dag/queue/distributed rows shipped on the cooperative-cancel +
 thread-safe-`alloc` model (parity-notes §8); only **Q9 (`registry_new` collision)** still gates
-`engine_hardware` (row 17). The `Engine` (row 20) now drives all six modes end-to-end.
+`engine_hardware` (row 17). The `Engine` (row 20) drives all six modes end-to-end, and
+`sub_flow_handler` (row 21) runs nested flows — **M2 is feature-complete except the gated row 17.**
 
 - ✅ **row 8 `src/engine_result.cyr` (`FlowResult`)** — ported + wired into `main`, cross-checked
   vs `engine/result.rs`. `FlowResult {flow_name, steps vec, total_duration_ms, success,
@@ -182,11 +182,23 @@ thread-safe-`alloc` model (parity-notes §8); only **Q9 (`registry_new` collisio
   distributed dispatch + non-Dag rejection — **stable across 15 runs** (incl. the concurrent
   distributed path). lint/fmt/doc clean. Self-parity-checked branch-for-branch vs runner.rs (oracle
   pristine). **The engine is now fully wired end-to-end.**
-- ⏳ **Next (plan order): row 21 `engine_subflow.cyr`** (sub_flow_handler, deferred from mod.rs) —
-  intercepts step_type=="sub_flow": config.flow_name → storage lookup → run on a FRESH default-config
-  Engine with the inner handler → FlowResult JSON; else delegate to the inner handler. Needs `Engine`,
-  so it is the LAST engine file. Still gated: row 17 `engine_hardware` on Q9 (`registry_new`
-  collision — needs the §3.3 resolution before porting).
+- ✅ **row 21 `src/engine_subflow.cyr`** — `sub_flow_handler(storage, inner)`: a higher-order
+  StepHandler. Cyrius closures capture nothing, so it returns a `cb_new(&_sub_flow_dispatch, ctx)`
+  pair over a `{storage_vt, inner_handler}` ctx. `_sub_flow_dispatch`: non-`sub_flow` steps (incl.
+  step_type None) delegate to `inner`; a `sub_flow` step reads `config.flow_name`, resolves it via
+  `workflow_storage_get_by_name`, runs that FlowDef on a FRESH `engine_new(engine_config_default(),
+  inner)` child, and returns the child `FlowResult` as the step's json_v output (`flow_result_to_json`
+  → reparse). Exact error strings (mod.rs): `sub_flow step requires config.flow_name`,
+  `sub-flow '<name>' not found in storage`, `sub-flow '<name>' failed: <detail>` (child validate Err,
+  detail = `szal_get_err_msg`), `sub-flow '<name>' failed: <n> step(s) failed`. ABI is the standard
+  `fn(step, ctx) → Result<json_v, Str>`. `tests/szal_engine_subflow.tcyr` (14) ports
+  sub_flow_execution (output FlowResult shape) + delegation + missing-flow_name + not-found. lint/fmt/
+  doc clean; self-parity-checked vs mod.rs (oracle pristine). **All engine modules are ported.**
+- ⏳ **Next: row 17 `engine_hardware.cyr` (GATED) or begin M3.** Row 17 is the only unported §4
+  engine row — blocked on **Q9** (`registry_new` collision, bote-core × ai-hwaccel; both define a
+  24-byte vs 32-byte `registry_new`). Needs the port-plan §3.3 resolution (rename in the vendored/
+  synced ai-hwaccel copy, or upstream rename) before porting. Otherwise M3 surface modules
+  (`stream`, `sql_store`, `mcp*`) begin — see roadmap.md.
 
 ## Toolchain gotchas found during the port (for docs/cyrius-feedback.md)
 
@@ -226,26 +238,30 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 ## Next — ▶ START HERE (handoff)
 
-**Done so far (M1 ✅ + M2 rows 8–20 ✅, all parity-verified 0-findings): 22 modules, 950 assertions,
-0 failures, oracle pristine. Toolchain re-verified + pin bumped to 6.1.37.** All six execution modes
-run (sequential/parallel/dag/hierarchical/queue/distributed) + core + step_exec, and the `Engine`
-(row 20) drives them end-to-end with rollback/persistence/cancellation. Full majra 2.4.6 vendored.
-Build recipe + gotchas above.
+**Done so far (M1 ✅ + M2 rows 8–21 ✅, all parity-verified 0-findings): 23 modules, 964 assertions,
+0 failures, oracle pristine. Pin 6.1.37.** ALL engine modules are ported: six execution modes
+(sequential/parallel/dag/hierarchical/queue/distributed) + core + step_exec, the `Engine` (row 20)
+drives them end-to-end with rollback/persistence/cancellation, and `sub_flow_handler` (row 21) runs
+nested flows. **M2 is feature-complete except the GATED row 17.** Full majra 2.4.6 vendored. Build
+recipe + gotchas above.
 
-**Pick up at row 21 `src/engine_subflow.cyr`** (rust-old/src/engine/mod.rs `sub_flow_handler`,
-deferred from engine_core; the LAST engine file — it constructs an `Engine`). Notes to start warm:
-- **Shape:** a StepHandler wrapper. `sub_flow_handler(inner_handler, storage)` returns a StepHandler
-  callback pair that, per step: if `step_type == "sub_flow"`, read `config.flow_name`, look it up via
-  the WorkflowStorage trait object (`workflow_storage_get_by_name`), run that FlowDef on a FRESH
-  `engine_new(engine_config_default(), inner_handler)` (no storage/sinks — a clean child), and return
-  the child `FlowResult` serialized to JSON (`flow_result_to_json` → a json_v `Ok`); else delegate to
-  the inner handler. Read mod.rs for the exact missing-flow_name / unknown-flow error strings.
-- **Reuse:** `engine_run` + `flow_result_to_json` are done; this is a thin dispatch shim. Build the
-  child ExecCtx implicitly via `engine_run`. The handler ABI is `fn(step, ctx) → Result<json_v, Str>`
-  (engine_core §); the ctx carries `{inner_handler_cb, storage_vt}`.
-- **Then M2 is feature-complete except the gated row 17** `engine_hardware` on Q9 (`registry_new`
-  collision — bote×ai-hwaccel; needs the port-plan §3.3 resolution before porting). After row 21,
-  M3 surface modules (`stream`, `sql_store`, `mcp*`) begin — see roadmap.md.
+**Pick up at: row 17 `engine_hardware.cyr` (GATED) — or start M3.**
+
+Row 17 `engine_hardware.cyr` (rust-old/src/engine/hardware.rs, ~170 lines) is the ONLY unported §4
+engine row. It is **blocked on Q9** (port-plan §3.3): both bote-core and ai-hwaccel export
+`registry_new` (a 24-byte tool registry vs a 32-byte profile registry), and ai-hwaccel's
+`registry_detect*` call `registry_new()` internally, so include order can't fix it. **Resolve first:**
+sed-rename `registry_new`→`hw_registry_new` in szal's vendored/synced ai-hwaccel copy (the hoosh
+vendoring pattern, like the 9-symbol majra rename), OR an upstream ai-hwaccel rename. Once resolved:
+`HardwareContext` over `cached_registry_new(300)`; `hw_check_requirements(steps)` (first unsatisfiable
+→ ERR_HW_UNAVAILABLE — wire into engine_runner's deferred check at engine_run/run_distributed/
+run_with_cancellation, where `config.hardware != 0`); `hw_effective_concurrency(steps, base)` (min 1;
+latent — never called by the engine, port anyway). Dep: the ai-hwaccel bundle (`[deps.ai-hwaccel]`
+2.3.9, normal git block — no vendoring needed; it has zero sub-deps).
+
+**Or start M3 surface modules** (no gate): `stream.cyr` (row 22, ProgressHub over majra pubsub),
+`sql_store.cyr` (row 23, patra-backed ExecutionStore), then `mcp*` (rows 24-26, needs vendored
+bote-core). See port-plan §4 + roadmap.md M3.
 
 See [`roadmap.md`](roadmap.md) M2, [`port-plan.md`](port-plan.md) §4 (per-module spec),
 [`parity-notes.md`](parity-notes.md) (accepted divergences §1–8 + audit log), and
