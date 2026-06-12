@@ -1,0 +1,456 @@
+# engine_runner.cyr — the Engine: builders + the run sequence that ties the executors together
+#
+# Ports rust-old/src/engine/runner.rs (Engine + builders + run / run_with_cancellation /
+# run_distributed + finalize / rollback_completed_steps / start_heartbeat). port-plan §4 row 20 —
+# the heart of the engine. Every executor (sequential/parallel/dag/hierarchical/queue/distributed)
+# is already ported and takes `(steps, …, ctx)`; this module is the orchestration/persistence/
+# rollback wrapper that selects a mode, runs it, rolls back completed steps on failure, emits the
+# terminal lifecycle events + metrics, and persists the ExecutionRecord.
+#
+# Rust extension points are Cyrius (fn_ptr, ctx_ptr) callback pairs (engine_core §). The Engine is a
+# heap struct {config, handler, rollback_handler/0, event_sink/0, condition_cache}; builder fns
+# mutate-and-return it (chainable, like Rust's `with_*(mut self) -> Self`). `engine_run` returns a
+# Result: `Ok(FlowResult*)` or the Err Result from `flow_validate` (mirrors `flow.validate()?`).
+#
+# Three deliberate fidelity notes vs runner.rs:
+#   - **Hardware check** (config.hardware): deferred — see docs/development/port-plan.md row 17
+#     (engine_hardware, gated on Q9). The field stays 0; the guarded check is a no-op until row 17
+#     wires `hw_check_requirements`.
+#   - **Heartbeat ticker**: Rust spawns a background task that calls `heartbeat()` every 10s and a
+#     RAII guard that deregisters on drop. The port registers on start + deregisters on end but omits
+#     the 10s ticker — observably identical for any sub-10s run (the ticker never fires sooner), and
+#     the spec marks heartbeat "can no-op" (state.md row 20). chb_* is cstr-keyed → the id is a
+#     `uuid_to_cstr`, not a Str.
+#   - **`engine_with_event_bus`**: omitted — the majra-backed `EventBus` (`bus_new`/`bus_publish`) is
+#     deferred to M3 (see docs/development/roadmap.md). Use `engine_with_event_sink` meanwhile.
+#
+# The queue-backed path (config.queue != 0) intentionally diverges from the direct path EXACTLY as
+# Rust does (runner.rs 193-236): it does NOT persist a final ExecutionRecord, and it always passes
+# "failed" (never "rolled_back") to flow_failed. Kept faithful in `_engine_finalize_queue`.
+#
+# Usage: include "src/engine_runner.cyr" (after engine_core, all executors incl. engine_distributed,
+#   storage, metrics, engine_result, and the vendored majra).
+# Requires: src/engine_core.cyr, src/engine_{sequential,parallel,dag,hierarchical,queue_runner,
+#   distributed}.cyr, src/storage.cyr (ExecutionRecord/ExecutionStore), src/metrics.cyr,
+#   src/engine_result.cyr (FlowResult), src/flow.cyr, src/state.cyr, src/bus.cyr, src/step.cyr,
+#   src/uuid.cyr, src/condition.cyr (cache_new), src/vendor/majra.cyr (chb_*),
+#   lib/result.cyr (Ok/is_err_result), lib/chrono.cyr (clock_now_ms/iso8601_now),
+#   lib/bayan.cyr (heartbeat metadata), lib/str.cyr, lib/vec.cyr, lib/async.cyr (cancel_token_check).
+# Naming: public symbols are engine_-prefixed; internal helpers use _engine_.
+
+# ===========================================================================
+# Engine struct
+# ===========================================================================
+#
+# Byte layout (40 bytes):
+#   +0   config            (EngineConfig*)
+#   +8   handler           (StepHandler callback pair — never 0)
+#   +16  rollback_handler  (RollbackHandler callback pair, or 0 = None)
+#   +24  event_sink        (EventSink callback pair, or 0 = None)
+#   +32  condition_cache   (ConditionCache*)
+enum EngineL {
+    ENGINE_SIZE = 40;
+    EN_CONFIG = 0;
+    EN_HANDLER = 8;
+    EN_ROLLBACK = 16;
+    EN_EVENT_SINK = 24;
+    EN_CONDITION_CACHE = 32;
+}
+
+# Create an engine from a config + a step handler callback pair. rollback_handler/event_sink start
+# None (0); a fresh ConditionCache memoizes compiled conditions across runs. Mirrors Engine::new
+# (runner.rs 25-33). Returns 0 on OOM.
+fn engine_new(config, handler) {
+    var e = alloc(ENGINE_SIZE);
+    if (e == 0) { return 0; }
+    store64(e + EN_CONFIG, config);
+    store64(e + EN_HANDLER, handler);
+    store64(e + EN_ROLLBACK, 0);
+    store64(e + EN_EVENT_SINK, 0);
+    store64(e + EN_CONDITION_CACHE, cache_new());
+    return e;
+}
+
+# Get the EngineConfig*.
+fn engine_config(e) { return load64(e + EN_CONFIG); }
+# Get the StepHandler callback pair.
+fn engine_handler(e) { return load64(e + EN_HANDLER); }
+# Get the RollbackHandler callback pair (0 = None).
+fn engine_rollback_handler(e) { return load64(e + EN_ROLLBACK); }
+# Get the EventSink callback pair (0 = None).
+fn engine_event_sink(e) { return load64(e + EN_EVENT_SINK); }
+# Get the ConditionCache* (memoizes compiled conditions across runs).
+fn engine_condition_cache(e) { return load64(e + EN_CONDITION_CACHE); }
+
+# --- builders (mutate-and-return for chaining; runner.rs with_*) ---
+
+# Set the rollback handler (a RollbackHandler callback pair). Mirrors with_rollback_handler.
+fn engine_with_rollback(e, handler) { store64(e + EN_ROLLBACK, handler); return e; }
+
+# Set the lifecycle event sink (an EventSink callback pair). Mirrors with_event_sink.
+fn engine_with_event_sink(e, sink) { store64(e + EN_EVENT_SINK, sink); return e; }
+
+# Attach a WorkflowStorage trait object (sub-flow resolution). Mirrors with_storage.
+fn engine_with_storage(e, vt) { engine_config_set_storage_vt(engine_config(e), vt); return e; }
+
+# Attach a majra metrics vtable. Mirrors with_metrics.
+fn engine_with_metrics(e, vt) { engine_config_set_metrics_vt(engine_config(e), vt); return e; }
+
+# Attach a majra ConcurrentHeartbeatTracker. Mirrors with_heartbeat.
+fn engine_with_heartbeat(e, h) { engine_config_set_heartbeat(engine_config(e), h); return e; }
+
+# Attach a majra ManagedQueue (selects the queue-backed run path). Mirrors with_queue.
+fn engine_with_queue(e, q) { engine_config_set_queue(engine_config(e), q); return e; }
+
+# Attach an ExecutionStore trait object (durable execution tracking). Mirrors with_execution_store.
+fn engine_with_execution_store(e, vt) {
+    engine_config_set_execution_store_vt(engine_config(e), vt);
+    return e;
+}
+
+# Attach a ProgressSink callback pair (streaming step output). Mirrors with_progress_sink.
+fn engine_with_progress_sink(e, cb) { engine_config_set_progress_sink(engine_config(e), cb); return e; }
+
+# Attach a StepTypeMetricsFn callback pair (per-type duration histograms). Mirrors
+# with_step_type_metrics.
+fn engine_with_step_type_metrics(e, cb) {
+    engine_config_set_step_type_metrics(engine_config(e), cb);
+    return e;
+}
+
+# ===========================================================================
+# Internal helpers
+# ===========================================================================
+
+# Resolve the effective flow timeout: global_timeout_ms, else flow.timeout_ms, else "unbounded"
+# (i64 max — the executors' `elapsed > timeout` never trips). Mirrors
+# global_timeout_ms.or(flow.timeout_ms).unwrap_or(u64::MAX) (runner.rs 171-175).
+fn _engine_timeout(cfg, flow) {
+    if (engine_config_timeout_present(cfg) == 1) { return engine_config_timeout_ms(cfg); }
+    if (flow_timeout_present(flow) == 1) { return flow_timeout_ms(flow); }
+    return STEP_I64_MAX;
+}
+
+# 1 if any result is Failed (mirrors `.iter().any(|r| r.status == Failed)`).
+fn _engine_any_failed(results) {
+    var n = vec_len(results);
+    var i = 0;
+    while (i < n) {
+        if (step_result_status(vec_get(results, i)) == STATUS_FAILED) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# 1 if `results` holds a Completed result for step `s` (matched by step id). Internal.
+fn _engine_step_completed(results, s) {
+    var n = vec_len(results);
+    var i = 0;
+    while (i < n) {
+        var r = vec_get(results, i);
+        if (step_result_id_hi(r) == step_id_hi(s)) {
+            if (step_result_id_lo(r) == step_id_lo(s)) {
+                if (step_result_status(r) == STATUS_COMPLETED) { return 1; }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# was_cancelled: the token is signalled AND some step was Skipped with reason "cancelled". Mirrors
+# runner.rs 600-603. token == 0 (None) -> 0.
+fn _engine_was_cancelled(token, results) {
+    if (token == 0) { return 0; }
+    if (cancel_token_check(token) == 0) { return 0; }
+    var n = vec_len(results);
+    var i = 0;
+    while (i < n) {
+        var r = vec_get(results, i);
+        if (step_result_status(r) == STATUS_SKIPPED) {
+            var err = step_result_error(r);
+            if (err != 0) {
+                if (str_eq_cstr(err, "cancelled") == 1) { return 1; }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Roll back completed, rollbackable steps in REVERSE flow order via the engine's rollback handler.
+# Returns 1 if every rollback succeeded, 0 if the engine has no rollback handler or any step's
+# rollback returned Err. Emits a step_rollback event before each. Mirrors rollback_completed_steps
+# (runner.rs 661-695).
+fn _engine_rollback_completed_steps(e, flow, results) {
+    var rh = engine_rollback_handler(e);
+    if (rh == 0) { return 0; }
+    var sink = engine_event_sink(e);
+    var steps = flow_steps(flow);
+    var n = vec_len(steps);
+    # Collect completed+rollbackable steps in flow order (filter preserves order).
+    var completed = vec_new();
+    var i = 0;
+    while (i < n) {
+        var s = vec_get(steps, i);
+        if (step_rollbackable(s) == 1) {
+            if (_engine_step_completed(results, s) == 1) { vec_push(completed, s); }
+        }
+        i = i + 1;
+    }
+    # Iterate in reverse (LIFO rollback).
+    var all = 1;
+    var j = vec_len(completed) - 1;
+    while (j >= 0) {
+        var step = vec_get(completed, j);
+        emit(sink, event_step_rollback(step_name(step),
+        uuid_to_str(step_id_hi(step), step_id_lo(step))));
+        var res = handler_invoke(rh, step);
+        if (is_err_result(res) == 1) { all = 0; }
+        j = j - 1;
+    }
+    return all;
+}
+
+# Register a heartbeat for this run if a tracker is configured; returns the cstr engine id (for
+# deregister) or 0 if no tracker. No 10s ticker (see module header). Mirrors start_heartbeat
+# (runner.rs 700-728) minus the background task.
+fn _engine_start_heartbeat(e, flow) {
+    var hb = engine_config_heartbeat(engine_config(e));
+    if (hb == 0) { return 0; }
+    var id = uuid_to_cstr(flow_id_hi(flow), flow_id_lo(flow));
+    var meta = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(meta, str_from("flow"), bayan_json_v_str_new(flow_name(flow)));
+    bayan_json_v_obj_set(meta, str_from("mode"),
+    bayan_json_v_str_new(str_from(flow_mode_display(flow_mode(flow)))));
+    bayan_json_v_obj_set(meta, str_from("steps"), bayan_json_v_int_new(flow_steps_len(flow)));
+    chb_register(hb, id, meta);
+    return id;
+}
+
+# Deregister the heartbeat for `hb_id` (cstr) if one was registered. Mirrors HeartbeatGuard::drop.
+fn _engine_stop_heartbeat(e, hb_id) {
+    if (hb_id == 0) { return 0; }
+    var hb = engine_config_heartbeat(engine_config(e));
+    if (hb != 0) { chb_deregister(hb, hb_id); }
+    return 0;
+}
+
+# Shared run preamble: emit flow_started, compute execution_id + started_at, save a Running record
+# (if persist_start), start metrics + heartbeat, build the ExecCtx. Returns a RunCtx blob. start_ms
+# is captured last (closest to Rust's `Instant::now()` right before exec). persist_start is 0 for
+# run_with_cancellation (which never persists) and 1 for run / run_distributed.
+enum RunCtxL {
+    RUNCTX_SIZE = 40;
+    RC_EXEC_ID = 0;
+    RC_STARTED_AT = 8;
+    RC_START_MS = 16;
+    RC_EXEC_CTX = 24;
+    RC_HB_ID = 32;
+}
+
+fn _engine_prepare(e, flow, persist_start) {
+    var cfg = engine_config(e);
+    var name = flow_name(flow);
+    emit(engine_event_sink(e), event_flow_started(name));
+    var execution_id = uuid_to_str(flow_id_hi(flow), flow_id_lo(flow));
+    var started_at = str_from(iso8601_now());
+    if (persist_start == 1) {
+        var store = engine_config_execution_store_vt(cfg);
+        if (store != 0) {
+            execution_store_save(store,
+            execution_record_new(execution_id, name, STATE_RUNNING, 0, started_at, 0));
+        }
+    }
+    metric_run_started(engine_config_metrics_vt(cfg), name);
+    var hb_id = _engine_start_heartbeat(e, flow);
+    var ec = exec_ctx_new(engine_handler(e), engine_event_sink(e), flow_ctx_of(flow),
+    engine_config_metrics_vt(cfg), engine_config_step_type_metrics(cfg),
+    engine_config_progress_sink(cfg), engine_condition_cache(e));
+    var rc = alloc(RUNCTX_SIZE);
+    store64(rc + RC_EXEC_ID, execution_id);
+    store64(rc + RC_STARTED_AT, started_at);
+    store64(rc + RC_EXEC_CTX, ec);
+    store64(rc + RC_HB_ID, hb_id);
+    store64(rc + RC_START_MS, clock_now_ms());
+    return rc;
+}
+
+# Dispatch to the executor for `flow`'s mode. token is a cancel token (0 = None). Mirrors the
+# `match flow.mode { … }` in run / run_with_cancellation.
+fn _engine_dispatch(flow, cfg, timeout, start_ms, token, ec) {
+    var mode = flow_mode(flow);
+    var steps = flow_steps(flow);
+    var mc = engine_config_max_concurrency(cfg);
+    if (mode == FLOW_SEQUENTIAL) { return run_sequential(steps, timeout, start_ms, token, ec); }
+    if (mode == FLOW_PARALLEL) { return run_parallel(steps, mc, timeout, start_ms, token, ec); }
+    if (mode == FLOW_DAG) { return run_dag(steps, mc, timeout, start_ms, token, ec); }
+    return run_hierarchical(steps, timeout, start_ms, token, ec);
+}
+
+# Build a FlowResult from `results` (name/duration/success/rolled_back + every step). Internal.
+fn _engine_build_result(name, total, success, rolled_back, results) {
+    var fr = flow_result_new(name, total, success, rolled_back);
+    var i = 0;
+    var n = vec_len(results);
+    while (i < n) {
+        flow_result_add_step(fr, vec_get(results, i));
+        i = i + 1;
+    }
+    return fr;
+}
+
+# Shared finalize for the direct / cancellation / distributed paths: roll back on failure, emit the
+# terminal event + metric, build the FlowResult, and (if persist) save the final ExecutionRecord.
+# was_cancelled folds into success + the flow_failed reason ("cancelled"). Mirrors the tail of run
+# (runner.rs 269-343), run_with_cancellation (598-658), and finalize (443-514). Returns the FlowResult.
+fn _engine_finalize(e, flow, results, start_ms, started_at, execution_id, was_cancelled, persist) {
+    var total = clock_now_ms() - start_ms;
+    var has_failures = _engine_any_failed(results);
+    var rolled_back = 0;
+    if (has_failures == 1) {
+        if (flow_rollback_on_failure(flow) == 1) {
+            rolled_back = _engine_rollback_completed_steps(e, flow, results);
+        }
+    }
+    var success = 0;
+    if (has_failures == 0) {
+        if (was_cancelled == 0) { success = 1; }
+    }
+    var name = flow_name(flow);
+    var sink = engine_event_sink(e);
+    var metrics = engine_config_metrics_vt(engine_config(e));
+    if (success == 0) {
+        if (rolled_back == 1) { emit(sink, event_flow_rolled_back(name)); }
+        var status = "failed";
+        if (was_cancelled == 1) { status = "cancelled"; }
+        elif (rolled_back == 1) { status = "rolled_back"; }
+        emit(sink, event_flow_failed(name, str_from(status)));
+        metric_run_failed(metrics, name, total);
+    } else {
+        emit(sink, event_flow_completed(name, total));
+        metric_run_completed(metrics, name, total);
+    }
+    var fr = _engine_build_result(name, total, success, rolled_back, results);
+    if (persist == 1) {
+        var store = engine_config_execution_store_vt(engine_config(e));
+        if (store != 0) {
+            var fs = STATE_COMPLETED;
+            if (rolled_back == 1) { fs = STATE_ROLLED_BACK; }
+            elif (has_failures == 1) { fs = STATE_FAILED; }
+            execution_store_save(store,
+            execution_record_new(execution_id, name, fs, fr, started_at,
+            str_from(iso8601_now())));
+        }
+    }
+    return fr;
+}
+
+# Finalize for the queue-backed path — faithfully divergent (runner.rs 196-235): success =
+# !has_failures (no cancellation), flow_failed ALWAYS gets "failed" (never "rolled_back"), and the
+# final ExecutionRecord is NOT persisted (only the start Running record was). Returns the FlowResult.
+fn _engine_finalize_queue(e, flow, results, start_ms) {
+    var total = clock_now_ms() - start_ms;
+    var has_failures = _engine_any_failed(results);
+    var rolled_back = 0;
+    if (has_failures == 1) {
+        if (flow_rollback_on_failure(flow) == 1) {
+            rolled_back = _engine_rollback_completed_steps(e, flow, results);
+        }
+    }
+    var name = flow_name(flow);
+    var sink = engine_event_sink(e);
+    var metrics = engine_config_metrics_vt(engine_config(e));
+    if (has_failures == 1) {
+        if (rolled_back == 1) { emit(sink, event_flow_rolled_back(name)); }
+        emit(sink, event_flow_failed(name, str_from("failed")));
+        metric_run_failed(metrics, name, total);
+    } else {
+        emit(sink, event_flow_completed(name, total));
+        metric_run_completed(metrics, name, total);
+    }
+    var success = 0;
+    if (has_failures == 0) { success = 1; }
+    return _engine_build_result(name, total, success, rolled_back, results);
+}
+
+# ===========================================================================
+# Public run entry points
+# ===========================================================================
+
+# Execute `flow` and return Ok(FlowResult*), or the Err Result from flow_validate. Sequence
+# (runner.rs 141-344): validate -> [hw check: row 17] -> flow_started -> save Running record ->
+# metrics -> heartbeat -> resolve timeout -> queue path OR mode dispatch -> rollback on failure ->
+# terminal event/metric -> build FlowResult -> save final record -> stop heartbeat.
+fn engine_run(e, flow) {
+    var v = flow_validate(flow);
+    if (is_err_result(v) == 1) { return v; }
+    # Hardware requirements check is deferred to engine_hardware (see docs/development/port-plan.md
+    # row 17); config.hardware stays 0 until then.
+    var cfg = engine_config(e);
+    var rc = _engine_prepare(e, flow, 1);
+    var ec = load64(rc + RC_EXEC_CTX);
+    var start_ms = load64(rc + RC_START_MS);
+    var timeout = _engine_timeout(cfg, flow);
+
+    var queue = engine_config_queue(cfg);
+    if (queue != 0) {
+        var qres = run_queued(flow_steps(flow), queue, ec);
+        var qfr = _engine_finalize_queue(e, flow, qres, start_ms);
+        _engine_stop_heartbeat(e, load64(rc + RC_HB_ID));
+        return Ok(qfr);
+    }
+
+    var results = _engine_dispatch(flow, cfg, timeout, start_ms, 0, ec);
+    var fr = _engine_finalize(e, flow, results, start_ms, load64(rc + RC_STARTED_AT),
+    load64(rc + RC_EXEC_ID), 0, 1);
+    _engine_stop_heartbeat(e, load64(rc + RC_HB_ID));
+    return Ok(fr);
+}
+
+# Execute `flow` with a cancellation token, checking it between steps; remaining steps are Skipped
+# "cancelled" once cancelled. Like engine_run but: success also requires !was_cancelled, the failed
+# reason can be "cancelled", and it NEVER persists an ExecutionRecord (start or end). No queue path.
+# Mirrors run_with_cancellation (runner.rs 523-659). Returns Ok(FlowResult*) or the validate Err.
+fn engine_run_with_cancellation(e, flow, token) {
+    var v = flow_validate(flow);
+    if (is_err_result(v) == 1) { return v; }
+    var cfg = engine_config(e);
+    var rc = _engine_prepare(e, flow, 0);
+    var ec = load64(rc + RC_EXEC_CTX);
+    var start_ms = load64(rc + RC_START_MS);
+    var timeout = _engine_timeout(cfg, flow);
+
+    var results = _engine_dispatch(flow, cfg, timeout, start_ms, token, ec);
+    var was_cancelled = _engine_was_cancelled(token, results);
+    var fr = _engine_finalize(e, flow, results, start_ms, load64(rc + RC_STARTED_AT),
+    load64(rc + RC_EXEC_ID), was_cancelled, 0);
+    _engine_stop_heartbeat(e, load64(rc + RC_HB_ID));
+    return Ok(fr);
+}
+
+# Execute a Dag-mode `flow` distributed across the nodes of `fleet` (a majra FleetQueue). Requires
+# Dag mode — any other mode returns Err(ERR_FLOW_INVALID). Shares the prepare/finalize/persistence
+# path with engine_run. Mirrors run_distributed + finalize (runner.rs 361-515). Returns
+# Ok(FlowResult*), or the Err from validate / the mode check.
+fn engine_run_distributed(e, flow, fleet) {
+    var v = flow_validate(flow);
+    if (is_err_result(v) == 1) { return v; }
+    if (flow_mode(flow) != FLOW_DAG) {
+        var sb = str_builder_new();
+        str_builder_add_cstr(sb, "run_distributed requires Dag mode, got ");
+        str_builder_add_cstr(sb, flow_mode_display(flow_mode(flow)));
+        return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+    }
+    var cfg = engine_config(e);
+    var rc = _engine_prepare(e, flow, 1);
+    var ec = load64(rc + RC_EXEC_CTX);
+    var start_ms = load64(rc + RC_START_MS);
+    var timeout = _engine_timeout(cfg, flow);
+
+    var results = run_distributed_dag(flow_steps(flow), fleet, timeout, start_ms, 0, ec);
+    var fr = _engine_finalize(e, flow, results, start_ms, load64(rc + RC_STARTED_AT),
+    load64(rc + RC_EXEC_ID), 0, 1);
+    _engine_stop_heartbeat(e, load64(rc + RC_HB_ID));
+    return Ok(fr);
+}

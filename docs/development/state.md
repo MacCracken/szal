@@ -11,11 +11,11 @@
 
 ## Toolchain
 
-- **Cyrius pin**: `6.1.36` (in `cyrius.cyml [package].cyrius`). All 882 assertions + main + the
-  top-level `szal.tcyr` smoke were re-verified green under **6.1.36** (2026-06-11) and the pin was
-  bumped 6.1.35→6.1.36 to match the installed wrapper — drift cleared. (Silence any future drift
-  warning per-invocation with `CYRIUS_NO_WARN_PIN_DRIFT=1`.) History: 6.1.33 (M0) → 6.1.34 → 6.1.35
-  → 6.1.36.
+- **Cyrius pin**: `6.1.37` (in `cyrius.cyml [package].cyrius`). The full suite (950 assertions across
+  23 test files) + main + the top-level `szal.tcyr` smoke were re-verified green under **6.1.37**
+  (2026-06-11) and the pin was bumped to match the installed wrapper — drift cleared. (Silence any
+  future drift warning per-invocation with `CYRIUS_NO_WARN_PIN_DRIFT=1`.) History: 6.1.33 (M0) →
+  6.1.34 → 6.1.35 → 6.1.36 → 6.1.37.
 
 ## Milestone
 
@@ -50,11 +50,11 @@ modules ported, tested, wired into `main`; adversarial parity audit run + both f
     Some(0) from None; Rust struct has no `skip_serializing_if`, so serde emits `0`). Fix: added
     `WE_DURATION_SET` presence flag (mirrors the existing `WE_ATTEMPT_SET`); WE_SIZE 72→80; +3 assertions.
 
-**M2 — Engine core + executors. ⏳ in progress (rows 8–19 done; 20/21 + 17 remain).** Porting
+**M2 — Engine core + executors. ⏳ in progress (rows 8–20 done; 21 + 17 remain).** Porting
 port-plan §4 rows 8–21 in topological order. **Q10 (concurrency) + Q11 (logging) are RESOLVED in
 practice** — the parallel/dag/queue/distributed rows shipped on the cooperative-cancel +
 thread-safe-`alloc` model (parity-notes §8); only **Q9 (`registry_new` collision)** still gates
-`engine_hardware` (row 17).
+`engine_hardware` (row 17). The `Engine` (row 20) now drives all six modes end-to-end.
 
 - ✅ **row 8 `src/engine_result.cyr` (`FlowResult`)** — ported + wired into `main`, cross-checked
   vs `engine/result.rs`. `FlowResult {flow_name, steps vec, total_duration_ms, success,
@@ -160,10 +160,33 @@ thread-safe-`alloc` model (parity-notes §8); only **Q9 (`registry_new` collisio
   concurrent runs**. lint/fmt/doc clean. Self-parity-checked branch-for-branch vs `distributed.rs`
   (oracle pristine); the `rejects_non_dag_mode` Rust test guards the Engine wrapper → deferred to
   row 20. **The engine now runs sequential/parallel/dag/hierarchical/queue/distributed.**
-- ⏳ **Next (plan order): row 20 `engine_runner.cyr`** (the heart, 746 lines — `Engine` + builders,
-  the run sequence with mode dispatch / rollback / persistence / heartbeat,
-  `run_with_cancellation`, `run_distributed`) → then row 21 `engine_subflow`. Still gated: row 17
-  `engine_hardware` on Q9 (`registry_new` collision).
+- ✅ **row 20 `src/engine_runner.cyr`** — the heart: `Engine {config, handler, rollback_handler/0,
+  event_sink/0, condition_cache}` + 10 mutate-and-return builders (`engine_new` +
+  `engine_with_rollback/event_sink/storage/metrics/heartbeat/queue/execution_store/progress_sink/
+  step_type_metrics`). `engine_run` EXACT sequence: `flow_validate?` → flow_started → save Running
+  `ExecutionRecord` → metric_run_started → heartbeat register → resolve timeout (global‖flow‖i64max)
+  → **queue path OR mode dispatch** (`run_sequential`/`parallel`/`dag`/`hierarchical`) → rollback
+  completed+rollbackable steps in REVERSE on failure (emit `step_rollback` each; no handler→false) →
+  terminal `flow_rolled_back`/`flow_failed`/`flow_completed` + metric → build `FlowResult` → save
+  final record → deregister heartbeat. Plus `engine_run_with_cancellation` (was_cancelled = signalled
+  && any Skipped-"cancelled"; **never persists**) and `engine_run_distributed` (Dag-only, else
+  `Err(ERR_FLOW_INVALID)`; calls `run_distributed_dag`). Returns `Ok(FlowResult*)` or the validate
+  Err. **Faithful divergences (runner.rs):** (a) the **queue path** does NOT persist a final record
+  and always passes `"failed"` (never `"rolled_back"`) to flow_failed; (b) **hardware check** deferred
+  to row 17 (config.hardware stays 0); (c) **heartbeat** registers/deregisters but omits the 10s
+  ticker (observably identical sub-10s; "can no-op"); (d) `engine_with_event_bus` omitted — majra
+  `EventBus` deferred to M3. `tests/szal_engine_runner.tcyr` (54) ports the mod.rs Engine integration
+  suite: mode dispatch, retry success/exhaust, transitive DAG failure, rollback ok/fail, fail-fast,
+  invalid-flow rejection, cancellation (pre/partial/uncancelled), event-sink ordering + rollback
+  events, execution-store persistence + the cancel-no-persist + queue-Running-only divergences,
+  distributed dispatch + non-Dag rejection — **stable across 15 runs** (incl. the concurrent
+  distributed path). lint/fmt/doc clean. Self-parity-checked branch-for-branch vs runner.rs (oracle
+  pristine). **The engine is now fully wired end-to-end.**
+- ⏳ **Next (plan order): row 21 `engine_subflow.cyr`** (sub_flow_handler, deferred from mod.rs) —
+  intercepts step_type=="sub_flow": config.flow_name → storage lookup → run on a FRESH default-config
+  Engine with the inner handler → FlowResult JSON; else delegate to the inner handler. Needs `Engine`,
+  so it is the LAST engine file. Still gated: row 17 `engine_hardware` on Q9 (`registry_new`
+  collision — needs the §3.3 resolution before porting).
 
 ## Toolchain gotchas found during the port (for docs/cyrius-feedback.md)
 
@@ -203,41 +226,26 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 ## Next — ▶ START HERE (handoff)
 
-**Done so far (M1 ✅ + M2 rows 8–19 ✅, all parity-verified 0-findings): 21 modules, 896 assertions,
-0 failures, oracle pristine. Toolchain re-verified + pin bumped to 6.1.36.** All SIX execution modes
-run (sequential/parallel/dag/hierarchical/queue/distributed) + core + step_exec. Full majra 2.4.6
-vendored. Build recipe + gotchas above.
+**Done so far (M1 ✅ + M2 rows 8–20 ✅, all parity-verified 0-findings): 22 modules, 950 assertions,
+0 failures, oracle pristine. Toolchain re-verified + pin bumped to 6.1.37.** All six execution modes
+run (sequential/parallel/dag/hierarchical/queue/distributed) + core + step_exec, and the `Engine`
+(row 20) drives them end-to-end with rollback/persistence/cancellation. Full majra 2.4.6 vendored.
+Build recipe + gotchas above.
 
-**Pick up at row 20 `src/engine_runner.cyr`** (rust-old/src/engine/runner.rs, 746 lines — the heart;
-the largest remaining module). It ties every executor together behind `Engine`. Notes to start warm:
-- **Shape:** `Engine {config, handler, rollback_handler/0, event_sink/0, condition_cache}` + builder
-  fns (`engine_new` + `engine_with_rollback/storage/event_sink/event_bus/metrics/heartbeat/queue/
-  execution_store/progress_sink/step_type_metrics`). Builders all return the engine ptr (chainable).
-- **`engine_run(e, flow)` EXACT sequence (runner.rs):** validate (`flow_validate`) → hw check (skip
-  until row 17 lands — Option field is 0) → emit `flow_started` → save Running `ExecutionRecord`
-  (execution_id = flow id string, started_at) → metrics run_started → heartbeat guard (majra; can
-  no-op — register + 10s heartbeat thread, stop+deregister on exit; RAII → explicit stop call) →
-  resolve timeout (global ‖ flow ‖ max) → **mode dispatch**: queue path (`run_queued`) OR by
-  FlowMode to `run_sequential`/`run_parallel`/`run_dag`/`run_hierarchical` → has_failures →
-  `rollback_completed_steps` (reverse order, rollbackable+Completed only, emit `step_rollback` each;
-  no handler → false) → emit `flow_rolled_back`/`flow_failed`/`flow_completed` → build `FlowResult`
-  → save final record → return.
-- **Also:** `engine_run_with_cancellation(e, flow, token)` (was_cancelled = signalled && any
-  Skipped/"cancelled"; does NOT persist) and `engine_run_distributed(e, flow, fleet)` (Dag-mode
-  only — reject otherwise; calls `run_distributed_dag`; shares the `finalize`/`rollback` path).
-  Build an ExecCtx (`exec_ctx_new`) from the engine's config/handler/sinks to hand to the executors.
-- **Reuse:** all six executors are done and take `(steps, …, ctx)`; this module is mostly the
-  orchestration/persistence/rollback wrapper around them. ~47 Rust behavioral tests define semantics.
-
-**Context on the run sequence (row 20 detail, kept from the original brief):**
-row 20 `engine_runner.cyr` (the heart, 746 lines — `Engine` + builders, the run sequence:
-validate → flow_started → save Running `ExecutionRecord` → metrics → heartbeat guard (majra; can
-no-op) → resolve timeout → **mode dispatch** to the executors (incl. the queue path via `run_queued`
-and `run_distributed_dag`) → rollback completed steps on failure → flow_completed/failed/rolled_back
-→ build FlowResult → save final record → return; plus `run_with_cancellation`, `run_distributed`,
-shared `finalize`, `rollback_completed_steps`). Then row 21 `engine_subflow` (sub_flow_handler;
-constructs an Engine so it's last). **Still gated:** row 17 `engine_hardware` on Q9 (`registry_new`
-collision — bote×ai-hwaccel; needs the §3.3 resolution before porting).
+**Pick up at row 21 `src/engine_subflow.cyr`** (rust-old/src/engine/mod.rs `sub_flow_handler`,
+deferred from engine_core; the LAST engine file — it constructs an `Engine`). Notes to start warm:
+- **Shape:** a StepHandler wrapper. `sub_flow_handler(inner_handler, storage)` returns a StepHandler
+  callback pair that, per step: if `step_type == "sub_flow"`, read `config.flow_name`, look it up via
+  the WorkflowStorage trait object (`workflow_storage_get_by_name`), run that FlowDef on a FRESH
+  `engine_new(engine_config_default(), inner_handler)` (no storage/sinks — a clean child), and return
+  the child `FlowResult` serialized to JSON (`flow_result_to_json` → a json_v `Ok`); else delegate to
+  the inner handler. Read mod.rs for the exact missing-flow_name / unknown-flow error strings.
+- **Reuse:** `engine_run` + `flow_result_to_json` are done; this is a thin dispatch shim. Build the
+  child ExecCtx implicitly via `engine_run`. The handler ABI is `fn(step, ctx) → Result<json_v, Str>`
+  (engine_core §); the ctx carries `{inner_handler_cb, storage_vt}`.
+- **Then M2 is feature-complete except the gated row 17** `engine_hardware` on Q9 (`registry_new`
+  collision — bote×ai-hwaccel; needs the port-plan §3.3 resolution before porting). After row 21,
+  M3 surface modules (`stream`, `sql_store`, `mcp*`) begin — see roadmap.md.
 
 See [`roadmap.md`](roadmap.md) M2, [`port-plan.md`](port-plan.md) §4 (per-module spec),
 [`parity-notes.md`](parity-notes.md) (accepted divergences §1–8 + audit log), and

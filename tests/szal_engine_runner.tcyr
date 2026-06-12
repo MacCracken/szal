@@ -1,0 +1,438 @@
+# szal_engine_runner.tcyr — Engine (engine_runner.cyr) end-to-end tests.
+#
+# Ports the Engine integration tests from rust-old/src/engine/mod.rs (the #[cfg(test)] module):
+# mode dispatch (sequential/parallel/dag/hierarchical), retry success/exhaustion, transitive DAG
+# failure, rollback success/failure, fail-fast sequential, invalid-flow rejection, cancellation
+# (pre-cancel / partial / uncancelled), event-sink ordering + rollback events, execution-store
+# persistence (and the run_with_cancellation no-persist + queue-path Running-only divergences), and
+# distributed dispatch (+ non-Dag rejection).
+#   cyrius build --strict --no-deps tests/szal_engine_runner.tcyr build/test_engine_runner && ./build/test_engine_runner
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/engine_result.cyr"
+include "src/storage.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_sequential.cyr"
+include "src/engine_hierarchical.cyr"
+include "src/engine_parallel.cyr"
+include "src/engine_dag.cyr"
+include "src/engine_queue_runner.cyr"
+include "src/engine_distributed.cyr"
+include "src/engine_runner.cyr"
+
+# --- handlers (ctx = an i64 counter cell, or a {counter,token} pair where noted) ---
+fn _h_ok(step, ctx) { return Ok(bayan_json_v_int_new(1)); }
+fn _h_fail(step, ctx) { return Err(str_from("intentional failure")); }
+fn _h_count(step, ctx) { store64(ctx, load64(ctx) + 1); return Ok(bayan_json_v_int_new(1)); }
+# fail_then_succeed: fail the first two attempts (n<2), succeed after.
+fn _h_fail2(step, ctx) {
+    var n = load64(ctx);
+    store64(ctx, n + 1);
+    if (n < 2) { return Err(str_from("transient failure")); }
+    return Ok(bayan_json_v_int_new(1));
+}
+# first call Ok, subsequent calls Err (second-step-fails scenarios).
+fn _h_first_ok(step, ctx) {
+    var n = load64(ctx);
+    store64(ctx, n + 1);
+    if (n == 0) { return Ok(bayan_json_v_int_new(1)); }
+    return Err(str_from("second step fails"));
+}
+# first call Err, subsequent Ok (fail-fast: proves later handlers never run).
+fn _h_first_fail(step, ctx) {
+    var n = load64(ctx);
+    store64(ctx, n + 1);
+    if (n == 0) { return Err(str_from("first fails")); }
+    return Ok(bayan_json_v_int_new(1));
+}
+# ctx = {counter@0, token@8}: cancel the token after the first step completes.
+fn _h_cancel_after_first(step, ctx) {
+    var n = load64(ctx);
+    store64(ctx, n + 1);
+    if (n == 0) { cancel_token_signal(load64(ctx + 8)); }
+    return Ok(bayan_json_v_int_new(1));
+}
+# rollback handlers: Ok increments a counter, Err reports rollback failure.
+fn _rb_ok(step, ctx) { store64(ctx, load64(ctx) + 1); return Ok(0); }
+fn _rb_fail(step, ctx) { return Err(str_from("rollback failed")); }
+# event sink: ctx = a vec; record each event's EventType.
+fn _sink_capture(event, ctx) { vec_push(ctx, event_type(event)); return 0; }
+
+fn _ctr() {
+    var c = alloc(8);
+    store64(c, 0);
+    return c;
+}
+fn _has(v, t) {
+    var n = vec_len(v);
+    var i = 0;
+    while (i < n) {
+        if (vec_get(v, i) == t) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+fn _eng_ok() {
+    return engine_new(engine_config_default(), cb_new(&_h_ok, 0));
+}
+
+# --- mode dispatch ---
+fn t_seq_pass() {
+    var f = flow_new(str_from("test"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    flow_add_step(f, step_new(str_from("b")));
+    flow_add_step(f, step_new(str_from("c")));
+    var r = engine_run(_eng_ok(), f);
+    assert_eq(is_ok(r), 1, "seq run returns Ok");
+    var fr = result_unwrap(r);
+    assert_eq(flow_result_success(fr), 1, "seq success");
+    assert_eq(flow_result_completed_count(fr), 3, "seq completed 3");
+    assert_eq(flow_result_failed_count(fr), 0, "seq failed 0");
+    return 0;
+}
+fn t_par_count() {
+    var ctr = _ctr();
+    var f = flow_new(str_from("par"), FLOW_PARALLEL);
+    var i = 0;
+    while (i < 10) {
+        flow_add_step(f, step_new(str_from("s")));
+        i = i + 1;
+    }
+    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), cb_new(&_h_count, ctr)), f));
+    assert_eq(flow_result_success(fr), 1, "par success");
+    assert_eq(flow_result_completed_count(fr), 10, "par completed 10");
+    assert_eq(load64(ctr), 10, "par counter 10");
+    return 0;
+}
+fn t_dag_diamond() {
+    var build = step_new(str_from("build"));
+    var ut = step_new(str_from("unit"));
+    var it = step_new(str_from("integ"));
+    var dep = step_new(str_from("deploy"));
+    step_depends_on_add(ut, step_id_hi(build), step_id_lo(build));
+    step_depends_on_add(it, step_id_hi(build), step_id_lo(build));
+    step_depends_on_add(dep, step_id_hi(ut), step_id_lo(ut));
+    step_depends_on_add(dep, step_id_hi(it), step_id_lo(it));
+    var f = flow_new(str_from("ci"), FLOW_DAG);
+    flow_add_step(f, build);
+    flow_add_step(f, ut);
+    flow_add_step(f, it);
+    flow_add_step(f, dep);
+    var fr = result_unwrap(engine_run(_eng_ok(), f));
+    assert_eq(flow_result_success(fr), 1, "dag success");
+    assert_eq(flow_result_completed_count(fr), 4, "dag completed 4");
+    return 0;
+}
+fn t_hier() {
+    var f = flow_new(str_from("h"), FLOW_HIERARCHICAL);
+    flow_add_step(f, step_new(str_from("a")));
+    flow_add_step(f, step_new(str_from("b")));
+    flow_add_step(f, step_new(str_from("c")));
+    var fr = result_unwrap(engine_run(_eng_ok(), f));
+    assert_eq(flow_result_success(fr), 1, "hier success");
+    assert_eq(flow_result_completed_count(fr), 3, "hier completed 3");
+    return 0;
+}
+
+# --- failure / retry / rollback ---
+fn t_dag_depfail() {
+    var build = step_new(str_from("build"));
+    var tst = step_new(str_from("test"));
+    var dep = step_new(str_from("deploy"));
+    step_depends_on_add(tst, step_id_hi(build), step_id_lo(build));
+    step_depends_on_add(dep, step_id_hi(tst), step_id_lo(tst));
+    var f = flow_new(str_from("fail"), FLOW_DAG);
+    flow_add_step(f, build);
+    flow_add_step(f, tst);
+    flow_add_step(f, dep);
+    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), cb_new(&_h_fail, 0)), f));
+    assert_eq(flow_result_success(fr), 0, "dag-fail not success");
+    assert_eq(flow_result_failed_count(fr), 1, "dag-fail failed 1");
+    assert_eq(flow_result_skipped_count(fr), 2, "dag-fail skipped 2");
+    return 0;
+}
+fn t_retry_ok() {
+    var ctr = _ctr();
+    var f = flow_new(str_from("retry"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_with_retries(step_new(str_from("flaky")), 3, 1));
+    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), cb_new(&_h_fail2, ctr)), f));
+    assert_eq(flow_result_success(fr), 1, "retry success");
+    assert_eq(step_result_attempts(flow_result_step_at(fr, 0)), 3, "retry attempts 3");
+    return 0;
+}
+fn t_retry_exhaust() {
+    var f = flow_new(str_from("ex"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_with_retries(step_new(str_from("always-fail")), 2, 1));
+    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), cb_new(&_h_fail, 0)), f));
+    assert_eq(flow_result_success(fr), 0, "exhaust not success");
+    assert_eq(step_result_attempts(flow_result_step_at(fr, 0)), 3, "exhaust attempts 3");
+    assert_eq(step_result_status(flow_result_step_at(fr, 0)), STATUS_FAILED, "exhaust Failed");
+    return 0;
+}
+fn t_rollback_ok() {
+    var ctr = _ctr();
+    var rbc = _ctr();
+    var f = flow_with_rollback(flow_new(str_from("rb"), FLOW_SEQUENTIAL));
+    flow_add_step(f, step_with_rollback(step_new(str_from("setup"))));
+    flow_add_step(f, step_new(str_from("deploy")));
+    var e = engine_with_rollback(engine_new(engine_config_default(), cb_new(&_h_first_ok, ctr)),
+    cb_new(&_rb_ok, rbc));
+    var fr = result_unwrap(engine_run(e, f));
+    assert_eq(flow_result_success(fr), 0, "rb not success");
+    assert_eq(flow_result_rolled_back(fr), 1, "rb rolled_back");
+    assert_eq(load64(rbc), 1, "rb handler called once");
+    return 0;
+}
+fn t_rollback_fail() {
+    var ctr = _ctr();
+    var f = flow_with_rollback(flow_new(str_from("rbf"), FLOW_SEQUENTIAL));
+    flow_add_step(f, step_with_rollback(step_new(str_from("setup"))));
+    flow_add_step(f, step_new(str_from("deploy")));
+    var e = engine_with_rollback(engine_new(engine_config_default(), cb_new(&_h_first_ok, ctr)),
+    cb_new(&_rb_fail, 0));
+    var fr = result_unwrap(engine_run(e, f));
+    assert_eq(flow_result_success(fr), 0, "rbf not success");
+    assert_eq(flow_result_rolled_back(fr), 0, "rbf rollback failed -> not rolled_back");
+    return 0;
+}
+fn t_seq_stops() {
+    var ctr = _ctr();
+    var f = flow_new(str_from("ff"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    flow_add_step(f, step_new(str_from("b")));
+    flow_add_step(f, step_new(str_from("c")));
+    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), cb_new(&_h_first_fail, ctr)), f));
+    assert_eq(flow_result_success(fr), 0, "fail-fast not success");
+    assert_eq(flow_result_failed_count(fr), 1, "fail-fast failed 1");
+    assert_eq(flow_result_skipped_count(fr), 2, "fail-fast skipped 2");
+    assert_eq(load64(ctr), 1, "fail-fast only first handler ran");
+    return 0;
+}
+fn t_invalid() {
+    var a = step_new(str_from("a"));
+    var b = step_new(str_from("b"));
+    step_depends_on_add(a, step_id_hi(b), step_id_lo(b));
+    step_depends_on_add(b, step_id_hi(a), step_id_lo(a));
+    var f = flow_new(str_from("cycle"), FLOW_DAG);
+    flow_add_step(f, a);
+    flow_add_step(f, b);
+    assert_eq(is_err_result(engine_run(_eng_ok(), f)), 1, "cyclic flow rejected");
+    return 0;
+}
+
+# --- cancellation ---
+fn t_cancel_pre() {
+    var tok = cancel_token_new();
+    cancel_token_signal(tok);
+    var f = flow_new(str_from("cancel"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    flow_add_step(f, step_new(str_from("b")));
+    var fr = result_unwrap(engine_run_with_cancellation(_eng_ok(), f, tok));
+    assert_eq(flow_result_success(fr), 0, "pre-cancel not success");
+    assert_eq(flow_result_skipped_count(fr), 2, "pre-cancel skipped 2");
+    return 0;
+}
+fn t_cancel_partial() {
+    var tok = cancel_token_new();
+    var ctx = alloc(16);
+    store64(ctx, 0);
+    store64(ctx + 8, tok);
+    var f = flow_new(str_from("partial"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    flow_add_step(f, step_new(str_from("b")));
+    flow_add_step(f, step_new(str_from("c")));
+    var fr = result_unwrap(engine_run_with_cancellation(
+    engine_new(engine_config_default(), cb_new(&_h_cancel_after_first, ctx)), f, tok));
+    assert_eq(flow_result_completed_count(fr), 1, "partial completed 1");
+    assert_eq(flow_result_skipped_count(fr), 2, "partial skipped 2");
+    assert_eq(load64(ctx), 1, "partial only first handler ran");
+    return 0;
+}
+fn t_cancel_none() {
+    var tok = cancel_token_new();
+    var f = flow_new(str_from("nocancel"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    flow_add_step(f, step_new(str_from("b")));
+    var fr = result_unwrap(engine_run_with_cancellation(_eng_ok(), f, tok));
+    assert_eq(flow_result_success(fr), 1, "uncancelled success");
+    assert_eq(flow_result_completed_count(fr), 2, "uncancelled completed 2");
+    return 0;
+}
+
+# --- event sink ---
+fn t_event_order() {
+    var evs = vec_new();
+    var f = flow_new(str_from("ev"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    flow_add_step(f, step_new(str_from("b")));
+    var e = engine_with_event_sink(_eng_ok(), cb_new(&_sink_capture, evs));
+    engine_run(e, f);
+    assert_eq(vec_len(evs), 6, "2-step flow emits 6 events");
+    assert_eq(vec_get(evs, 0), FLOW_STARTED, "first event flow_started");
+    assert_eq(vec_get(evs, 5), FLOW_COMPLETED, "last event flow_completed");
+    return 0;
+}
+fn t_event_rollback() {
+    var evs = vec_new();
+    var ctr = _ctr();
+    var rbc = _ctr();
+    var f = flow_with_rollback(flow_new(str_from("evr"), FLOW_SEQUENTIAL));
+    flow_add_step(f, step_with_rollback(step_new(str_from("setup"))));
+    flow_add_step(f, step_new(str_from("deploy")));
+    var e = engine_with_rollback(
+    engine_with_event_sink(engine_new(engine_config_default(), cb_new(&_h_first_ok, ctr)),
+    cb_new(&_sink_capture, evs)), cb_new(&_rb_ok, rbc));
+    var fr = result_unwrap(engine_run(e, f));
+    assert_eq(flow_result_rolled_back(fr), 1, "evr rolled_back");
+    assert_eq(_has(evs, STEP_ROLLBACK), 1, "emits step_rollback");
+    assert_eq(_has(evs, FLOW_ROLLED_BACK), 1, "emits flow_rolled_back");
+    assert_eq(_has(evs, FLOW_FAILED), 1, "emits flow_failed");
+    return 0;
+}
+
+# --- execution store persistence + divergences ---
+fn t_exec_store() {
+    var store = in_memory_execution_store_new();
+    var f = flow_new(str_from("es"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    var e = engine_with_execution_store(_eng_ok(), store);
+    engine_run(e, f);
+    var ids = execution_store_list(store, 0);
+    assert_eq(vec_len(ids), 1, "one execution record (final overwrites Running)");
+    var rec = execution_store_get(store, vec_get(ids, 0));
+    assert_eq(execution_record_state(rec), STATE_COMPLETED, "final state Completed");
+    assert(execution_record_finished_at(rec) != 0, "finished_at set");
+    assert(execution_record_result(rec) != 0, "result attached");
+    return 0;
+}
+fn t_cancel_no_persist() {
+    var store = in_memory_execution_store_new();
+    var tok = cancel_token_new();
+    var f = flow_new(str_from("np"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    var e = engine_with_execution_store(_eng_ok(), store);
+    engine_run_with_cancellation(e, f, tok);
+    assert_eq(vec_len(execution_store_list(store, 0)), 0, "run_with_cancellation never persists");
+    return 0;
+}
+fn t_queue() {
+    var store = in_memory_execution_store_new();
+    var q = mq_new("eng", 4);
+    var f = flow_new(str_from("q"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    flow_add_step(f, step_new(str_from("b")));
+    var e = engine_with_execution_store(engine_with_queue(_eng_ok(), q), store);
+    var fr = result_unwrap(engine_run(e, f));
+    assert_eq(flow_result_success(fr), 1, "queue path success");
+    assert_eq(flow_result_completed_count(fr), 2, "queue path completed 2");
+    var rec = execution_store_get(store, vec_get(execution_store_list(store, 0), 0));
+    assert_eq(execution_record_state(rec), STATE_RUNNING, "queue path leaves Running (no final save)");
+    return 0;
+}
+
+# --- distributed ---
+fn t_distributed() {
+    var fleet = fleet_new(fleet_config_new(5, 10, 16));
+    fleet_register_node(fleet, "node-0");
+    fleet_register_node(fleet, "node-1");
+    var build = step_new(str_from("build"));
+    var ut = step_new(str_from("unit"));
+    var it = step_new(str_from("integ"));
+    var dep = step_new(str_from("deploy"));
+    step_depends_on_add(ut, step_id_hi(build), step_id_lo(build));
+    step_depends_on_add(it, step_id_hi(build), step_id_lo(build));
+    step_depends_on_add(dep, step_id_hi(ut), step_id_lo(ut));
+    step_depends_on_add(dep, step_id_hi(it), step_id_lo(it));
+    var f = flow_new(str_from("ci"), FLOW_DAG);
+    flow_add_step(f, build);
+    flow_add_step(f, ut);
+    flow_add_step(f, it);
+    flow_add_step(f, dep);
+    var fr = result_unwrap(engine_run_distributed(_eng_ok(), f, fleet));
+    assert_eq(flow_result_success(fr), 1, "distributed success");
+    assert_eq(flow_result_completed_count(fr), 4, "distributed completed 4");
+    return 0;
+}
+fn t_distributed_rejects_nondag() {
+    var fleet = fleet_new(fleet_config_new(5, 10, 16));
+    fleet_register_node(fleet, "node-0");
+    var f = flow_new(str_from("seq"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    assert_eq(is_err_result(engine_run_distributed(_eng_ok(), f, fleet)), 1,
+    "distributed rejects non-Dag mode");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    test_group("mode dispatch");
+    t_seq_pass();
+    t_par_count();
+    t_dag_diamond();
+    t_hier();
+
+    test_group("failure / retry / rollback");
+    t_dag_depfail();
+    t_retry_ok();
+    t_retry_exhaust();
+    t_rollback_ok();
+    t_rollback_fail();
+    t_seq_stops();
+    t_invalid();
+
+    test_group("cancellation");
+    t_cancel_pre();
+    t_cancel_partial();
+    t_cancel_none();
+
+    test_group("event sink");
+    t_event_order();
+    t_event_rollback();
+
+    test_group("execution store + path divergences");
+    t_exec_store();
+    t_cancel_no_persist();
+    t_queue();
+
+    test_group("distributed");
+    t_distributed();
+    t_distributed_rejects_nondag();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

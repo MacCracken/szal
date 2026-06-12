@@ -53,6 +53,7 @@ include "src/engine_parallel.cyr"
 include "src/engine_dag.cyr"
 include "src/engine_queue_runner.cyr"
 include "src/engine_distributed.cyr"
+include "src/engine_runner.cyr"
 
 fn main() {
     alloc_init();
