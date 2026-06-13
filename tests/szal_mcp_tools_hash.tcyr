@@ -64,6 +64,7 @@ fn t_sha256_file() {
     file_write_all("szal_hash_test.bin", "test content", 12);
     var r = _call(&_sha256_handler, "{\"file\": \"szal_hash_test.bin\"}");
     assert(str_contains(r, str_from("\"isError\":false")), "sha256 file ok");
+    syscall(87, "szal_hash_test.bin");
     return 0;
 }
 

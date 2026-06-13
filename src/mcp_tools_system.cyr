@@ -1,0 +1,172 @@
+# mcp_tools_system.cyr — MCP system tools (ports mcp/tools/system_tools.rs): szal_system_info,
+# szal_cwd, szal_env_get, szal_timestamp.
+#
+# Handlers follow the bote ABI `fn(args_cstr, claims) -> result_cstr` and the porting pattern in
+# docs/development/state.md (cstr/Str parse trap, CO-01, result-envelope shape).
+#
+# PARITY NOTES:
+# - os/arch: Rust uses `std::env::consts::{OS,ARCH}` (compile-time for the build target). The port
+#   hardcodes "linux"/"x86_64" — exactly what those consts resolve to on szal's 2.0.0 target. A
+#   cross-target build would need a uname-based lookup (no stdlib helper today). Recorded §14.
+# - timestamp iso8601 is SECOND-precision UTC ("…Z"), not Rust's sub-second RFC3339-with-offset —
+#   the existing chrono limitation (parity-notes; iso8601 can't round-trip subseconds).
+#
+# Usage: include AFTER src/mcp.cyr (+ lib/io getenv/file_read_all, lib/chrono iso8601, lib/bayan).
+
+# Per-call read caps for the small /proc + /etc reads.
+enum SystemTools {
+    SYS_HOSTNAME_CAP = 256;
+    SYS_UPTIME_CAP = 128;
+}
+
+fn _sys_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# Count online CPUs via sched_getaffinity(0, 128, &mask) (syscall 204) + popcount. 0 on failure.
+fn _sys_cpu_count() {
+    var mask = alloc(128);
+    var n = syscall(204, 0, 128, mask);
+    if (n <= 0) { return 0; }
+    var count = 0;
+    var i = 0;
+    while (i < n) {
+        var b = load8(mask + i) & 0xFF;
+        while (b != 0) {
+            count = count + (b & 1);
+            b = b >> 1;
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+# /etc/hostname contents with trailing whitespace trimmed; "unknown" if unreadable (system_tools.rs 26-30).
+fn _sys_hostname() {
+    var buf = alloc(SYS_HOSTNAME_CAP);
+    var n = file_read_all("/etc/hostname", buf, SYS_HOSTNAME_CAP);
+    if (n <= 0) { return str_from("unknown"); }
+    var trimming = 1;
+    while (trimming == 1) {
+        if (n <= 0) {
+            trimming = 0;
+        } else {
+            var c = load8(buf + n - 1);
+            if (c == 10 || c == 13 || c == 32 || c == 9) { n = n - 1; } else { trimming = 0; }
+        }
+    }
+    return str_new(buf, n);
+}
+
+# Length of the first whitespace-delimited token in buf[0..n].
+fn _sys_token_len(buf, n) {
+    var i = 0;
+    while (i < n) {
+        var c = load8(buf + i);
+        if (c == 32 || c == 10 || c == 9 || c == 13) { return i; }
+        i = i + 1;
+    }
+    return n;
+}
+
+# /proc/uptime first token as a float json_v, or null if unreadable/unparseable (system_tools.rs 39-43).
+fn _sys_uptime_json() {
+    var buf = alloc(SYS_UPTIME_CAP);
+    var n = file_read_all("/proc/uptime", buf, SYS_UPTIME_CAP);
+    if (n <= 0) { return bayan_json_v_null(); }
+    var tlen = _sys_token_len(buf, n);
+    var v = bayan_json_v_parse_str(buf, tlen);
+    if (v == 0) { return bayan_json_v_null(); }
+    return v;
+}
+
+# szal_system_info: hostname, os, arch, cpus, uptime_secs. Mirrors SystemInfo::call (system_tools.rs 26-51).
+fn _system_info_handler(args, claims) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("hostname"), bayan_json_v_str_new(_sys_hostname()));
+    bayan_json_v_obj_set(o, str_from("os"), bayan_json_v_str_new(str_from("linux")));
+    bayan_json_v_obj_set(o, str_from("arch"), bayan_json_v_str_new(str_from("x86_64")));
+    bayan_json_v_obj_set(o, str_from("cpus"), bayan_json_v_int_new(_sys_cpu_count()));
+    bayan_json_v_obj_set(o, str_from("uptime_secs"), _sys_uptime_json());
+    var r = result_ok_json(o);
+    return str_data(r);
+}
+
+# szal_cwd: the current working directory. Mirrors Cwd::call (system_tools.rs 73-78).
+fn _cwd_handler(args, claims) {
+    var cwd = _mcp_getcwd();
+    if (cwd == 0) {
+        var e = result_error_typed(MCP_IO_ERROR, str_from("failed to get current directory"));
+        return str_data(e);
+    }
+    var p = str_from(cwd);
+    var r = result_ok(p);
+    return str_data(r);
+}
+
+# szal_env_get: value of env var `name` (required). Unset -> NotFound. Mirrors EnvGet::call (system_tools.rs 95-116).
+fn _env_get_handler(args, claims) {
+    var o = _sys_parse_args(args);
+    var nv = bayan_json_v_obj_get(o, "name");
+    if (bayan_json_v_is_str(nv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: name"));
+        return str_data(e);
+    }
+    var name = bayan_json_v_str(nv);
+    var name_c = str_cstr(name);
+    var val = getenv(name_c);
+    if (val == 0) {
+        var nb = str_builder_new();
+        str_builder_add_cstr(nb, "environment variable not set: ");
+        str_builder_add(nb, name);
+        var en = result_error_typed(MCP_NOT_FOUND, str_builder_build(nb));
+        return str_data(en);
+    }
+    var vs = str_from(val);
+    var r = result_ok(vs);
+    return str_data(r);
+}
+
+# szal_timestamp: current time as iso8601 (second precision) + unix secs/ms.
+# Mirrors Timestamp::call (system_tools.rs 133-145).
+fn _timestamp_handler(args, claims) {
+    var secs = clock_epoch_secs();
+    var iso = iso8601(secs);
+    var o = bayan_json_v_obj_new();
+    var iss = str_from(iso);
+    bayan_json_v_obj_set(o, str_from("iso8601"), bayan_json_v_str_new(iss));
+    bayan_json_v_obj_set(o, str_from("unix_secs"), bayan_json_v_int_new(secs));
+    bayan_json_v_obj_set(o, str_from("unix_ms"), bayan_json_v_int_new(clock_epoch_ns() / 1000000));
+    var r = result_ok_json(o);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _env_get_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("name",
+    "{ \"type\": \"string\", \"description\": \"Environment variable name\" }"));
+    return v;
+}
+
+# The system tool group: szal_system_info, szal_cwd, szal_env_get, szal_timestamp.
+fn system_tools() {
+    var tools = vec_new();
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_system_info", "Get system hostname, OS, architecture, CPU count, and uptime",
+    vec_new(), vec_new()), &_system_info_handler));
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_cwd", "Get the current working directory", vec_new(), vec_new()),
+    &_cwd_handler));
+    var env_req = vec_new();
+    vec_push(env_req, "name");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_env_get", "Get the value of an environment variable", _env_get_props(), env_req),
+    &_env_get_handler));
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_timestamp", "Get the current timestamp in ISO 8601 and Unix epoch formats",
+    vec_new(), vec_new()), &_timestamp_handler));
+    return tools;
+}

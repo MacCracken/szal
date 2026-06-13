@@ -81,6 +81,7 @@ include "lib/thread_local.cyr"
 include "lib/sigil.cyr"
 include "lib/random.cyr"
 include "src/mcp_tools_hash.cyr"
+include "src/mcp_tools_system.cyr"
 
 fn main() {
     alloc_init();

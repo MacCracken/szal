@@ -1,0 +1,141 @@
+# szal_mcp_tools_system.tcyr — system MCP tools (mcp_tools_system.cyr): szal_system_info, szal_cwd,
+# szal_env_get, szal_timestamp.
+#
+# Ports rust-old/src/mcp/tools/system_tools.rs tests: system info reports os/arch, cwd succeeds,
+# env get hit/miss, timestamp carries iso8601. Plus registration.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_system.tcyr build/test_mcp_tools_system
+#   ./build/test_mcp_tools_system
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_system.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_system_info ---
+
+# System info reports os + arch fields. (system_tools.rs 152-159)
+fn t_system_info() {
+    var r = _call(&_system_info_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "system_info ok");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("\"os\":")), "reports os");
+    assert(str_contains(text, str_from("\"arch\":")), "reports arch");
+    assert(str_contains(text, str_from("\"cpus\":")), "reports cpus");
+    return 0;
+}
+
+# --- szal_cwd ---
+
+# Cwd succeeds. (system_tools.rs 161-165)
+fn t_cwd() {
+    var r = _call(&_cwd_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "cwd ok");
+    return 0;
+}
+
+# --- szal_env_get ---
+
+# A set variable (PATH) is returned. (system_tools.rs 167-171)
+fn t_env_get_exists() {
+    var r = _call(&_env_get_handler, "{\"name\": \"PATH\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "PATH found");
+    return 0;
+}
+
+# An unset variable is a NotFound error. (system_tools.rs 173-179)
+fn t_env_get_missing() {
+    var r = _call(&_env_get_handler, "{\"name\": \"SZAL_NONEXISTENT_VAR_12345\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "missing var -> error");
+    assert(str_contains(r, str_from("environment variable not set")), "not-set message");
+    assert(str_contains(r, str_from("\"error_code\":\"not_found\"")), "typed as not_found");
+    return 0;
+}
+
+# Missing the required name is a validation error.
+fn t_env_get_no_name() {
+    var r = _call(&_env_get_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no name -> error");
+    assert(str_contains(r, str_from("missing required field: name")), "validation message");
+    return 0;
+}
+
+# --- szal_timestamp ---
+
+# Timestamp carries an iso8601 field. (system_tools.rs 181-187)
+fn t_timestamp() {
+    var r = _call(&_timestamp_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "timestamp ok");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("iso8601")), "carries iso8601");
+    assert(str_contains(text, str_from("unix_secs")), "carries unix_secs");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(system_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_system_info"), 1, "system_info registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_cwd"), 1, "cwd registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_env_get"), 1, "env_get registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_timestamp"), 1, "timestamp registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 4, "four system tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_system_info");
+    t_system_info();
+
+    test_group("szal_cwd");
+    t_cwd();
+
+    test_group("szal_env_get");
+    t_env_get_exists();
+    t_env_get_missing();
+    t_env_get_no_name();
+
+    test_group("szal_timestamp");
+    t_timestamp();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

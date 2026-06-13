@@ -245,6 +245,26 @@ yet) and a 1 MiB cap matches szal's file-tool read-cap security posture. Streami
 
 ---
 
+## 14. system_info: hardcoded os/arch + second-precision timestamp (`mcp_tools_system.cyr`)
+
+**What:** Rust's `szal_system_info` reports `std::env::consts::OS` / `ARCH` (compile-time per build
+target). The port hardcodes `"linux"` / `"x86_64"`. `szal_timestamp`'s `iso8601` field is
+second-precision UTC (`"…Z"`) rather than Rust's sub-second `to_rfc3339()` (timezone-offset form).
+
+**Divergences:**
+1. **os/arch are literals** matching what the Rust consts resolve to on szal's 2.0.0 target
+   (linux/x86_64). A cross-target build would report the wrong values — there is no stdlib
+   uname/arch helper to derive them at runtime yet.
+2. **timestamp is second-precision UTC** — the standing `chrono.iso8601` limitation (it cannot
+   render or round-trip sub-second / offset RFC3339). `unix_secs`/`unix_ms` are exact.
+
+**Why accepted:** szal 2.0.0 targets linux/x86_64 (the `cyrius build … [x86_64]` target), so the
+literals are correct for every supported build; the `system_tools.rs` tests assert only that the
+`os`/`arch`/`iso8601` fields are present (not their values). Runtime os/arch detection and sub-second
+timestamps are roadmap follow-ups. See `src/mcp_tools_system.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/

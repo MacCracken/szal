@@ -121,7 +121,13 @@ MCP pool/tenant + the 54 tools remain).**
   all hash_tools.rs tests (known SHA-256 vector, file hashing, validation errors, token lengths) +
   registration. One accepted divergence (parity-notes §13: sha256 file read capped at 1 MiB).
   Surfaced the **sigil/`ERR_NONE` include-ordering trap** (now in the pattern notes above). lint/fmt/doc clean.
-- ⏳ **Next: MCP tool groups 3–15/15** (~49 tools left; suggested: system → json → template →
+- ✅ **MCP tools group 3/15 `src/mcp_tools_system.cyr`** (2026-06-13) — `szal_system_info`
+  (hostname from /etc/hostname, os/arch literals, cpus via `sched_getaffinity` popcount, uptime float
+  from /proc/uptime), `szal_cwd` (`_mcp_getcwd`), `szal_env_get` (`getenv`; unset → NotFound),
+  `szal_timestamp` (iso8601 + unix secs/ms). `tests/szal_mcp_tools_system.tcyr` (20) ports all
+  system_tools.rs tests + registration. One accepted divergence (parity-notes §14: hardcoded
+  os/arch + second-precision timestamp). lint/fmt/doc clean.
+- ⏳ **Next: MCP tool groups 4–15/15** (~46 tools left; suggested: json → template →
   conversion → math → state → step → flow → engine → file → process → git → net). Each a
   `mcp_tool_new(mcp_tool_def(...), &handler)` + a `<group>_tools()` accumulator; the LAST file defines
   `all_tools()`/`szal_register_tools()`. **Security checks must not regress**: validate_path on all
@@ -354,24 +360,25 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 ## Next — ▶ START HERE (handoff)
 
 **Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 rows 22–24-core + pool/tenant + tool groups
-encoding+hash (2/15) + bote vendoring, all parity-verified 0-findings): 31 modules, 1106 assertions,
-0 failures, oracle pristine. Pin 6.1.37 (installed wrapper drifted to 6.2.2 — green under both).**
+encoding+hash+system (3/15) + bote vendoring, all parity-verified 0-findings): 32 modules, 1126
+assertions, 0 failures, oracle pristine. Pin 6.1.37 (installed wrapper drifted to 6.2.2 — green both).**
 All engine modules ported (six modes + core + step_exec + Engine + sub_flow + **hardware/row 17**).
 M3: streaming (`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` —
 result/errcode/**validate_path security**/registration) + **MCP pool + tenant** done; **bote-core
 2.7.5 vendored (re-synced 2026-06-13; Q9 dissolved)**. Full majra 2.4.6 + ai-hwaccel 2.3.9 (overlaid)
 in the build. Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence lib-shadow).
 
-**Pick up at: MCP tool groups 3–15 (M3). Groups 1–2/15 (encoding, hash) done; ~49 tools left.** No
-engine rows remain; MCP infra + pool/tenant done. **Read the "MCP tool-handler porting pattern"
-gotchas above first** — cstr/Str parse trap, CO-01, base64 `{ptr,len}`, result-text extraction, and
-the sigil/`ERR_NONE` include-ordering trap.
+**Pick up at: MCP tool groups 4–15 (M3). Groups 1–3/15 (encoding, hash, system) done; ~46 tools
+left.** No engine rows remain; MCP infra + pool/tenant done. **Read the "MCP tool-handler porting
+pattern" gotchas above first** — cstr/Str parse trap, CO-01, base64 `{ptr,len}`, result-text
+extraction, and the sigil/`ERR_NONE` include-ordering trap.
 
 MCP infra is fully in place: bote-core vendored, `mcp.cyr` core (`validate_path` + `register_tools`),
 `mcp_pool.cyr` (rate limiting), `mcp_tenant.cyr` (quota/tool-access), `mcp_tools_encoding.cyr`
-(szal_uuid/szal_base64), `mcp_tools_hash.cyr` (szal_sha256/md5/random_token) — all tested. Remaining MCP:
-1. **`src/mcp_tools_*.cyr`** (13 files left, ~49 tools; encoding + hash ✅ done) — order-free; suggested
-   system → json → template → conversion → math → state → step → flow → engine → file →
+(szal_uuid/szal_base64), `mcp_tools_hash.cyr` (szal_sha256/md5/random_token), `mcp_tools_system.cyr`
+(szal_system_info/cwd/env_get/timestamp) — all tested. Remaining MCP:
+1. **`src/mcp_tools_*.cyr`** (12 files left, ~46 tools; encoding + hash + system ✅ done) — order-free;
+   suggested json → template → conversion → math → state → step → flow → engine → file →
    process → git → net. Each tool: `mcp_tool_new(mcp_tool_def(name, desc, props_vec, required_vec),
    &handler)` with handler `fn(args_cstr, claims) → result_cstr` returning a `result_*` string. The
    LAST file defines `all_tools()` (aggregates every group's tools into one vec) + `szal_register_tools()`
