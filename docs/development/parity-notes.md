@@ -281,6 +281,19 @@ independent objects, INT≠FLOAT like serde — so diff parity is exact.) See `s
 
 ---
 
+## 16. szal_wc file counting capped at 1 MiB (`mcp_tools_template.cyr`)
+
+**What:** `szal_wc` with a `file` arg reads through a fixed `WC_FILE_CAP` (1 MiB) buffer; Rust reads
+the file uncapped (`tokio::fs::read_to_string`). Same shape as the sha256 file cap (§13).
+
+**Divergence:** files over 1 MiB are counted only up to the first 1 MiB. Text-field counting
+(lines/words/chars/bytes) is exact — `lines` via `.lines()` semantics (trailing newline adds no empty
+line), `words` via whitespace runs, `chars` via UTF-8 leading-byte count, `bytes` via length.
+
+**Why accepted:** same rationale as §13 (fixed buffer + read-cap posture). See `src/mcp_tools_template.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/

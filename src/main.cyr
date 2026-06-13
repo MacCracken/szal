@@ -83,6 +83,7 @@ include "lib/random.cyr"
 include "src/mcp_tools_hash.cyr"
 include "src/mcp_tools_system.cyr"
 include "src/mcp_tools_json.cyr"
+include "src/mcp_tools_template.cyr"
 
 fn main() {
     alloc_init();

@@ -1,0 +1,183 @@
+# szal_mcp_tools_template.tcyr — template/text MCP tools (mcp_tools_template.cyr): szal_template_render,
+# szal_wc, szal_text_replace, szal_text_split, szal_text_join.
+#
+# Ports rust-old/src/mcp/tools/template_tools.rs tests + missing-field validations + registration.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_template.tcyr build/test_mcp_tools_template
+#   ./build/test_mcp_tools_template
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/error.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_template.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_template_render ---
+
+# Mustache substitution with mixed string/number values. (template_tools.rs 261-273)
+fn t_template_render() {
+    var r = _call(&_template_render_handler,
+    "{\"template\": \"Hello {{name}}, you are {{age}} years old\", \"variables\": {\"name\": \"Alice\", \"age\": 30}}");
+    assert(str_contains(r, str_from("\"isError\":false")), "render ok");
+    assert(str_eq_cstr(_result_text(r), "Hello Alice, you are 30 years old"), "renders Alice/30");
+    return 0;
+}
+
+# Missing variables is a validation error.
+fn t_template_missing_vars() {
+    var r = _call(&_template_render_handler, "{\"template\": \"hi {{x}}\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no variables -> error");
+    assert(str_contains(r, str_from("missing required field: variables")), "validation message");
+    return 0;
+}
+
+# --- szal_wc ---
+
+# Counts lines + words. (template_tools.rs 275-283)
+fn t_wc() {
+    var r = _call(&_wc_handler, "{\"text\": \"hello world\\nfoo bar baz\"}");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("\"lines\": 2")), "2 lines");
+    assert(str_contains(text, str_from("\"words\": 5")), "5 words");
+    return 0;
+}
+
+# Neither text nor file is a validation error.
+fn t_wc_no_input() {
+    var r = _call(&_wc_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "wc no-input -> error");
+    assert(str_contains(r, str_from("provide either 'text' or 'file'")), "validation message");
+    return 0;
+}
+
+# --- szal_text_replace ---
+
+# Replace-all turns "aaa" into "bbb". (template_tools.rs 285-291)
+fn t_replace_all() {
+    var r = _call(&_text_replace_handler, "{\"text\": \"aaa\", \"search\": \"a\", \"replace\": \"b\"}");
+    assert(str_eq_cstr(_result_text(r), "bbb"), "replace all -> bbb");
+    return 0;
+}
+
+# Replace-first turns "aaa" into "baa". (template_tools.rs 293-299)
+fn t_replace_first() {
+    var r = _call(&_text_replace_handler,
+    "{\"text\": \"aaa\", \"search\": \"a\", \"replace\": \"b\", \"all\": false}");
+    assert(str_eq_cstr(_result_text(r), "baa"), "replace first -> baa");
+    return 0;
+}
+
+# Missing search is a validation error.
+fn t_replace_missing() {
+    var r = _call(&_text_replace_handler, "{\"text\": \"x\", \"replace\": \"y\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no search -> error");
+    assert(str_contains(r, str_from("missing required field: search")), "validation message");
+    return 0;
+}
+
+# --- szal_text_split ---
+
+# Split "a,b,c" on "," yields the array ["a","b","c"]. (template_tools.rs 301-309)
+fn t_split() {
+    var r = _call(&_text_split_handler, "{\"text\": \"a,b,c\", \"delimiter\": \",\"}");
+    var arr = bayan_json_v_parse(_result_text(r));
+    assert_eq(bayan_json_v_arr_len(arr), 3, "three parts");
+    assert(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(arr, 0)), "a"), "part 0 = a");
+    assert(str_eq_cstr(bayan_json_v_str(bayan_json_v_arr_get(arr, 2)), "c"), "part 2 = c");
+    return 0;
+}
+
+# --- szal_text_join ---
+
+# Join ["x","y","z"] with "-" yields "x-y-z". (template_tools.rs 311-317)
+fn t_join() {
+    var r = _call(&_text_join_handler, "{\"parts\": [\"x\", \"y\", \"z\"], \"separator\": \"-\"}");
+    assert(str_eq_cstr(_result_text(r), "x-y-z"), "join -> x-y-z");
+    return 0;
+}
+
+# Missing parts is a validation error.
+fn t_join_missing() {
+    var r = _call(&_text_join_handler, "{\"separator\": \"-\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no parts -> error");
+    assert(str_contains(r, str_from("missing required field: parts")), "validation message");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(template_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_template_render"), 1, "render registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_wc"), 1, "wc registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_text_replace"), 1, "replace registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_text_split"), 1, "split registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_text_join"), 1, "join registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 5, "five template tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_template_render");
+    t_template_render();
+    t_template_missing_vars();
+
+    test_group("szal_wc");
+    t_wc();
+    t_wc_no_input();
+
+    test_group("szal_text_replace");
+    t_replace_all();
+    t_replace_first();
+    t_replace_missing();
+
+    test_group("szal_text_split");
+    t_split();
+
+    test_group("szal_text_join");
+    t_join();
+    t_join_missing();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

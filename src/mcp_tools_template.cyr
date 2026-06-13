@@ -1,0 +1,377 @@
+# mcp_tools_template.cyr — MCP template/text tools (ports mcp/tools/template_tools.rs):
+# szal_template_render, szal_wc, szal_text_replace, szal_text_split, szal_text_join.
+#
+# szal_template_render reuses szal's own condition.cond_render_template (the ported {{var}} renderer).
+# Handlers follow the bote ABI + the porting pattern in docs/development/state.md.
+#
+# PARITY NOTE (wc file cap): like szal_sha256, szal_wc reads a `file` arg through a fixed
+# WC_FILE_CAP (1 MiB) buffer (Rust reads it uncapped). Text-field counting is exact. Recorded §16.
+#
+# Usage: include AFTER src/condition.cyr + src/mcp.cyr (+ lib/bayan, lib/str, lib/vec, lib/io).
+
+enum TemplateTools {
+    WC_FILE_CAP = 1048576;
+}
+
+fn _tpl_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# First index >= `start` of `needle` within `s`, or -1. Empty needle -> `start`.
+fn _indexof_sub(s, start, needle) {
+    var sl = str_len(s);
+    var nl = str_len(needle);
+    if (nl == 0) { return start; }
+    var sd = str_data(s);
+    var nd = str_data(needle);
+    var i = start;
+    while (i + nl <= sl) {
+        var j = 0;
+        var matched = 1;
+        while (j < nl) {
+            if (load8(sd + i + j) != load8(nd + j)) { matched = 0; j = nl; } else { j = j + 1; }
+        }
+        if (matched == 1) { return i; }
+        i = i + 1;
+    }
+    return (0 - 1);
+}
+
+# Replace occurrences of `search` with `replace` in `text` (all, or just the first if all==0).
+# Mirrors str::replace / replacen (template_tools.rs 166-170). Empty search is a no-op.
+fn _str_replace(text, search, replace, all) {
+    var sl = str_len(search);
+    if (sl == 0) { return text; }
+    var tl = str_len(text);
+    var sb = str_builder_new();
+    var pos = 0;
+    var done = 0;
+    while (done == 0) {
+        var idx = _indexof_sub(text, pos, search);
+        if (idx < 0) {
+            str_builder_add(sb, str_substr(text, pos, tl));
+            done = 1;
+        } else {
+            str_builder_add(sb, str_substr(text, pos, idx));
+            str_builder_add(sb, replace);
+            pos = idx + sl;
+            if (all == 0) {
+                str_builder_add(sb, str_substr(text, pos, tl));
+                done = 1;
+            }
+        }
+    }
+    return str_builder_build(sb);
+}
+
+# Split `text` on the string `delim` into a vec of Str parts (str::split semantics).
+fn _split_by_str(text, delim) {
+    var parts = vec_new();
+    var dl = str_len(delim);
+    var tl = str_len(text);
+    if (dl == 0) {
+        vec_push(parts, text);
+        return parts;
+    }
+    var pos = 0;
+    var done = 0;
+    while (done == 0) {
+        var idx = _indexof_sub(text, pos, delim);
+        if (idx < 0) {
+            vec_push(parts, str_substr(text, pos, tl));
+            done = 1;
+        } else {
+            vec_push(parts, str_substr(text, pos, idx));
+            pos = idx + dl;
+        }
+    }
+    return parts;
+}
+
+# --- word-count helpers (operate on a raw byte range) ---
+fn _wc_is_ws(c) {
+    if (c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12) { return 1; }
+    return 0;
+}
+fn _wc_lines(d, n) {
+    if (n == 0) { return 0; }
+    var nl = 0;
+    var i = 0;
+    while (i < n) {
+        if (load8(d + i) == 10) { nl = nl + 1; }
+        i = i + 1;
+    }
+    if ((load8(d + n - 1) & 0xFF) != 10) { nl = nl + 1; }
+    return nl;
+}
+fn _wc_words(d, n) {
+    var w = 0;
+    var in_word = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i) & 0xFF;
+        if (_wc_is_ws(c) == 1) { in_word = 0; } else {
+            if (in_word == 0) { w = w + 1; in_word = 1; }
+        }
+        i = i + 1;
+    }
+    return w;
+}
+fn _wc_chars(d, n) {
+    var c = 0;
+    var i = 0;
+    while (i < n) {
+        var b = load8(d + i) & 0xFF;
+        if ((b & 0xC0) != 0x80) { c = c + 1; }
+        i = i + 1;
+    }
+    return c;
+}
+
+# szal_template_render: {{var}} substitution via the condition renderer. Mirrors TemplateRender::call
+# (template_tools.rs 24-52).
+fn _template_render_handler(args, claims) {
+    var o = _tpl_parse_args(args);
+    var tv = bayan_json_v_obj_get(o, "template");
+    if (bayan_json_v_is_str(tv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: template"));
+        return str_data(e);
+    }
+    var vv = bayan_json_v_obj_get(o, "variables");
+    if (bayan_json_v_is_obj(vv) == 0) {
+        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: variables"));
+        return str_data(e2);
+    }
+    var rendered = cond_render_template(bayan_json_v_str(tv), vv);
+    var r = result_ok(rendered);
+    return str_data(r);
+}
+
+# szal_wc: count lines/words/chars/bytes of `text` or a `file`. Mirrors WordCount::call (template_tools.rs 71-111).
+fn _wc_handler(args, claims) {
+    var o = _tpl_parse_args(args);
+    var dptr = 0;
+    var dlen = 0;
+
+    var tv = bayan_json_v_obj_get(o, "text");
+    if (bayan_json_v_is_str(tv) == 1) {
+        var input = bayan_json_v_str(tv);
+        dptr = str_data(input);
+        dlen = str_len(input);
+    } else {
+        var fv = bayan_json_v_obj_get(o, "file");
+        if (bayan_json_v_is_str(fv) == 1) {
+            var path = bayan_json_v_str(fv);
+            var vr = validate_path(path);
+            if (is_err_result(vr) == 1) {
+                var e = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr));
+                return str_data(e);
+            }
+            var vpath = result_unwrap(vr);
+            var pc = str_cstr(vpath);
+            var buf = alloc(WC_FILE_CAP);
+            var n = file_read_all(pc, buf, WC_FILE_CAP);
+            if (n < 0) {
+                var eb = str_builder_new();
+                str_builder_add_cstr(eb, "failed to read ");
+                str_builder_add(eb, vpath);
+                var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+                return str_data(er);
+            }
+            dptr = buf;
+            dlen = n;
+        } else {
+            var ev = result_error_typed(MCP_VALIDATION, str_from("provide either 'text' or 'file'"));
+            return str_data(ev);
+        }
+    }
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("lines"), bayan_json_v_int_new(_wc_lines(dptr, dlen)));
+    bayan_json_v_obj_set(out, str_from("words"), bayan_json_v_int_new(_wc_words(dptr, dlen)));
+    bayan_json_v_obj_set(out, str_from("chars"), bayan_json_v_int_new(_wc_chars(dptr, dlen)));
+    bayan_json_v_obj_set(out, str_from("bytes"), bayan_json_v_int_new(dlen));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# szal_text_replace: replace `search` with `replace` (all by default).
+# Mirrors TextReplace::call (template_tools.rs 132-173).
+fn _text_replace_handler(args, claims) {
+    var o = _tpl_parse_args(args);
+    var tv = bayan_json_v_obj_get(o, "text");
+    if (bayan_json_v_is_str(tv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: text"));
+        return str_data(e);
+    }
+    var sv = bayan_json_v_obj_get(o, "search");
+    if (bayan_json_v_is_str(sv) == 0) {
+        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: search"));
+        return str_data(e2);
+    }
+    var rv = bayan_json_v_obj_get(o, "replace");
+    if (bayan_json_v_is_str(rv) == 0) {
+        var e3 = result_error_typed(MCP_VALIDATION, str_from("missing required field: replace"));
+        return str_data(e3);
+    }
+    var all = 1;
+    var av = bayan_json_v_obj_get(o, "all");
+    if (bayan_json_v_is_bool(av) == 1) { all = bayan_json_v_bool(av); }
+
+    var result = _str_replace(bayan_json_v_str(tv), bayan_json_v_str(sv), bayan_json_v_str(rv), all);
+    var rr = result_ok(result);
+    return str_data(rr);
+}
+
+# szal_text_split: split `text` by `delimiter` (default newline) into a JSON array. Mirrors TextSplit::call
+# (template_tools.rs 193-215).
+fn _text_split_handler(args, claims) {
+    var o = _tpl_parse_args(args);
+    var tv = bayan_json_v_obj_get(o, "text");
+    if (bayan_json_v_is_str(tv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: text"));
+        return str_data(e);
+    }
+    var delim = str_from("\n");
+    var dv = bayan_json_v_obj_get(o, "delimiter");
+    if (bayan_json_v_is_str(dv) == 1) { delim = bayan_json_v_str(dv); }
+
+    var parts = _split_by_str(bayan_json_v_str(tv), delim);
+    var arr = bayan_json_v_arr_new();
+    var n = vec_len(parts);
+    var i = 0;
+    while (i < n) {
+        bayan_json_v_arr_push(arr, bayan_json_v_str_new(vec_get(parts, i)));
+        i = i + 1;
+    }
+    var pretty = bayan_json_v_build_pretty(arr, 2);
+    var r = result_ok(pretty);
+    return str_data(r);
+}
+
+# szal_text_join: join string elements of `parts` with `separator` (default newline). Mirrors TextJoin::call
+# (template_tools.rs 234-253).
+fn _text_join_handler(args, claims) {
+    var o = _tpl_parse_args(args);
+    var pv = bayan_json_v_obj_get(o, "parts");
+    if (bayan_json_v_is_arr(pv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: parts"));
+        return str_data(e);
+    }
+    var sep = str_from("\n");
+    var sv = bayan_json_v_obj_get(o, "separator");
+    if (bayan_json_v_is_str(sv) == 1) { sep = bayan_json_v_str(sv); }
+
+    var sb = str_builder_new();
+    var first = 1;
+    var n = bayan_json_v_arr_len(pv);
+    var i = 0;
+    while (i < n) {
+        var e2 = bayan_json_v_arr_get(pv, i);
+        if (bayan_json_v_is_str(e2) == 1) {
+            if (first == 0) { str_builder_add(sb, sep); }
+            str_builder_add(sb, bayan_json_v_str(e2));
+            first = 0;
+        }
+        i = i + 1;
+    }
+    var joined = str_builder_build(sb);
+    var r = result_ok(joined);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _tpl_render_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("template",
+    "{ \"type\": \"string\", \"description\": \"Template string with {{var}} placeholders\" }"));
+    vec_push(v, schema_prop_new("variables",
+    "{ \"type\": \"object\", \"description\": \"Key-value pairs for substitution\" }"));
+    return v;
+}
+
+fn _wc_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("text",
+    "{ \"type\": \"string\", \"description\": \"Text to count (mutually exclusive with file)\" }"));
+    vec_push(v, schema_prop_new("file",
+    "{ \"type\": \"string\", \"description\": \"File path to count (mutually exclusive with text)\" }"));
+    return v;
+}
+
+fn _text_replace_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("text", "{ \"type\": \"string\", \"description\": \"Input text\" }"));
+    vec_push(v, schema_prop_new("search", "{ \"type\": \"string\", \"description\": \"Text to find\" }"));
+    vec_push(v, schema_prop_new("replace", "{ \"type\": \"string\", \"description\": \"Replacement text\" }"));
+    var ab = str_builder_new();
+    str_builder_add_cstr(ab, "{ \"type\": \"boolean\", \"description\": ");
+    str_builder_add_cstr(ab, "\"Replace all occurrences (default: true)\" }");
+    var all_c = str_cstr(str_builder_build(ab));
+    vec_push(v, schema_prop_new("all", all_c));
+    return v;
+}
+
+fn _text_split_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("text", "{ \"type\": \"string\", \"description\": \"Text to split\" }"));
+    vec_push(v, schema_prop_new("delimiter",
+    "{ \"type\": \"string\", \"description\": \"Delimiter (default: newline)\" }"));
+    return v;
+}
+
+fn _text_join_props() {
+    var v = vec_new();
+    var pb = str_builder_new();
+    str_builder_add_cstr(pb, "{ \"type\": \"array\", \"items\": { \"type\": \"string\" }, ");
+    str_builder_add_cstr(pb, "\"description\": \"Array of strings to join\" }");
+    var parts_c = str_cstr(str_builder_build(pb));
+    vec_push(v, schema_prop_new("parts", parts_c));
+    vec_push(v, schema_prop_new("separator",
+    "{ \"type\": \"string\", \"description\": \"Separator (default: newline)\" }"));
+    return v;
+}
+
+fn _req3(a, b, c) {
+    var v = vec_new();
+    vec_push(v, a);
+    vec_push(v, b);
+    vec_push(v, c);
+    return v;
+}
+
+fn _req1(a) {
+    var v = vec_new();
+    vec_push(v, a);
+    return v;
+}
+
+# The template/text tool group: render, wc, text_replace, text_split, text_join.
+fn template_tools() {
+    var tools = vec_new();
+    var tr_req = vec_new();
+    vec_push(tr_req, "template");
+    vec_push(tr_req, "variables");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_template_render", "Render a mustache-style template with {{variable}} substitution",
+    _tpl_render_props(), tr_req), &_template_render_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_wc", "Count lines, words, and characters in text", _wc_props(), vec_new()),
+    &_wc_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_text_replace", "Search and replace text in a string",
+    _text_replace_props(), _req3("text", "search", "replace")), &_text_replace_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_text_split", "Split text by a delimiter and return as JSON array",
+    _text_split_props(), _req1("text")), &_text_split_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_text_join", "Join array elements into a single string with a separator",
+    _text_join_props(), _req1("parts")), &_text_join_handler));
+    return tools;
+}
