@@ -294,6 +294,21 @@ line), `words` via whitespace runs, `chars` via UTF-8 leading-byte count, `bytes
 
 ---
 
+## 17. base_convert uses i64, not u128 (`mcp_tools_conversion.cyr`, szal_base_convert)
+
+**What:** Rust parses/formats via `u128::from_str_radix`. Cyrius has no 128-bit integer (no bigint
+dependency wired), so the port parses and formats with i64.
+
+**Divergence:** values requiring more than 63 bits overflow/wrap rather than converting exactly — the
+same `u64→i64` width family as §1, extended to the u128 here. Bases (2/8/10/16), prefix stripping
+(0x/0b/0o), digit validation, and lowercase output all match Rust for any value that fits in i64.
+
+**Why accepted:** szal has no bigint dep and 64 bits covers realistic base-conversion inputs; the
+`conversion_tools.rs` tests use small values (255, 0xFF, 1010). `szal_byte_format` (f64 via
+`fmt_float_buf`, 2-decimal rounding) and `szal_duration_format` are exact. See `src/mcp_tools_conversion.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/

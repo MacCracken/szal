@@ -1,0 +1,294 @@
+# mcp_tools_conversion.cyr — MCP conversion tools (ports mcp/tools/conversion_tools.rs):
+# szal_base_convert, szal_byte_format, szal_duration_format.
+#
+# Handlers follow the bote ABI + the porting pattern in docs/development/state.md.
+#
+# PARITY NOTE (base_convert width): Rust parses/formats via u128. Cyrius has no 128-bit int (no
+# bigint dep), so the port uses i64 — values ≥ 2^63 are unsupported (same u64→i64 family as
+# parity-notes §1). The conversion_tools.rs tests use small values. Recorded §17.
+#
+# Usage: include AFTER src/mcp.cyr (+ lib/bayan, lib/str, lib/fmt for fmt_float_buf).
+
+enum ConversionTools {
+    SECS_PER_MINUTE = 60;
+    SECS_PER_HOUR = 3600;
+    SECS_PER_DAY = 86400;
+    BYTES_PER_KB = 1024;
+    BYTES_PER_MB = 1048576;
+    BYTES_PER_GB = 1073741824;
+    BYTES_PER_TB = 1099511627776;
+}
+
+fn _conv_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# --- base convert ---
+
+# Numeric value of a base digit (0-9, a-z, A-Z), or -1 if not a digit.
+fn _digit_val(c) {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    if (c >= 97 && c <= 122) { return c - 97 + 10; }
+    if (c >= 65 && c <= 90) { return c - 65 + 10; }
+    return (0 - 1);
+}
+
+# Parse buf[0..n] as an unsigned integer in `base`. -1 on any invalid/out-of-range digit or empty.
+fn _parse_radix(d, n, base) {
+    if (n == 0) { return (0 - 1); }
+    var val = 0;
+    var i = 0;
+    while (i < n) {
+        var dv = _digit_val(load8(d + i) & 0xFF);
+        if (dv < 0 || dv >= base) { return (0 - 1); }
+        val = val * base + dv;
+        i = i + 1;
+    }
+    return val;
+}
+
+# Format `n` in `base` (lowercase) prefixed by `prefix_cstr` (e.g. "0x", "0b", "0o", or "").
+fn _fmt_radix(n, base, prefix_cstr) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, prefix_cstr);
+    if (n == 0) {
+        str_builder_add_byte(sb, 48);
+        return str_builder_build(sb);
+    }
+    var tmp = alloc(70);
+    var ti = 0;
+    var v = n;
+    while (v > 0) {
+        var dd = v % base;
+        var ch = 48 + dd;
+        if (dd >= 10) { ch = 97 + dd - 10; }
+        store8(tmp + ti, ch);
+        ti = ti + 1;
+        v = v / base;
+    }
+    var k = ti - 1;
+    while (k >= 0) {
+        str_builder_add_byte(sb, load8(tmp + k));
+        k = k - 1;
+    }
+    return str_builder_build(sb);
+}
+
+# A base is supported iff it is 2, 8, 10, or 16.
+fn _valid_base(b) {
+    if (b == 2 || b == 8 || b == 10 || b == 16) { return 1; }
+    return 0;
+}
+
+# Strip a leading 0x/0X/0b/0B/0o/0O prefix from a Str (returns the same Str if none).
+fn _strip_base_prefix(s) {
+    if (str_len(s) < 2) { return s; }
+    var d = str_data(s);
+    if ((load8(d) & 0xFF) != 48) { return s; }
+    var c1 = load8(d + 1) & 0xFF;
+    if (c1 == 120 || c1 == 88 || c1 == 98 || c1 == 66 || c1 == 111 || c1 == 79) {
+        return str_substr(s, 2, str_len(s));
+    }
+    return s;
+}
+
+# szal_base_convert. Mirrors BaseConvert::call (conversion_tools.rs 33-104).
+fn _base_convert_handler(args, claims) {
+    var o = _conv_parse_args(args);
+    var vv = bayan_json_v_obj_get(o, "value");
+    if (bayan_json_v_is_str(vv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: value"));
+        return str_data(e);
+    }
+    var fv = bayan_json_v_obj_get(o, "from_base");
+    if (bayan_json_v_is_int(fv) == 0) {
+        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: from_base"));
+        return str_data(e2);
+    }
+    var tv = bayan_json_v_obj_get(o, "to_base");
+    if (bayan_json_v_is_int(tv) == 0) {
+        var e3 = result_error_typed(MCP_VALIDATION, str_from("missing required field: to_base"));
+        return str_data(e3);
+    }
+    var from = bayan_json_v_int(fv);
+    var to = bayan_json_v_int(tv);
+    if (_valid_base(from) == 0 || _valid_base(to) == 0) {
+        var eb = result_error_typed(MCP_VALIDATION, str_from("supported bases: 2, 8, 10, 16"));
+        return str_data(eb);
+    }
+
+    var value = bayan_json_v_str(vv);
+    var clean = _strip_base_prefix(value);
+    var n = _parse_radix(str_data(clean), str_len(clean), from);
+    if (n < 0) {
+        var ib = str_builder_new();
+        str_builder_add_cstr(ib, "invalid number '");
+        str_builder_add(ib, value);
+        str_builder_add_cstr(ib, "' for base ");
+        str_builder_add_int(ib, from);
+        var ie = result_error_typed(MCP_VALIDATION, str_builder_build(ib));
+        return str_data(ie);
+    }
+
+    var result = str_from("");
+    if (to == 2) { result = _fmt_radix(n, 2, "0b"); }
+    elif (to == 8) { result = _fmt_radix(n, 8, "0o"); }
+    elif (to == 16) { result = _fmt_radix(n, 16, "0x"); }
+    else { result = _fmt_radix(n, 10, ""); }
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("input"), bayan_json_v_str_new(value));
+    bayan_json_v_obj_set(out, str_from("from_base"), bayan_json_v_int_new(from));
+    bayan_json_v_obj_set(out, str_from("to_base"), bayan_json_v_int_new(to));
+    bayan_json_v_obj_set(out, str_from("result"), bayan_json_v_str_new(result));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# --- byte format ---
+
+# bytes / divisor as an f64 json_v value.
+fn _ratio_json(bytes, divisor) {
+    return bayan_json_v_float_new(f64_div(f64_from(bytes), f64_from(divisor)));
+}
+
+# szal_byte_format. Mirrors ByteFormat::call (conversion_tools.rs 120-155).
+fn _byte_format_handler(args, claims) {
+    var o = _conv_parse_args(args);
+    var bv = bayan_json_v_obj_get(o, "bytes");
+    if (bayan_json_v_is_int(bv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: bytes"));
+        return str_data(e);
+    }
+    var bytes = bayan_json_v_int(bv);
+
+    var divisor = 1;
+    var unit = "B";
+    if (bytes >= BYTES_PER_TB) { divisor = BYTES_PER_TB; unit = "TB"; }
+    elif (bytes >= BYTES_PER_GB) { divisor = BYTES_PER_GB; unit = "GB"; }
+    elif (bytes >= BYTES_PER_MB) { divisor = BYTES_PER_MB; unit = "MB"; }
+    elif (bytes >= BYTES_PER_KB) { divisor = BYTES_PER_KB; unit = "KB"; }
+
+    var value = f64_div(f64_from(bytes), f64_from(divisor));
+    var fbuf = alloc(48);
+    var flen = fmt_float_buf(value, fbuf, 2);
+    var fb = str_builder_new();
+    str_builder_add(fb, str_new(fbuf, flen));
+    str_builder_add_byte(fb, 32);
+    str_builder_add_cstr(fb, unit);
+    var formatted = str_builder_build(fb);
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("bytes"), bayan_json_v_int_new(bytes));
+    bayan_json_v_obj_set(out, str_from("formatted"), bayan_json_v_str_new(formatted));
+    bayan_json_v_obj_set(out, str_from("kb"), _ratio_json(bytes, BYTES_PER_KB));
+    bayan_json_v_obj_set(out, str_from("mb"), _ratio_json(bytes, BYTES_PER_MB));
+    bayan_json_v_obj_set(out, str_from("gb"), _ratio_json(bytes, BYTES_PER_GB));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# --- duration format ---
+
+# szal_duration_format. Mirrors DurationFormat::call (conversion_tools.rs 173-216).
+fn _duration_format_handler(args, claims) {
+    var o = _conv_parse_args(args);
+    var sv = bayan_json_v_obj_get(o, "seconds");
+    if (bayan_json_v_is_int(sv) == 0 && bayan_json_v_is_float(sv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: seconds"));
+        return str_data(e);
+    }
+    var total = bayan_json_v_int(sv);
+    var secs_f = bayan_json_v_float(sv);
+
+    var days = total / SECS_PER_DAY;
+    var hours = (total % SECS_PER_DAY) / SECS_PER_HOUR;
+    var minutes = (total % SECS_PER_HOUR) / SECS_PER_MINUTE;
+    var remaining = total % SECS_PER_MINUTE;
+
+    var sb = str_builder_new();
+    var first = 1;
+    if (days > 0) {
+        str_builder_add_int(sb, days);
+        str_builder_add_cstr(sb, "d");
+        first = 0;
+    }
+    if (hours > 0) {
+        if (first == 0) { str_builder_add_byte(sb, 32); }
+        str_builder_add_int(sb, hours);
+        str_builder_add_cstr(sb, "h");
+        first = 0;
+    }
+    if (minutes > 0) {
+        if (first == 0) { str_builder_add_byte(sb, 32); }
+        str_builder_add_int(sb, minutes);
+        str_builder_add_cstr(sb, "m");
+        first = 0;
+    }
+    if (remaining > 0 || first == 1) {
+        if (first == 0) { str_builder_add_byte(sb, 32); }
+        str_builder_add_int(sb, remaining);
+        str_builder_add_cstr(sb, "s");
+        first = 0;
+    }
+    var formatted = str_builder_build(sb);
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("seconds"), bayan_json_v_float_new(secs_f));
+    bayan_json_v_obj_set(out, str_from("formatted"), bayan_json_v_str_new(formatted));
+    bayan_json_v_obj_set(out, str_from("days"), bayan_json_v_int_new(days));
+    bayan_json_v_obj_set(out, str_from("hours"), bayan_json_v_int_new(total / SECS_PER_HOUR));
+    bayan_json_v_obj_set(out, str_from("minutes"), bayan_json_v_int_new(total / SECS_PER_MINUTE));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _base_convert_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("value", "{ \"type\": \"string\", \"description\": \"Number to convert\" }"));
+    vec_push(v, schema_prop_new("from_base",
+    "{ \"type\": \"integer\", \"description\": \"Source base (2, 8, 10, 16)\" }"));
+    vec_push(v, schema_prop_new("to_base",
+    "{ \"type\": \"integer\", \"description\": \"Target base (2, 8, 10, 16)\" }"));
+    return v;
+}
+
+fn _byte_format_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("bytes", "{ \"type\": \"integer\", \"description\": \"Number of bytes\" }"));
+    return v;
+}
+
+fn _duration_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("seconds", "{ \"type\": \"number\", \"description\": \"Duration in seconds\" }"));
+    return v;
+}
+
+# The conversion tool group: szal_base_convert, szal_byte_format, szal_duration_format.
+fn conversion_tools() {
+    var tools = vec_new();
+    var bc_req = vec_new();
+    vec_push(bc_req, "value");
+    vec_push(bc_req, "from_base");
+    vec_push(bc_req, "to_base");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_base_convert", "Convert a number between bases (binary, octal, decimal, hexadecimal)",
+    _base_convert_props(), bc_req), &_base_convert_handler));
+
+    var bf_req = vec_new();
+    vec_push(bf_req, "bytes");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_byte_format", "Convert bytes to human-readable format (KB, MB, GB, TB)",
+    _byte_format_props(), bf_req), &_byte_format_handler));
+
+    var d_req = vec_new();
+    vec_push(d_req, "seconds");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_duration_format", "Convert seconds to human-readable duration (Xd Xh Xm Xs) and reverse",
+    _duration_props(), d_req), &_duration_format_handler));
+    return tools;
+}

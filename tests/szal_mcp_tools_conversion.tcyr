@@ -1,0 +1,169 @@
+# szal_mcp_tools_conversion.tcyr — conversion MCP tools (mcp_tools_conversion.cyr):
+# szal_base_convert, szal_byte_format, szal_duration_format.
+#
+# Ports rust-old/src/mcp/tools/conversion_tools.rs tests + validation + registration.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_conversion.tcyr build/test_mcp_tools_conversion
+#   ./build/test_mcp_tools_conversion
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_conversion.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_base_convert ---
+
+# 255 (dec) -> hex is 0xff. (conversion_tools.rs 223-230)
+fn t_dec_to_hex() {
+    var r = _call(&_base_convert_handler, "{\"value\": \"255\", \"from_base\": 10, \"to_base\": 16}");
+    assert(str_contains(_result_text(r), str_from("0xff")), "255 -> 0xff");
+    return 0;
+}
+
+# 0xFF (hex) -> binary is 0b11111111. (conversion_tools.rs 232-239)
+fn t_hex_to_bin() {
+    var r = _call(&_base_convert_handler, "{\"value\": \"0xFF\", \"from_base\": 16, \"to_base\": 2}");
+    assert(str_contains(_result_text(r), str_from("0b11111111")), "0xFF -> 0b11111111");
+    return 0;
+}
+
+# 1010 (bin) -> decimal is 10. (conversion_tools.rs 241-248)
+fn t_bin_to_dec() {
+    var r = _call(&_base_convert_handler, "{\"value\": \"1010\", \"from_base\": 2, \"to_base\": 10}");
+    assert(str_contains(_result_text(r), str_from("\"result\": \"10\"")), "1010 -> 10");
+    return 0;
+}
+
+# An unsupported base is a validation error.
+fn t_bad_base() {
+    var r = _call(&_base_convert_handler, "{\"value\": \"5\", \"from_base\": 3, \"to_base\": 10}");
+    assert(str_contains(r, str_from("\"isError\":true")), "base 3 -> error");
+    assert(str_contains(r, str_from("supported bases: 2, 8, 10, 16")), "supported-bases message");
+    return 0;
+}
+
+# An invalid digit for the base is a validation error.
+fn t_bad_digit() {
+    var r = _call(&_base_convert_handler, "{\"value\": \"9\", \"from_base\": 2, \"to_base\": 10}");
+    assert(str_contains(r, str_from("\"isError\":true")), "digit 9 in base 2 -> error");
+    assert(str_contains(r, str_from("invalid number")), "invalid-number message");
+    return 0;
+}
+
+# --- szal_byte_format ---
+
+# 1,500,000 bytes formats as 1.43 MB. (conversion_tools.rs 250-255)
+fn t_byte_format() {
+    var r = _call(&_byte_format_handler, "{\"bytes\": 1500000}");
+    assert(str_contains(_result_text(r), str_from("1.43 MB")), "1500000 -> 1.43 MB");
+    return 0;
+}
+
+# Small values use B.
+fn t_byte_format_small() {
+    var r = _call(&_byte_format_handler, "{\"bytes\": 512}");
+    assert(str_contains(_result_text(r), str_from("512.00 B")), "512 -> 512.00 B");
+    return 0;
+}
+
+# Missing bytes is a validation error.
+fn t_byte_missing() {
+    var r = _call(&_byte_format_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no bytes -> error");
+    assert(str_contains(r, str_from("missing required field: bytes")), "validation message");
+    return 0;
+}
+
+# --- szal_duration_format ---
+
+# 90061 seconds -> "1d 1h 1m 1s". (conversion_tools.rs 257-262)
+fn t_duration() {
+    var r = _call(&_duration_format_handler, "{\"seconds\": 90061}");
+    assert(str_contains(_result_text(r), str_from("1d 1h 1m 1s")), "90061s -> 1d 1h 1m 1s");
+    return 0;
+}
+
+# Zero seconds -> "0s".
+fn t_duration_zero() {
+    var r = _call(&_duration_format_handler, "{\"seconds\": 0}");
+    assert(str_contains(_result_text(r), str_from("\"formatted\": \"0s\"")), "0s");
+    return 0;
+}
+
+# Missing seconds is a validation error.
+fn t_duration_missing() {
+    var r = _call(&_duration_format_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no seconds -> error");
+    assert(str_contains(r, str_from("missing required field: seconds")), "validation message");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(conversion_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_base_convert"), 1, "base_convert registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_byte_format"), 1, "byte_format registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_duration_format"), 1, "duration_format registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 3, "three conversion tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_base_convert");
+    t_dec_to_hex();
+    t_hex_to_bin();
+    t_bin_to_dec();
+    t_bad_base();
+    t_bad_digit();
+
+    test_group("szal_byte_format");
+    t_byte_format();
+    t_byte_format_small();
+    t_byte_missing();
+
+    test_group("szal_duration_format");
+    t_duration();
+    t_duration_zero();
+    t_duration_missing();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
