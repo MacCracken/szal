@@ -85,6 +85,9 @@ include "src/mcp_tools_system.cyr"
 include "src/mcp_tools_json.cyr"
 include "src/mcp_tools_template.cyr"
 include "src/mcp_tools_conversion.cyr"
+# lib/math.cyr (f64_parse_ok / f64_trunc / f64_fract) for the math expression evaluator.
+include "lib/math.cyr"
+include "src/mcp_tools_math.cyr"
 
 fn main() {
     alloc_init();

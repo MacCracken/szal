@@ -309,6 +309,23 @@ same `u64→i64` width family as §1, extended to the u128 here. Bases (2/8/10/1
 
 ---
 
+## 18. math_eval non-integer formatting (`mcp_tools_math.cyr`, szal_math_eval)
+
+**What:** `szal_math_eval` formats an integer-valued result as i64 (exact, matching Rust's
+`val as i64` branch). A non-integer result is formatted with `fmt_float_buf` (10 decimals) +
+trailing-zero strip, whereas Rust uses `format!("{val}")` (the shortest round-trip f64 Display).
+
+**Divergence:** fractional results may render with slightly different precision/length than Rust
+(e.g. a repeating decimal truncates at 10 places). The integer path is exact. The recursive-descent
+evaluator itself (precedence, parens, unary minus, `+ - * / %`, div/mod-by-zero errors, the char
+allowlist that blocks injection) is faithful. `^` is in the tool *description* but Rust never
+implemented it (not in the char allowlist nor tokenizer) — the port omits it identically.
+
+**Why accepted:** Cyrius has no shortest-round-trip f64 formatter; the `math_tools.rs` tests use
+integer results (5, 53), which are exact. See `src/mcp_tools_math.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/

@@ -1,0 +1,333 @@
+# mcp_tools_math.cyr — MCP math tool (ports mcp/tools/math_tools.rs): szal_math_eval.
+#
+# A recursive-descent f64 expression evaluator: tokenize -> add/sub -> mul/div/mod -> atom, with
+# unary minus and parentheses. Operators: + - * / % (the tool description mentions ^, but Rust never
+# implemented it — ^ is not in the valid-char set nor the tokenizer, so the port omits it too).
+#
+# Handler follows the bote ABI + the porting pattern in docs/development/state.md.
+#
+# PARITY NOTE (float formatting): integer results format as i64 (exact, matching Rust). Non-integer
+# results use fmt_float_buf + trailing-zero strip rather than Rust's shortest-round-trip Display, so
+# some fractional results may render with slightly different precision. The math_tools.rs tests use
+# integer results. Recorded §18.
+#
+# Usage: include AFTER lib/math.cyr (f64_parse_ok/trunc/fract) + src/mcp.cyr (+ lib/bayan, lib/str).
+
+enum MathTokens {
+    TOK_NUM = 0;
+    TOK_PLUS = 1;
+    TOK_MINUS = 2;
+    TOK_MUL = 3;
+    TOK_DIV = 4;
+    TOK_MOD = 5;
+    TOK_LPAREN = 6;
+    TOK_RPAREN = 7;
+}
+
+fn _math_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# Token = { type@0, fval@8 } (fval is the f64 bit pattern for TOK_NUM).
+fn _mev_tok_new(ty, fval) {
+    var t = alloc(16);
+    store64(t, ty);
+    store64(t + 8, fval);
+    return t;
+}
+fn _mev_tok_type(t) { return load64(t); }
+fn _mev_tok_fval(t) { return load64(t + 8); }
+
+# Eval context = { tokens@0, pos@8, err@16 (Str|0), result@24 (f64) }.
+fn _ec_err(ec) { return load64(ec + 16); }
+fn _ec_seterr(ec, s) { store64(ec + 16, s); return 0; }
+
+# 1 if `c` is one of the characters szal_math_eval permits (digits + " +-*/.%()").
+fn _mev_valid_chars(s) {
+    var d = str_data(s);
+    var n = str_len(s);
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i) & 0xFF;
+        var ok = 0;
+        if (c >= 48 && c <= 57) { ok = 1; }
+        if (c == 32 || c == 43 || c == 45 || c == 42 || c == 47 || c == 46 || c == 37
+        || c == 40 || c == 41) { ok = 1; }
+        if (ok == 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Index after the run of digit/'.' chars starting at `start`.
+fn _scan_number_end(d, n, start) {
+    var i = start;
+    var go = 1;
+    while (go == 1) {
+        if (i >= n) { go = 0; } else {
+            var c = load8(d + i) & 0xFF;
+            if ((c >= 48 && c <= 57) || c == 46) { i = i + 1; } else { go = 0; }
+        }
+    }
+    return i;
+}
+
+# Parse d[start..end] (optionally negated) as f64; on failure sets ec.err and returns 0.0.
+fn _mev_num(d, start, end, neg, ec) {
+    var len = end - start;
+    var buf = alloc(len + 2);
+    var off = 0;
+    if (neg == 1) { store8(buf, 45); off = 1; }
+    var k = 0;
+    while (k < len) {
+        store8(buf + off + k, load8(d + start + k));
+        k = k + 1;
+    }
+    store8(buf + off + len, 0);
+    var out = alloc(8);
+    if (f64_parse_ok(buf, out) == 0) {
+        _ec_seterr(ec, str_from("invalid number"));
+        return f64_from(0);
+    }
+    return load64(out);
+}
+
+# Tokenize `expr` into ec.tokens; sets ec.err on an unexpected character / bad number.
+fn _mev_tokenize(ec, expr) {
+    var d = str_data(expr);
+    var n = str_len(expr);
+    var tokens = vec_new();
+    store64(ec, tokens);
+    var i = 0;
+    while (i < n) {
+        if (_ec_err(ec) != 0) { return 0; }
+        var c = load8(d + i) & 0xFF;
+        if (c == 32) {
+            i = i + 1;
+        } elif (c == 43) {
+            vec_push(tokens, _mev_tok_new(TOK_PLUS, 0)); i = i + 1;
+        } elif (c == 45) {
+            var is_unary = 0;
+            if (vec_len(tokens) == 0) { is_unary = 1; } else {
+                var lt = _mev_tok_type(vec_get(tokens, vec_len(tokens) - 1));
+                if (lt == TOK_PLUS || lt == TOK_MINUS || lt == TOK_MUL || lt == TOK_DIV
+                || lt == TOK_MOD || lt == TOK_LPAREN) { is_unary = 1; }
+            }
+            i = i + 1;
+            if (is_unary == 1) {
+                var end = _scan_number_end(d, n, i);
+                var val = _mev_num(d, i, end, 1, ec);
+                vec_push(tokens, _mev_tok_new(TOK_NUM, val));
+                i = end;
+            } else {
+                vec_push(tokens, _mev_tok_new(TOK_MINUS, 0));
+            }
+        } elif (c == 42) {
+            vec_push(tokens, _mev_tok_new(TOK_MUL, 0)); i = i + 1;
+        } elif (c == 47) {
+            vec_push(tokens, _mev_tok_new(TOK_DIV, 0)); i = i + 1;
+        } elif (c == 37) {
+            vec_push(tokens, _mev_tok_new(TOK_MOD, 0)); i = i + 1;
+        } elif (c == 40) {
+            vec_push(tokens, _mev_tok_new(TOK_LPAREN, 0)); i = i + 1;
+        } elif (c == 41) {
+            vec_push(tokens, _mev_tok_new(TOK_RPAREN, 0)); i = i + 1;
+        } elif ((c >= 48 && c <= 57) || c == 46) {
+            var nend = _scan_number_end(d, n, i);
+            var nval = _mev_num(d, i, nend, 0, ec);
+            vec_push(tokens, _mev_tok_new(TOK_NUM, nval));
+            i = nend;
+        } else {
+            var eb = str_builder_new();
+            str_builder_add_cstr(eb, "unexpected character");
+            _ec_seterr(ec, str_builder_build(eb));
+            return 0;
+        }
+    }
+    return 0;
+}
+
+# atom := NUM | '(' add_sub ')'
+fn _mev_atom(ec) {
+    var tokens = load64(ec);
+    var pos = load64(ec + 8);
+    if (pos >= vec_len(tokens)) {
+        _ec_seterr(ec, str_from("unexpected end of expression"));
+        return f64_from(0);
+    }
+    var t = vec_get(tokens, pos);
+    var ty = _mev_tok_type(t);
+    if (ty == TOK_NUM) {
+        store64(ec + 8, pos + 1);
+        return _mev_tok_fval(t);
+    }
+    if (ty == TOK_LPAREN) {
+        store64(ec + 8, pos + 1);
+        var val = _mev_add_sub(ec);
+        if (_ec_err(ec) != 0) { return val; }
+        var p2 = load64(ec + 8);
+        if (p2 >= vec_len(tokens) || _mev_tok_type(vec_get(tokens, p2)) != TOK_RPAREN) {
+            _ec_seterr(ec, str_from("missing closing parenthesis"));
+            return f64_from(0);
+        }
+        store64(ec + 8, p2 + 1);
+        return val;
+    }
+    _ec_seterr(ec, str_from("unexpected token"));
+    return f64_from(0);
+}
+
+# mul_div := atom (('*'|'/'|'%') atom)*
+fn _mev_mul_div(ec) {
+    var left = _mev_atom(ec);
+    if (_ec_err(ec) != 0) { return left; }
+    var go = 1;
+    while (go == 1) {
+        var pos = load64(ec + 8);
+        var tokens = load64(ec);
+        if (pos >= vec_len(tokens)) { go = 0; } else {
+            var ty = _mev_tok_type(vec_get(tokens, pos));
+            if (ty == TOK_MUL) {
+                store64(ec + 8, pos + 1);
+                var r = _mev_atom(ec);
+                if (_ec_err(ec) != 0) { return left; }
+                left = f64_mul(left, r);
+            } elif (ty == TOK_DIV) {
+                store64(ec + 8, pos + 1);
+                var r2 = _mev_atom(ec);
+                if (_ec_err(ec) != 0) { return left; }
+                if (f64_eq(r2, f64_from(0)) == 1) {
+                    _ec_seterr(ec, str_from("division by zero"));
+                    return f64_from(0);
+                }
+                left = f64_div(left, r2);
+            } elif (ty == TOK_MOD) {
+                store64(ec + 8, pos + 1);
+                var r3 = _mev_atom(ec);
+                if (_ec_err(ec) != 0) { return left; }
+                if (f64_eq(r3, f64_from(0)) == 1) {
+                    _ec_seterr(ec, str_from("modulo by zero"));
+                    return f64_from(0);
+                }
+                left = f64_sub(left, f64_mul(f64_trunc(f64_div(left, r3)), r3));
+            } else { go = 0; }
+        }
+    }
+    return left;
+}
+
+# add_sub := mul_div (('+'|'-') mul_div)*
+fn _mev_add_sub(ec) {
+    var left = _mev_mul_div(ec);
+    if (_ec_err(ec) != 0) { return left; }
+    var go = 1;
+    while (go == 1) {
+        var pos = load64(ec + 8);
+        var tokens = load64(ec);
+        if (pos >= vec_len(tokens)) { go = 0; } else {
+            var ty = _mev_tok_type(vec_get(tokens, pos));
+            if (ty == TOK_PLUS) {
+                store64(ec + 8, pos + 1);
+                var r = _mev_mul_div(ec);
+                if (_ec_err(ec) != 0) { return left; }
+                left = f64_add(left, r);
+            } elif (ty == TOK_MINUS) {
+                store64(ec + 8, pos + 1);
+                var r2 = _mev_mul_div(ec);
+                if (_ec_err(ec) != 0) { return left; }
+                left = f64_sub(left, r2);
+            } else { go = 0; }
+        }
+    }
+    return left;
+}
+
+# Evaluate `expr`, returning the eval context (check ec.err; ec.result holds the f64 on success).
+fn _mev_eval(expr) {
+    var ec = alloc(32);
+    store64(ec, 0);
+    store64(ec + 8, 0);
+    store64(ec + 16, 0);
+    store64(ec + 24, f64_from(0));
+    _mev_tokenize(ec, expr);
+    if (_ec_err(ec) != 0) { return ec; }
+    var result = _mev_add_sub(ec);
+    if (_ec_err(ec) != 0) { return ec; }
+    var pos = load64(ec + 8);
+    var tokens = load64(ec);
+    if (pos < vec_len(tokens)) {
+        var pb = str_builder_new();
+        str_builder_add_cstr(pb, "unexpected token at position ");
+        str_builder_add_int(pb, pos);
+        _ec_seterr(ec, str_builder_build(pb));
+        return ec;
+    }
+    store64(ec + 24, result);
+    return ec;
+}
+
+# Format an f64 with up to 10 decimals, stripping trailing zeros and any trailing '.'.
+fn _fmt_f64_clean(val) {
+    var buf = alloc(64);
+    var len = fmt_float_buf(val, buf, 10);
+    while (len > 0 && (load8(buf + len - 1) & 0xFF) == 48) { len = len - 1; }
+    if (len > 0 && (load8(buf + len - 1) & 0xFF) == 46) { len = len - 1; }
+    return str_new(buf, len);
+}
+
+# szal_math_eval handler. Mirrors MathEval::call (math_tools.rs 21-58).
+fn _math_eval_handler(args, claims) {
+    var o = _math_parse_args(args);
+    var ev = bayan_json_v_obj_get(o, "expression");
+    if (bayan_json_v_is_str(ev) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: expression"));
+        return str_data(e);
+    }
+    var expr = bayan_json_v_str(ev);
+
+    if (_mev_valid_chars(expr) == 0) {
+        var ic = result_error_typed(MCP_VALIDATION,
+        str_from("expression contains invalid characters — only digits, +, -, *, /, %, (, ), . allowed"));
+        return str_data(ic);
+    }
+
+    var ec = _mev_eval(expr);
+    if (_ec_err(ec) != 0) {
+        var er = result_error_typed(MCP_INTERNAL, _ec_err(ec));
+        return str_data(er);
+    }
+
+    var val = load64(ec + 24);
+    var out = str_from("");
+    if (f64_eq(f64_fract(val), f64_from(0)) == 1
+    && f64_lt(f64_abs(val), f64_from(9223372036854775807)) == 1) {
+        var iv = f64_to(val);
+        out = str_from_int(iv);
+    } else {
+        out = _fmt_f64_clean(val);
+    }
+    var r = result_ok(out);
+    return str_data(r);
+}
+
+fn _math_eval_props() {
+    var v = vec_new();
+    var eb = str_builder_new();
+    str_builder_add_cstr(eb, "{ \"type\": \"string\", \"description\": ");
+    str_builder_add_cstr(eb, "\"Math expression to evaluate (e.g. '2 + 3 * 4')\" }");
+    var expr_c = str_cstr(str_builder_build(eb));
+    vec_push(v, schema_prop_new("expression", expr_c));
+    return v;
+}
+
+# The math tool group: szal_math_eval.
+fn math_tools() {
+    var tools = vec_new();
+    var req = vec_new();
+    vec_push(req, "expression");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_math_eval", "Evaluate a basic math expression (+, -, *, /, %, ^)",
+    _math_eval_props(), req), &_math_eval_handler));
+    return tools;
+}

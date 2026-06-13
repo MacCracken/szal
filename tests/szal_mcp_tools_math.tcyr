@@ -1,0 +1,145 @@
+# szal_mcp_tools_math.tcyr — math MCP tool (mcp_tools_math.cyr): szal_math_eval.
+#
+# Ports rust-old/src/mcp/tools/math_tools.rs tests (basic/complex/injection) + precedence, parens,
+# unary minus, mod, division-by-zero, missing-field, and registration.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_math.tcyr build/test_mcp_tools_math
+#   ./build/test_mcp_tools_math
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/math.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_math.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# Evaluate `expr` and assert the result text equals `want`.
+fn _eval_eq(expr_json, want, name) {
+    var r = _call(&_math_eval_handler, expr_json);
+    assert(str_contains(r, str_from("\"isError\":false")), name);
+    assert(str_eq_cstr(_result_text(r), want), name);
+    return 0;
+}
+
+# --- evaluation ---
+
+# Basic addition. (math_tools.rs 240-246)
+fn t_basic() { return _eval_eq("{\"expression\": \"2 + 3\"}", "5", "2 + 3 = 5"); }
+
+# Precedence: * before +. (math_tools.rs 248-254)
+fn t_complex() { return _eval_eq("{\"expression\": \"10 * 5 + 3\"}", "53", "10 * 5 + 3 = 53"); }
+
+# Mixed precedence.
+fn t_precedence() { return _eval_eq("{\"expression\": \"2 + 3 * 4\"}", "14", "2 + 3 * 4 = 14"); }
+
+# Parentheses override precedence.
+fn t_parens() { return _eval_eq("{\"expression\": \"(2 + 3) * 4\"}", "20", "(2 + 3) * 4 = 20"); }
+
+# Unary minus.
+fn t_unary() { return _eval_eq("{\"expression\": \"-5 + 3\"}", "-2", "-5 + 3 = -2"); }
+
+# Division (integer result).
+fn t_div() { return _eval_eq("{\"expression\": \"10 / 2\"}", "5", "10 / 2 = 5"); }
+
+# Modulo.
+fn t_mod() { return _eval_eq("{\"expression\": \"10 % 3\"}", "1", "10 % 3 = 1"); }
+
+# --- errors ---
+
+# Injection-style input is rejected at char validation. (math_tools.rs 256-260)
+fn t_injection() {
+    var r = _call(&_math_eval_handler, "{\"expression\": \"1; rm -rf /\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "injection rejected");
+    assert(str_contains(r, str_from("invalid characters")), "char-validation message");
+    return 0;
+}
+
+# Division by zero is an internal error.
+fn t_div_zero() {
+    var r = _call(&_math_eval_handler, "{\"expression\": \"1 / 0\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "div-by-zero rejected");
+    assert(str_contains(r, str_from("division by zero")), "div-by-zero message");
+    assert(str_contains(r, str_from("\"error_code\":\"internal\"")), "typed as internal");
+    return 0;
+}
+
+# Missing closing paren is an internal error.
+fn t_unbalanced() {
+    var r = _call(&_math_eval_handler, "{\"expression\": \"(2 + 3\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "unbalanced parens rejected");
+    assert(str_contains(r, str_from("missing closing parenthesis")), "paren message");
+    return 0;
+}
+
+# Missing expression is a validation error.
+fn t_missing() {
+    var r = _call(&_math_eval_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no expression -> error");
+    assert(str_contains(r, str_from("missing required field: expression")), "validation message");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(math_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_math_eval"), 1, "math_eval registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 1, "one math tool");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("evaluation");
+    t_basic();
+    t_complex();
+    t_precedence();
+    t_parens();
+    t_unary();
+    t_div();
+    t_mod();
+
+    test_group("errors");
+    t_injection();
+    t_div_zero();
+    t_unbalanced();
+    t_missing();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
