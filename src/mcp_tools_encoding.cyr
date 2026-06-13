@@ -1,0 +1,130 @@
+# mcp_tools_encoding.cyr — MCP encoding tools (ports mcp/tools/encoding_tools.rs): szal_uuid + szal_base64.
+#
+# Each tool is a `mcp_tool_new(mcp_tool_def(name, desc, props, required), &handler)` pair; handlers
+# have the bote ABI `fn(args_cstr, claims) -> result_cstr` (parse the JSON args, return a result_*
+# string's cstr). The group is collected by `encoding_tools()` (a fresh vec), aggregated into
+# all_tools() by the final tools file.
+#
+# PARITY NOTE (base64 decode): bayan's base64_decode does not surface decode errors and does not
+# UTF-8-validate, so the Rust MCP_INTERNAL "base64 decode error"/"not valid UTF-8" branches cannot be
+# reproduced — invalid input yields best-effort bytes rather than a typed error. The encode and
+# valid-decode paths are exact. Recorded in docs/development/parity-notes.md.
+#
+# Usage: include AFTER src/uuid.cyr + src/mcp.cyr (+ lib/bayan for base64/json, lib/str, lib/vec).
+
+# Maximum number of UUIDs generated in one call (encoding_tools.rs 10).
+enum EncodingTools {
+    MAX_UUID_COUNT = 100;
+}
+
+# Parse a handler's args (a NUL-terminated cstr from the bote ABI) into a json_v object. bayan's
+# parser takes a Str, so wrap the cstr first; 0 on parse error (handlers then see absent fields).
+fn _parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# szal_uuid handler: generate `count` (default 1, capped 100) UUID v4s. count==1 -> the bare string;
+# otherwise a JSON array. Mirrors UuidGen::call (encoding_tools.rs 25-44).
+fn _uuid_handler(args, claims) {
+    var o = _parse_args(args);
+    var count = 1;
+    var cv = bayan_json_v_obj_get(o, "count");
+    if (bayan_json_v_is_int(cv) == 1) {
+        var c = bayan_json_v_int(cv);
+        if (c >= 0) { count = c; }
+    }
+    if (count > MAX_UUID_COUNT) { count = MAX_UUID_COUNT; }
+
+    if (count == 1) {
+        var hi, lo = uuid_generate();
+        # CO-01: bind the cstr before str_from (cstr-returning helper as sole call arg miscompiles).
+        var one_c = uuid_to_cstr(hi, lo);
+        var one = str_from(one_c);
+        var r = result_ok(one);
+        return str_data(r);
+    }
+
+    var arr = bayan_json_v_arr_new();
+    var i = 0;
+    while (i < count) {
+        var h, l = uuid_generate();
+        var u_c = uuid_to_cstr(h, l);
+        var u = str_from(u_c);
+        bayan_json_v_arr_push(arr, bayan_json_v_str_new(u));
+        i = i + 1;
+    }
+    var rj = result_ok_json(arr);
+    return str_data(rj);
+}
+
+# szal_base64 handler: encode (default) or decode `input`. Missing input -> Validation error; an
+# unknown operation -> Validation error. Mirrors Base64Tool::call (encoding_tools.rs 63-104).
+fn _base64_handler(args, claims) {
+    var o = _parse_args(args);
+    var iv = bayan_json_v_obj_get(o, "input");
+    if (bayan_json_v_is_str(iv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: input"));
+        return str_data(e);
+    }
+    var input = bayan_json_v_str(iv);
+
+    var op = "encode";
+    var opv = bayan_json_v_obj_get(o, "operation");
+    if (bayan_json_v_is_str(opv) == 1) { op = str_cstr(bayan_json_v_str(opv)); }
+
+    if (streq(op, "encode") == 1) {
+        var enc = base64_encode(str_data(input), str_len(input));
+        var es = str_from(enc);
+        var re = result_ok(es);
+        return str_data(re);
+    }
+    if (streq(op, "decode") == 1) {
+        # base64_decode returns a {ptr, len} pair (raw bytes may contain NULs) — build a Str by length.
+        var dec = base64_decode(str_data(input), str_len(input));
+        var ds = str_new(load64(dec), load64(dec + 8));
+        var rd = result_ok(ds);
+        return str_data(rd);
+    }
+
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "invalid operation: ");
+    str_builder_add_cstr(sb, op);
+    var rv = result_error_typed(MCP_VALIDATION, str_builder_build(sb));
+    return str_data(rv);
+}
+
+# Build the szal_uuid property schema (one optional "count" integer).
+fn _uuid_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("count",
+    "{ \"type\": \"integer\", \"description\": \"Number of UUIDs to generate (default: 1, max: 100)\" }"));
+    return v;
+}
+
+# Build the szal_base64 property schema ("input" string + optional "operation" enum). The operation
+# value is assembled in two pieces to keep each source line within the 120-column limit.
+fn _base64_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("input", "{ \"type\": \"string\", \"description\": \"Input string\" }"));
+    var ob = str_builder_new();
+    str_builder_add_cstr(ob, "{ \"type\": \"string\", \"enum\": [\"encode\", \"decode\"], ");
+    str_builder_add_cstr(ob, "\"description\": \"Operation to perform (default: encode)\" }");
+    var op_c = str_cstr(str_builder_build(ob));
+    vec_push(v, schema_prop_new("operation", op_c));
+    return v;
+}
+
+# The encoding tool group: szal_uuid, szal_base64. Returns a fresh vec of Tool pairs.
+fn encoding_tools() {
+    var tools = vec_new();
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_uuid", "Generate one or more UUID v4 identifiers", _uuid_props(), vec_new()),
+    &_uuid_handler));
+    var b64_req = vec_new();
+    vec_push(b64_req, "input");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_base64", "Encode or decode a string using base64", _base64_props(), b64_req),
+    &_base64_handler));
+    return tools;
+}

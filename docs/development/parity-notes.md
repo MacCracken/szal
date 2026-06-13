@@ -212,6 +212,24 @@ verdict (which steps pass/fail) is identical for every requirement szal can repr
 
 ---
 
+## 12. base64 decode: no error/UTF-8 signalling (`mcp_tools_encoding.cyr`, szal_base64)
+
+**What:** Rust's `szal_base64` decode path returns `McpErrorCode::Internal` for (a) invalid base64
+(`STANDARD.decode` error) and (b) decoded bytes that are not valid UTF-8 (`String::from_utf8`).
+bayan's `base64_decode` does neither — it returns a best-effort `{ptr, len}` byte buffer for any
+input and never validates UTF-8.
+
+**Divergence:** the two `MCP_INTERNAL` error branches are unreachable in the port — malformed input
+yields a (possibly garbage) success result rather than a typed error. The **encode** path and the
+**valid round-trip decode** path are byte-exact (`encode("hello world") == "aGVsbG8gd29ybGQ="` and
+back), which is what the Rust `base64_encode_decode` test exercises.
+
+**Why accepted:** bayan is the stdlib base64 (no decode-error/validation API to thread through), and
+the only Rust test covers the valid round trip, which passes unchanged. Hardening this to reject
+malformed input is a roadmap follow-up if a consumer needs it. See `src/mcp_tools_encoding.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/

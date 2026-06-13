@@ -1,0 +1,134 @@
+# szal_mcp_tools_encoding.tcyr — encoding MCP tools (mcp_tools_encoding.cyr): szal_uuid + szal_base64.
+#
+# Ports the #[cfg(test)] module from rust-old/src/mcp/tools/encoding_tools.rs: single/multiple UUID
+# generation, base64 encode/decode round-trip, and the missing-input validation error. Also checks
+# the group registers (encoding_tools() -> 2 Tool pairs into a dispatcher).
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_encoding.tcyr build/test_mcp_tools_encoding
+#   ./build/test_mcp_tools_encoding
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/uuid.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_encoding.cyr"
+
+# Invoke a handler with a JSON-args cstr and return its result as a Str (the handler returns a cstr).
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+# Extract content[0].text (a Str) from a result envelope Str.
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_uuid ---
+
+# A single UUID (no count) carries one parseable uuid string (36 chars). (encoding_tools.rs 112-118)
+fn t_uuid_single() {
+    var r = _call(&_uuid_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "uuid single ok");
+    var text = _result_text(r);
+    assert_eq(str_len(text), 36, "single text is one 36-char uuid");
+    var tc = str_cstr(text);
+    var phi, plo = uuid_parse(tc);
+    assert(phi != (0 - 1), "single text parses as a uuid");
+    return 0;
+}
+
+# count=3 returns a JSON array of three uuids in the text field. (encoding_tools.rs 120-127)
+fn t_uuid_multiple() {
+    var r = _call(&_uuid_handler, "{\"count\": 3}");
+    assert(str_contains(r, str_from("\"isError\":false")), "uuid multi ok");
+    var text = _result_text(r);
+    var arr = bayan_json_v_parse(text);
+    assert_eq(bayan_json_v_is_arr(arr), 1, "multi text is a JSON array");
+    assert_eq(bayan_json_v_arr_len(arr), 3, "three uuids");
+    return 0;
+}
+
+# --- szal_base64 ---
+
+# Encode then decode round-trips "hello world". (encoding_tools.rs 129-143)
+fn t_base64_roundtrip() {
+    var enc = _call(&_base64_handler, "{\"input\": \"hello world\"}");
+    assert(str_contains(enc, str_from("\"isError\":false")), "encode ok");
+    assert(str_contains(enc, str_from("aGVsbG8gd29ybGQ=")), "encode matches known base64");
+
+    var dec = _call(&_base64_handler, "{\"input\": \"aGVsbG8gd29ybGQ=\", \"operation\": \"decode\"}");
+    assert(str_contains(dec, str_from("\"isError\":false")), "decode ok");
+    assert(str_contains(dec, str_from("hello world")), "decode recovers plaintext");
+    return 0;
+}
+
+# Missing the required "input" field is a validation error.
+fn t_base64_missing_input() {
+    var r = _call(&_base64_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "missing input -> error");
+    assert(str_contains(r, str_from("missing required field: input")), "validation message");
+    assert(str_contains(r, str_from("\"error_code\":\"validation\"")), "typed as validation");
+    return 0;
+}
+
+# An unknown operation is a validation error.
+fn t_base64_bad_op() {
+    var r = _call(&_base64_handler, "{\"input\": \"x\", \"operation\": \"frobnicate\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "bad op -> error");
+    assert(str_contains(r, str_from("invalid operation: frobnicate")), "names the bad op");
+    return 0;
+}
+
+# --- registration ---
+
+# The group registers both tools into a dispatcher.
+fn t_group_registers() {
+    var d = register_tools(encoding_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_uuid"), 1, "szal_uuid registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_base64"), 1, "szal_base64 registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 2, "two encoding tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_uuid");
+    t_uuid_single();
+    t_uuid_multiple();
+
+    test_group("szal_base64");
+    t_base64_roundtrip();
+    t_base64_missing_input();
+    t_base64_bad_op();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

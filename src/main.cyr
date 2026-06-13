@@ -71,6 +71,7 @@ include "src/sql_store.cyr"
 include "src/mcp.cyr"
 include "src/mcp_pool.cyr"
 include "src/mcp_tenant.cyr"
+include "src/mcp_tools_encoding.cyr"
 
 fn main() {
     alloc_init();

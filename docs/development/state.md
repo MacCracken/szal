@@ -108,12 +108,19 @@ MCP pool/tenant + the 54 tools remain).**
   <tool>` msg). `tenant_ctx_to/from_json` serde (rate as JSON float via `bayan_json_v_float*`;
   allowed_tools as array). Shared `tests/szal_mcp_pool_tenant.tcyr` (32) ports all pool.rs + tenant.rs
   tests (incl. burst exhaustion, time-based refill, serde round-trip). lint/fmt/doc clean.
-- ⏳ **Next: the 54 MCP tools** (`mcp_tools_*.cyr`, 15 files, ~4,300 ln — each a
-  `mcp_tool_new(mcp_tool_def(...), &handler)`; **security checks must not regress**: validate_path on
-  all file ops, 1 MiB read cap / 10k dir entries / depth 20; process: no shell, reject `..`/`/`, 30s
+- ✅ **MCP tools group 1/15 `src/mcp_tools_encoding.cyr`** (2026-06-13) — `szal_uuid` (count default
+  1, cap 100; 1→bare string, N→JSON array) + `szal_base64` (encode/decode; missing-input + bad-op
+  Validation errors). Handlers follow the reusable pattern above (`_parse_args` Str-wrap, CO-01
+  binding, `base64_decode` `{ptr,len}`). `encoding_tools()` returns the group's 2 Tool pairs.
+  `tests/szal_mcp_tools_encoding.tcyr` (19) ports all encoding_tools.rs tests + registration. One
+  accepted divergence (parity-notes §12: base64 decode has no error/UTF-8 signalling). lint/fmt/doc clean.
+- ⏳ **Next: MCP tool groups 2–15/15** (~52 tools left; suggested order: hash → system → json →
+  template → conversion → math → state → step → flow → engine → file → process → git → net). Each a
+  `mcp_tool_new(mcp_tool_def(...), &handler)` + a `<group>_tools()` accumulator; the LAST file defines
+  `all_tools()`/`szal_register_tools()`. **Security checks must not regress**: validate_path on all
+  file ops, 1 MiB read cap / 10k dir entries / depth 20; process: no shell, reject `..`/`/`, 30s
   timeout; git: `validate_git_ref` rejects leading `-`, log cap 100; net: `is_safe_url` SSRF guard —
-  metadata/localhost/RFC1918 — + the `pool()` rate-limit checks). Port + test in tool-group batches;
-  aggregate with `all_tools()`/`szal_register_tools()` in the final file (single-pass: no forward ref).
+  metadata/localhost/RFC1918 — + the `pool()` rate-limit checks. Follow the handler pattern above.
 
 - ✅ **row 8 `src/engine_result.cyr` (`FlowResult`)** — ported + wired into `main`, cross-checked
   vs `engine/result.rs`. `FlowResult {flow_name, steps vec, total_duration_ms, success,
@@ -282,6 +289,28 @@ MCP pool/tenant + the 54 tools remain).**
   rejected); per-call buffers via `alloc(N)` (arithmetic OK there). LSP/editor diagnostics
   over-approximate (false `undefined function` / `array size` errors) — only `cyrius build` counts.
 
+### MCP tool-handler porting pattern (reusable across all `mcp_tools_*.cyr`)
+
+Hard-won while porting the first tool group (`mcp_tools_encoding.cyr`) — apply to every tool file:
+- **Handler ABI:** `fn _name(args, claims)` where `args` is a **cstr**; return `str_data(result)`
+  (the `result_*` builders NUL-terminate via `str_builder_build`, so the cstr is valid).
+- **`bayan_json_v_parse` takes a `Str`, not a cstr** (it calls `str_data(src)` internally). Handler
+  args arrive as a cstr → wrap first: `fn _parse_args(a) { var s = str_from(a); return bayan_json_v_parse(s); }`.
+  Passing the raw cstr segfaults (reads `cstr+0` as the Str data-ptr field). This is distinct from
+  the inline-parse gotcha above — it's a type mismatch.
+- **CO-01 bites hard here:** `str_from(uuid_to_cstr(...))` / any `outer(inner_cstr_helper(...))` as the
+  sole arg SIGSEGVs. Always bind the inner to a local first.
+- **`base64_decode` returns a `{ptr, len}` pair**, not a cstr → `str_new(load64(p), load64(p+8))`.
+  `base64_encode` returns a plain NUL-terminated cstr (use directly).
+- **Result envelope `content` is always a JSON array**, so substring `"["` checks on a result are
+  meaningless — in tests, extract `content[0].text` (parse the result, `arr_get(content,0)`, `."text"`)
+  to inspect the real payload.
+- **Schema-prop value cstrs can exceed the 120-col lint** — assemble long ones in two
+  `str_builder_add_cstr` pieces (keeps exact description text). Property `description`/schema spacing
+  is below the parity threshold (developer-facing hint, untested) — compact JSON is fine.
+- **Invoke a handler fn-pointer with `fncall2(fp, args, 0)`** (lib/fnptr.cyr); register a group with
+  `register_tools(<group>_tools())`.
+
 ## Build/test recipe (validated)
 
 ```
@@ -310,22 +339,25 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 ## Next — ▶ START HERE (handoff)
 
-**Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 rows 22–24-core + pool/tenant + bote vendoring,
-all parity-verified 0-findings): 29 modules, 1068 assertions, 0 failures, oracle pristine. Pin 6.1.37
-(installed wrapper drifted to 6.2.2 — suite green under both; reconcile the pin).**
+**Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 rows 22–24-core + pool/tenant + encoding tools
+(1/15) + bote vendoring, all parity-verified 0-findings): 30 modules, 1087 assertions, 0 failures,
+oracle pristine. Pin 6.1.37 (installed wrapper drifted to 6.2.2 — suite green under both; reconcile).**
 All engine modules ported (six modes + core + step_exec + Engine + sub_flow + **hardware/row 17**).
 M3: streaming (`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` —
 result/errcode/**validate_path security**/registration) + **MCP pool + tenant** done; **bote-core
 2.7.5 vendored (re-synced 2026-06-13; Q9 dissolved)**. Full majra 2.4.6 + ai-hwaccel 2.3.9 (overlaid)
 in the build. Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence lib-shadow).
 
-**Pick up at: the 54 MCP tools (M3). No engine rows remain — M2 is complete; MCP pool/tenant done.**
+**Pick up at: MCP tool groups 2–15 (M3). Group 1/15 (encoding) done; ~52 tools left.** No engine rows
+remain; MCP infra + pool/tenant done. **Read the "MCP tool-handler porting pattern" gotchas above
+first** — they capture the cstr/Str parse trap, CO-01, base64 `{ptr,len}`, and result-text extraction.
 
 MCP infra is fully in place: bote-core vendored, `mcp.cyr` core (`validate_path` + `register_tools`),
-`mcp_pool.cyr` (rate limiting), `mcp_tenant.cyr` (quota/tool-access) — all tested. Remaining MCP:
-1. **`src/mcp_tools_*.cyr`** (15 files, 54 tools, ~4,300 ln) — order-free; suggested system →
-   encoding → hash → template → conversion → math → json → file → process → git → net → state → step
-   → flow → engine. Each tool: `mcp_tool_new(mcp_tool_def(name, desc, props_vec, required_vec),
+`mcp_pool.cyr` (rate limiting), `mcp_tenant.cyr` (quota/tool-access), `mcp_tools_encoding.cyr`
+(szal_uuid/szal_base64) — all tested. Remaining MCP:
+1. **`src/mcp_tools_*.cyr`** (14 files left, ~52 tools; encoding ✅ done) — order-free; suggested
+   hash → system → json → template → conversion → math → state → step → flow → engine → file →
+   process → git → net. Each tool: `mcp_tool_new(mcp_tool_def(name, desc, props_vec, required_vec),
    &handler)` with handler `fn(args_cstr, claims) → result_cstr` returning a `result_*` string. The
    LAST file defines `all_tools()` (aggregates every group's tools into one vec) + `szal_register_tools()`
    = `register_tools(all_tools())`. Tool names are `szal_*` (≥1 underscore); do NOT export bare `mcp_*`
