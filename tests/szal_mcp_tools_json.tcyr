@@ -1,0 +1,166 @@
+# szal_mcp_tools_json.tcyr — JSON MCP tools (mcp_tools_json.cyr): szal_json_path, szal_json_diff,
+# szal_json_validate.
+#
+# Ports rust-old/src/mcp/tools/json_tools.rs tests: nested path extraction + missing path, diff
+# equal/not-equal, validate ok/bad. Plus registration + a few extra structural checks.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_json.tcyr build/test_mcp_tools_json
+#   ./build/test_mcp_tools_json
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_json.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_json_path ---
+
+# Nested path data.items.1.name extracts "second". (json_tools.rs 219-234)
+fn t_path_nested() {
+    var r = _call(&_json_path_handler,
+    "{\"json\": \"{\\\"data\\\": {\\\"items\\\": [{\\\"name\\\": \\\"first\\\"}, {\\\"name\\\": \\\"second\\\"}]}}\", \"path\": \"data.items.1.name\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "path ok");
+    assert(str_contains(_result_text(r), str_from("second")), "extracts 'second'");
+    return 0;
+}
+
+# A missing key is an error. (json_tools.rs 236-242)
+fn t_path_missing() {
+    var r = _call(&_json_path_handler, "{\"json\": \"{\\\"a\\\": 1}\", \"path\": \"b\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "missing key -> error");
+    assert(str_contains(r, str_from("key 'b' not found")), "names the missing key");
+    return 0;
+}
+
+# An out-of-range index is an error.
+fn t_path_index_oob() {
+    var r = _call(&_json_path_handler, "{\"json\": \"[1, 2]\", \"path\": \"5\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "oob index -> error");
+    assert(str_contains(r, str_from("index 5 not found")), "names the bad index");
+    return 0;
+}
+
+# Missing required fields are validation errors.
+fn t_path_missing_field() {
+    var r = _call(&_json_path_handler, "{\"path\": \"a\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no json -> error");
+    assert(str_contains(r, str_from("missing required field: json")), "validation message");
+    return 0;
+}
+
+# --- szal_json_diff ---
+
+# Equal values report equal:true. (json_tools.rs 244-251)
+fn t_diff_equal() {
+    var r = _call(&_json_diff_handler, "{\"a\": \"{\\\"x\\\":1}\", \"b\": \"{\\\"x\\\":1}\"}");
+    assert(str_contains(_result_text(r), str_from("\"equal\": true")), "equal objects");
+    return 0;
+}
+
+# Differing values report equal:false. (json_tools.rs 253-260)
+fn t_diff_not_equal() {
+    var r = _call(&_json_diff_handler, "{\"a\": \"{\\\"x\\\":1}\", \"b\": \"{\\\"x\\\":2}\"}");
+    assert(str_contains(_result_text(r), str_from("\"equal\": false")), "differing objects");
+    return 0;
+}
+
+# Object key order does not affect equality (structural).
+fn t_diff_key_order() {
+    var r = _call(&_json_diff_handler,
+    "{\"a\": \"{\\\"x\\\":1,\\\"y\\\":2}\", \"b\": \"{\\\"y\\\":2,\\\"x\\\":1}\"}");
+    assert(str_contains(_result_text(r), str_from("\"equal\": true")), "key order ignored");
+    return 0;
+}
+
+# int vs float are unequal (serde Number distinction).
+fn t_diff_int_float() {
+    var r = _call(&_json_diff_handler, "{\"a\": \"1\", \"b\": \"1.0\"}");
+    assert(str_contains(_result_text(r), str_from("\"equal\": false")), "1 != 1.0");
+    return 0;
+}
+
+# --- szal_json_validate ---
+
+# Valid JSON reports valid:true + its type. (json_tools.rs 262-268)
+fn t_validate_ok() {
+    var r = _call(&_json_validate_handler, "{\"json\": \"{\\\"a\\\": [1,2,3]}\"}");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("\"valid\": true")), "valid true");
+    assert(str_contains(text, str_from("\"type\": \"object\"")), "type object");
+    return 0;
+}
+
+# Invalid JSON reports valid:false. (json_tools.rs 270-275)
+fn t_validate_bad() {
+    var r = _call(&_json_validate_handler, "{\"json\": \"{bad json}\"}");
+    assert(str_contains(_result_text(r), str_from("\"valid\": false")), "valid false");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(json_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_json_path"), 1, "json_path registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_json_diff"), 1, "json_diff registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_json_validate"), 1, "json_validate registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 3, "three json tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_json_path");
+    t_path_nested();
+    t_path_missing();
+    t_path_index_oob();
+    t_path_missing_field();
+
+    test_group("szal_json_diff");
+    t_diff_equal();
+    t_diff_not_equal();
+    t_diff_key_order();
+    t_diff_int_float();
+
+    test_group("szal_json_validate");
+    t_validate_ok();
+    t_validate_bad();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

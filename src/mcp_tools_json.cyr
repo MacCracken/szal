@@ -1,0 +1,289 @@
+# mcp_tools_json.cyr — MCP JSON tools (ports mcp/tools/json_tools.rs): szal_json_path, szal_json_diff,
+# szal_json_validate.
+#
+# Handlers follow the bote ABI + the porting pattern in docs/development/state.md.
+#
+# PARITY NOTE (validate error detail): bayan's parser reports a byte position + message, not serde's
+# line/column. The invalid-JSON result therefore carries {valid:false, error, position} rather than
+# {error, line, column}. The json_validate_bad test only asserts `"valid": false`. Recorded §15.
+#
+# Usage: include AFTER src/mcp.cyr (+ lib/bayan, lib/str, lib/vec).
+
+fn _json_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# serde Value::== — structural deep equality. Objects are order-independent; INT and FLOAT are
+# distinct (serde treats 1 and 1.0 as unequal). Mirrors `a == b` (json_tools.rs 147).
+fn _json_eq(a, b) {
+    var ta = load64(a);
+    var tb = load64(b);
+    if (ta != tb) { return 0; }
+    if (ta == JTAG_NULL) { return 1; }
+    if (ta == JTAG_BOOL) {
+        if (bayan_json_v_bool(a) == bayan_json_v_bool(b)) { return 1; }
+        return 0;
+    }
+    if (ta == JTAG_INT) {
+        if (bayan_json_v_int(a) == bayan_json_v_int(b)) { return 1; }
+        return 0;
+    }
+    if (ta == JTAG_FLOAT) {
+        if (f64_eq(bayan_json_v_float(a), bayan_json_v_float(b)) == 1) { return 1; }
+        return 0;
+    }
+    if (ta == JTAG_STR) {
+        if (str_eq(bayan_json_v_str(a), bayan_json_v_str(b)) == 1) { return 1; }
+        return 0;
+    }
+    if (ta == JTAG_ARR) {
+        var na = bayan_json_v_arr_len(a);
+        if (na != bayan_json_v_arr_len(b)) { return 0; }
+        var i = 0;
+        while (i < na) {
+            if (_json_eq(bayan_json_v_arr_get(a, i), bayan_json_v_arr_get(b, i)) == 0) { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+    if (ta == JTAG_OBJ) {
+        var pa = load64(a + 8);
+        var pb = load64(b + 8);
+        var n = vec_len(pa);
+        if (n != vec_len(pb)) { return 0; }
+        var i = 0;
+        while (i < n) {
+            var pair = vec_get(pa, i);
+            var key = load64(pair);
+            var va = load64(pair + 8);
+            var kc = str_cstr(key);
+            var vb = bayan_json_v_obj_get(b, kc);
+            if (vb == 0) { return 0; }
+            if (_json_eq(va, vb) == 0) { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+# serde Value type name (json_tools.rs 157-166). INT/FLOAT both -> "number".
+fn _json_type_name(v) {
+    var t = load64(v);
+    if (t == JTAG_NULL) { return "null"; }
+    if (t == JTAG_BOOL) { return "boolean"; }
+    if (t == JTAG_INT) { return "number"; }
+    if (t == JTAG_FLOAT) { return "number"; }
+    if (t == JTAG_STR) { return "string"; }
+    if (t == JTAG_ARR) { return "array"; }
+    if (t == JTAG_OBJ) { return "object"; }
+    return "null";
+}
+
+# Parse a path segment as a usize array index (all-digits, non-empty). -1 if not an index.
+fn _json_seg_index(seg) {
+    var n = str_len(seg);
+    if (n == 0) { return (0 - 1); }
+    var d = str_data(seg);
+    var val = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i);
+        if (c < 48 || c > 57) { return (0 - 1); }
+        val = val * 10 + (c - 48);
+        i = i + 1;
+    }
+    return val;
+}
+
+# szal_json_path: extract a value by dot-separated path. Numeric segments index arrays; others key
+# objects. Mirrors JsonPath::call (json_tools.rs 24-84).
+fn _json_path_handler(args, claims) {
+    var o = _json_parse_args(args);
+    var jv = bayan_json_v_obj_get(o, "json");
+    if (bayan_json_v_is_str(jv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: json"));
+        return str_data(e);
+    }
+    var pv = bayan_json_v_obj_get(o, "path");
+    if (bayan_json_v_is_str(pv) == 0) {
+        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: path"));
+        return str_data(e2);
+    }
+
+    var json_str = bayan_json_v_str(jv);
+    var value = bayan_json_v_parse(json_str);
+    if (value == 0) {
+        var ej = result_error_typed(MCP_VALIDATION, str_from("invalid JSON"));
+        return str_data(ej);
+    }
+
+    var path = bayan_json_v_str(pv);
+    var segs = str_split(path, 46);
+    var current = value;
+    var k = 0;
+    var nseg = vec_len(segs);
+    while (k < nseg) {
+        var seg = vec_get(segs, k);
+        k = k + 1;
+        var idx = _json_seg_index(seg);
+        if (idx >= 0) {
+            var next = 0;
+            if (bayan_json_v_is_arr(current) == 1) {
+                if (idx < bayan_json_v_arr_len(current)) { next = bayan_json_v_arr_get(current, idx); }
+            }
+            if (next == 0) {
+                var nb = str_builder_new();
+                str_builder_add_cstr(nb, "index ");
+                str_builder_add_int(nb, idx);
+                str_builder_add_cstr(nb, " not found at '");
+                str_builder_add(nb, seg);
+                str_builder_add_cstr(nb, "'");
+                var en = result_error_typed(MCP_NOT_FOUND, str_builder_build(nb));
+                return str_data(en);
+            }
+            current = next;
+        } else {
+            var sc = str_cstr(seg);
+            var nx = bayan_json_v_obj_get(current, sc);
+            if (nx == 0) {
+                var kb = str_builder_new();
+                str_builder_add_cstr(kb, "key '");
+                str_builder_add(kb, seg);
+                str_builder_add_cstr(kb, "' not found");
+                var ek = result_error_typed(MCP_NOT_FOUND, str_builder_build(kb));
+                return str_data(ek);
+            }
+            current = nx;
+        }
+    }
+
+    var r = result_ok_json(current);
+    return str_data(r);
+}
+
+# Parse the named string field as JSON, or emit a typed Validation error naming the field. Returns the
+# json_v on success; on failure writes the result cstr to *out_err (a 1-slot cell) and returns 0.
+fn _json_field_or_err(o, field, out_err) {
+    var fv = bayan_json_v_obj_get(o, field);
+    if (bayan_json_v_is_str(fv) == 0) {
+        var mb = str_builder_new();
+        str_builder_add_cstr(mb, "missing required field: ");
+        str_builder_add_cstr(mb, field);
+        var e = result_error_typed(MCP_VALIDATION, str_builder_build(mb));
+        store64(out_err, str_data(e));
+        return 0;
+    }
+    var parsed = bayan_json_v_parse(bayan_json_v_str(fv));
+    if (parsed == 0) {
+        var ib = str_builder_new();
+        str_builder_add_cstr(ib, "invalid JSON in '");
+        str_builder_add_cstr(ib, field);
+        str_builder_add_cstr(ib, "'");
+        var e2 = result_error_typed(MCP_VALIDATION, str_builder_build(ib));
+        store64(out_err, str_data(e2));
+        return 0;
+    }
+    return parsed;
+}
+
+# szal_json_diff: structural equality + both type names. Mirrors JsonDiff::call (json_tools.rs 104-154).
+fn _json_diff_handler(args, claims) {
+    var o = _json_parse_args(args);
+    var err = alloc(8);
+    store64(err, 0);
+
+    var a = _json_field_or_err(o, "a", err);
+    if (a == 0) { return load64(err); }
+    var b = _json_field_or_err(o, "b", err);
+    if (b == 0) { return load64(err); }
+
+    var equal = _json_eq(a, b);
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("equal"), bayan_json_v_bool_new(equal));
+    bayan_json_v_obj_set(out, str_from("a_type"), bayan_json_v_str_new(str_from(_json_type_name(a))));
+    bayan_json_v_obj_set(out, str_from("b_type"), bayan_json_v_str_new(str_from(_json_type_name(b))));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# szal_json_validate: report whether the input parses + its structure. Mirrors JsonValidate::call
+# (json_tools.rs 181-212). Valid -> {valid,type,size_bytes}; invalid -> {valid,error,position}.
+fn _json_validate_handler(args, claims) {
+    var o = _json_parse_args(args);
+    var jv = bayan_json_v_obj_get(o, "json");
+    if (bayan_json_v_is_str(jv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: json"));
+        return str_data(e);
+    }
+    var json_str = bayan_json_v_str(jv);
+    var value = bayan_json_v_parse(json_str);
+
+    var info = bayan_json_v_obj_new();
+    if (value != 0) {
+        bayan_json_v_obj_set(info, str_from("valid"), bayan_json_v_bool_new(1));
+        bayan_json_v_obj_set(info, str_from("type"), bayan_json_v_str_new(str_from(_json_type_name(value))));
+        bayan_json_v_obj_set(info, str_from("size_bytes"), bayan_json_v_int_new(str_len(json_str)));
+    } else {
+        bayan_json_v_obj_set(info, str_from("valid"), bayan_json_v_bool_new(0));
+        var emsg = "parse error";
+        if (_json_err_msg != 0) { emsg = _json_err_msg; }
+        bayan_json_v_obj_set(info, str_from("error"), bayan_json_v_str_new(str_from(emsg)));
+        bayan_json_v_obj_set(info, str_from("position"), bayan_json_v_int_new(_json_err_pos));
+    }
+    var r = result_ok_json(info);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _json_path_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("json", "{ \"type\": \"string\", \"description\": \"JSON string\" }"));
+    vec_push(v, schema_prop_new("path",
+    "{ \"type\": \"string\", \"description\": \"Dot-separated path (e.g. 'data.items.0.name')\" }"));
+    return v;
+}
+
+fn _json_diff_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("a", "{ \"type\": \"string\", \"description\": \"First JSON string\" }"));
+    vec_push(v, schema_prop_new("b", "{ \"type\": \"string\", \"description\": \"Second JSON string\" }"));
+    return v;
+}
+
+fn _json_validate_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("json",
+    "{ \"type\": \"string\", \"description\": \"JSON string to validate\" }"));
+    return v;
+}
+
+# req vec [json, path] etc.
+fn _req2(a, b) {
+    var v = vec_new();
+    vec_push(v, a);
+    vec_push(v, b);
+    return v;
+}
+
+# The JSON tool group: szal_json_path, szal_json_diff, szal_json_validate.
+fn json_tools() {
+    var tools = vec_new();
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_json_path",
+    "Extract a value from JSON using a dot-separated path (e.g. 'a.b.c' or 'a.0.b')",
+    _json_path_props(), _req2("json", "path")), &_json_path_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_json_diff", "Compare two JSON values and report differences",
+    _json_diff_props(), _req2("a", "b")), &_json_diff_handler));
+
+    var jv_req = vec_new();
+    vec_push(jv_req, "json");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_json_validate", "Validate a JSON string — check if it parses correctly and report structure",
+    _json_validate_props(), jv_req), &_json_validate_handler));
+    return tools;
+}

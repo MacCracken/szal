@@ -265,6 +265,22 @@ timestamps are roadmap follow-ups. See `src/mcp_tools_system.cyr`.
 
 ---
 
+## 15. json_validate error detail: byte position, not line/column (`mcp_tools_json.cyr`)
+
+**What:** Rust's `szal_json_validate` returns `{valid:false, error, line, column}` for malformed
+input (serde's `Error::line()`/`column()`). bayan's parser exposes a message + a single byte
+**position** (`_json_err_pos`), not line/column.
+
+**Divergence:** the invalid-JSON result carries `{valid:false, error, position}` (byte offset) instead
+of `{error, line, column}`. The valid-JSON result (`{valid, type, size_bytes}`) is exact.
+
+**Why accepted:** bayan is the stdlib JSON parser and its error API is position-based; deriving
+line/column would mean re-scanning the input for newlines. The `json_validate_bad` test only asserts
+`"valid": false`, which holds. (`szal_json_diff` uses a faithful structural `_json_eq` — order-
+independent objects, INT≠FLOAT like serde — so diff parity is exact.) See `src/mcp_tools_json.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/
