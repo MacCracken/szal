@@ -1,0 +1,210 @@
+# szal_engine_hardware.tcyr — HardwareContext (engine_hardware.cyr, row 17) tests.
+#
+# Ports the #[cfg(test)] module from rust-old/src/engine/hardware.rs: check_requirements (REQ_NONE
+# always passes; GPU fails when no accelerator is present), effective_concurrency (CPU-only =
+# unconstrained; capped at device count), and the Debug rendering. Plus szal-specific runner-wiring
+# tests: engine_run consults config.hardware (Ok when satisfiable, Err(ERR_HW_UNAVAILABLE) when not),
+# and is a no-op when no hardware context is configured.
+#
+# Machine-agnostic like the Rust suite: accelerator-dependent assertions branch on
+# reg_has_accelerator (the failure path is asserted only on machines WITHOUT an accelerator).
+#
+#   cyrius build --strict --no-deps tests/szal_engine_hardware.tcyr build/test_engine_hardware
+#   ./build/test_engine_hardware
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "lib/fs.cyr"
+include "lib/process.cyr"
+include "lib/ai-hwaccel.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/engine_result.cyr"
+include "src/storage.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_sequential.cyr"
+include "src/engine_hierarchical.cyr"
+include "src/engine_parallel.cyr"
+include "src/engine_dag.cyr"
+include "src/engine_queue_runner.cyr"
+include "src/engine_distributed.cyr"
+include "src/engine_hardware.cyr"
+include "src/engine_runner.cyr"
+
+# A trivial always-Ok step handler (engine-wiring tests).
+fn _h_ok(step, ctx) { return Ok(bayan_json_v_int_new(1)); }
+
+# Build a vec of up to three steps (0 = absent).
+fn _vec_of(a, b, c) {
+    var v = vec_new();
+    vec_push(v, a);
+    if (b != 0) { vec_push(v, b); }
+    if (c != 0) { vec_push(v, c); }
+    return v;
+}
+
+# An engine whose config carries a freshly-detected HardwareContext.
+fn _eng_hw() {
+    var cfg = engine_config_with_hardware(engine_config_default());
+    return engine_new(cfg, cb_new(&_h_ok, 0));
+}
+
+# --- check_requirements ---
+
+# REQ_NONE (CPU-only) steps always pass, regardless of detected hardware. (hardware.rs 118-122)
+fn t_check_none_passes() {
+    var ctx = hw_detect();
+    var steps = _vec_of(step_new(str_from("cpu-work")), 0, 0);
+    var r = hw_check_requirements(ctx, steps);
+    assert_eq(is_ok(r), 1, "REQ_NONE check passes");
+    return 0;
+}
+
+# A GPU requirement fails on a machine with no accelerator; succeeds where one exists.
+# (hardware.rs 124-137 — guarded the same way.)
+fn t_check_gpu() {
+    var ctx = hw_detect();
+    var reg = hw_registry(ctx);
+    var steps = _vec_of(step_with_hardware(step_new(str_from("train")), REQ_GPU), 0, 0);
+    var r = hw_check_requirements(ctx, steps);
+    if (reg_has_accelerator(reg) == 0) {
+        assert_eq(is_ok(r), 0, "GPU check fails without accelerator");
+        var msg = szal_get_err_msg();
+        assert(str_contains(msg, str_from("hardware unavailable")), "msg mentions hardware unavailable");
+        assert(str_contains(msg, str_from("train")), "msg names the step");
+    } else {
+        assert_eq(is_ok(r), 1, "GPU check passes with accelerator present");
+    }
+    return 0;
+}
+
+# --- effective_concurrency ---
+
+# CPU-only steps never reduce concurrency. (hardware.rs 140-145)
+fn t_eff_conc_cpu() {
+    var ctx = hw_detect();
+    var steps = _vec_of(step_new(str_from("a")), step_new(str_from("b")), step_new(str_from("c")));
+    assert_eq(hw_effective_concurrency(ctx, steps, 16), 16, "CPU steps unconstrained at 16");
+    return 0;
+}
+
+# GPU steps cap concurrency at the available device count. (hardware.rs 147-161 — guarded.)
+fn t_eff_conc_caps() {
+    var ctx = hw_detect();
+    var reg = hw_registry(ctx);
+    var gpu_count = reg_count_by_family(reg, FAMILY_GPU);
+    if (gpu_count > 0 && gpu_count < 16) {
+        var steps = _vec_of(
+            step_with_hardware(step_new(str_from("train-1")), REQ_GPU),
+            step_with_hardware(step_new(str_from("train-2")), REQ_GPU), 0);
+        var eff = hw_effective_concurrency(ctx, steps, 16);
+        assert(eff <= gpu_count, "eff concurrency capped at gpu_count");
+    } else {
+        # No GPU (or >=16): the cap is max(count,1); CPU-only machine stays at base.
+        assert_eq(hw_effective_concurrency(ctx, _vec_of(step_new(str_from("x")), 0, 0), 16), 16,
+        "no-GPU machine: unconstrained");
+    }
+    return 0;
+}
+
+# --- Debug ---
+
+# hw_debug renders the struct name + device count. (hardware.rs 163-168)
+fn t_debug() {
+    var ctx = hw_detect();
+    var d = hw_debug(ctx);
+    assert(str_contains(d, str_from("HardwareContext")), "debug names HardwareContext");
+    assert(str_contains(d, str_from("devices")), "debug shows devices field");
+    return 0;
+}
+
+# --- engine_runner wiring (szal-specific) ---
+
+# engine_run with a hardware context + CPU-only steps runs to completion (the check passes).
+fn t_runner_hw_pass() {
+    var f = flow_new(str_from("hw-pass"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_new(str_from("a")));
+    flow_add_step(f, step_new(str_from("b")));
+    var r = engine_run(_eng_hw(), f);
+    assert_eq(is_ok(r), 1, "hw engine runs CPU flow");
+    assert_eq(flow_result_completed_count(result_unwrap(r)), 2, "both steps completed");
+    return 0;
+}
+
+# engine_run with a hardware context REJECTS a flow whose GPU step can't be satisfied (no accel).
+fn t_runner_hw_fail() {
+    var reg = hw_registry(hw_detect());
+    if (reg_has_accelerator(reg) == 0) {
+        var f = flow_new(str_from("hw-fail"), FLOW_SEQUENTIAL);
+        flow_add_step(f, step_with_hardware(step_new(str_from("train")), REQ_GPU));
+        var r = engine_run(_eng_hw(), f);
+        assert_eq(is_ok(r), 0, "hw engine rejects unsatisfiable GPU flow");
+        assert(str_contains(szal_get_err_msg(), str_from("hardware unavailable")),
+        "runner surfaces hardware-unavailable detail");
+    } else {
+        assert_eq(1, 1, "skipped: machine has an accelerator");
+    }
+    return 0;
+}
+
+# With NO hardware context configured, engine_run ignores step hardware requirements (no-op guard).
+fn t_runner_no_ctx_noop() {
+    var f = flow_new(str_from("no-ctx"), FLOW_SEQUENTIAL);
+    flow_add_step(f, step_with_hardware(step_new(str_from("train")), REQ_GPU));
+    # engine_config_default() leaves hardware = 0 -> the check never runs.
+    var e = engine_new(engine_config_default(), cb_new(&_h_ok, 0));
+    var r = engine_run(e, f);
+    assert_eq(is_ok(r), 1, "no hardware ctx -> requirement check skipped");
+    return 0;
+}
+
+fn main() {
+    test_group("check_requirements");
+    t_check_none_passes();
+    t_check_gpu();
+
+    test_group("effective_concurrency");
+    t_eff_conc_cpu();
+    t_eff_conc_caps();
+
+    test_group("debug");
+    t_debug();
+
+    test_group("engine_runner wiring");
+    t_runner_hw_pass();
+    t_runner_hw_fail();
+    t_runner_no_ctx_noop();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

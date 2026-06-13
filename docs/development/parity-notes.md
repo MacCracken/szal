@@ -186,6 +186,32 @@ unchanged in shape. See `src/sql_store.cyr`.
 
 ---
 
+## 11. Hardware: flattened `AcceleratorRequirement` (no `min_chips`) + requirement-token spelling (`engine_hardware.cyr`)
+
+**What:** Rust's `HardwareContext::check_requirements` builds the unavailable error from
+`format!("{:?}", step.hardware)` — the `Debug` of the `AcceleratorRequirement` enum, which carries
+data (`Tpu { min_chips }`). szal's `StepDef.hardware` was flattened to a plain `REQ_*` i64 at port
+row 3 (port-plan §4), dropping the enum payload.
+
+**Divergences (both behavior-preserving for szal's repr):**
+1. **`min_chips` is fixed at 1** in `hw_check_requirements` (`count_satisfying(req, 1, profs)`).
+   szal has no per-step `min_chips` to thread through, so a `REQ_TPU` step means "any TPU (≥1 chip)".
+   Identical to Rust for every requirement except a hypothetical `Tpu { min_chips > 1 }`, which the
+   flattened repr cannot express in the first place.
+2. **Requirement token is `requirement_name(req)`** (e.g. `"gpu"`, `"tpu"`) rather than the Rust
+   `{:?}` Debug spelling (`"Gpu"`, `"Tpu { min_chips: 1 }"`). The full message is otherwise
+   identical: `hardware unavailable: step '<name>' requires <req> but no matching device found`. The
+   `hardware.rs` test only asserts the message contains `"hardware unavailable"` + the step name, so
+   it ports faithfully; the token casing is cosmetic and the flattened repr can't reproduce Debug.
+
+**Why accepted:** forced by the row-3 decision to store `hardware` as a single `REQ_*` i64 (which
+matches ai-hwaccel's own `requirement_satisfied(req, min_chips, …)` ABI). The check's observable
+verdict (which steps pass/fail) is identical for every requirement szal can represent. See
+`src/engine_hardware.cyr` and `docs/development/issues/2026-06-11-registry-new-collision.md` (the
+`registry_new` collision that gated this module, resolved by the bote 2.7.5 re-sync).
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/
@@ -236,3 +262,11 @@ unchanged in shape. See `src/sql_store.cyr`.
   `queue_runner.rs`): single-lens (enqueue/dequeue/complete-fail loop + drain exit). **0 findings** —
   Normal-priority enqueue, complete-vs-fail on Completed, one-result-per-step exit. The dropped
   ResourcePool arg (port-plan §3.2) and item-keyed mq_complete/mq_fail were correctly classified as accepted.
+- **2026-06-13 — M2 engine_hardware (row 17) self-parity** (`engine_hardware.cyr` vs `hardware.rs`,
+  branch-for-branch, oracle read-only): faithful — `detect`/`with_ttl`/`registry`/`check_requirements`/
+  `effective_concurrency`/Debug map 1:1 onto ai-hwaccel `cached_registry_new(300)`/`cached_get`/
+  `count_satisfying`/`reg_count_by_family`/`reg_has_accelerator`. Two accepted divergences recorded in
+  §11 above (flattened `min_chips`=1; `requirement_name` token casing). Wired into `engine_runner` at
+  all three entry points (`_engine_check_hardware` after validate, no-op when `config.hardware==0`),
+  mirroring the Rust `#[cfg(feature = "hardware")]` blocks. The gating `registry_new` collision (Q9)
+  was resolved by the bote 2.7.5 re-sync (`registry_new`→`tool_registry_new`) — see the issue file.

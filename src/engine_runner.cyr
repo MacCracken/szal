@@ -13,9 +13,9 @@
 # Result: `Ok(FlowResult*)` or the Err Result from `flow_validate` (mirrors `flow.validate()?`).
 #
 # Three deliberate fidelity notes vs runner.rs:
-#   - **Hardware check** (config.hardware): deferred — see docs/development/port-plan.md row 17
-#     (engine_hardware, gated on Q9). The field stays 0; the guarded check is a no-op until row 17
-#     wires `hw_check_requirements`.
+#   - **Hardware check** (config.hardware): wired (row 17). `_engine_check_hardware` runs
+#     `hw_check_requirements` after validate when EngineConfig.hardware != 0 (else a no-op), at all
+#     three entry points — mirrors the `#[cfg(feature = "hardware")]` blocks in runner.rs.
 #   - **Heartbeat ticker**: Rust spawns a background task that calls `heartbeat()` every 10s and a
 #     RAII guard that deregisters on drop. The port registers on start + deregisters on end but omits
 #     the 10s ticker — observably identical for any sub-10s run (the ticker never fires sooner), and
@@ -378,15 +378,27 @@ fn _engine_finalize_queue(e, flow, results, start_ms) {
 # Public run entry points
 # ===========================================================================
 
+# Hardware requirements pre-check (row 17): when EngineConfig.hardware is set, validate every step's
+# accelerator requirement against the detected registry. Returns Ok(0) (also when no hardware ctx is
+# configured) or Err(ERR_HW_UNAVAILABLE). Mirrors the `#[cfg(feature = "hardware")] if let Some(hw)`
+# blocks (runner.rs 144-147 / 374-377 / 530-533) — engine_hardware.hw_check_requirements.
+fn _engine_check_hardware(e, flow) {
+    var hwc = engine_config_hardware_ctx(engine_config(e));
+    if (hwc == 0) {
+        return Ok(0);
+    }
+    return hw_check_requirements(hwc, flow_steps(flow));
+}
+
 # Execute `flow` and return Ok(FlowResult*), or the Err Result from flow_validate. Sequence
-# (runner.rs 141-344): validate -> [hw check: row 17] -> flow_started -> save Running record ->
+# (runner.rs 141-344): validate -> hw check (row 17) -> flow_started -> save Running record ->
 # metrics -> heartbeat -> resolve timeout -> queue path OR mode dispatch -> rollback on failure ->
 # terminal event/metric -> build FlowResult -> save final record -> stop heartbeat.
 fn engine_run(e, flow) {
     var v = flow_validate(flow);
     if (is_err_result(v) == 1) { return v; }
-    # Hardware requirements check is deferred to engine_hardware (see docs/development/port-plan.md
-    # row 17); config.hardware stays 0 until then.
+    var hwv = _engine_check_hardware(e, flow);
+    if (is_err_result(hwv) == 1) { return hwv; }
     var cfg = engine_config(e);
     var rc = _engine_prepare(e, flow, 1);
     var ec = load64(rc + RC_EXEC_CTX);
@@ -415,6 +427,8 @@ fn engine_run(e, flow) {
 fn engine_run_with_cancellation(e, flow, token) {
     var v = flow_validate(flow);
     if (is_err_result(v) == 1) { return v; }
+    var hwv = _engine_check_hardware(e, flow);
+    if (is_err_result(hwv) == 1) { return hwv; }
     var cfg = engine_config(e);
     var rc = _engine_prepare(e, flow, 0);
     var ec = load64(rc + RC_EXEC_CTX);
@@ -442,6 +456,8 @@ fn engine_run_distributed(e, flow, fleet) {
         str_builder_add_cstr(sb, flow_mode_display(flow_mode(flow)));
         return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
     }
+    var hwv = _engine_check_hardware(e, flow);
+    if (is_err_result(hwv) == 1) { return hwv; }
     var cfg = engine_config(e);
     var rc = _engine_prepare(e, flow, 1);
     var ec = load64(rc + RC_EXEC_CTX);

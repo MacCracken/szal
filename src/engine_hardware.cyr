@@ -1,0 +1,153 @@
+# engine_hardware.cyr — row 17, ports engine/hardware.rs (HardwareContext).
+#
+# Hardware-aware scheduling support over the vendored/overlaid ai-hwaccel registry. Rust gates this
+# behind the `hardware` cargo feature + the `ai-hwaccel` crate; the Cyrius port always compiles it
+# in (no #ifdef — see port-plan §4) and the engine only consults it when EngineConfig.hardware != 0.
+#
+# Rust's HardwareContext wraps `Arc<CachedRegistry>` so detection results (nvidia-smi, etc.) are
+# reused across flow executions. In Cyrius the "context" IS the ai-hwaccel CachedRegistry handle
+# (cached_registry_new) — AGNOS hands the consumer the handle directly. 0 = None (no hardware ctx).
+#
+# Usage: include AFTER lib/ai-hwaccel.cyr + src/error.cyr + src/step.cyr + src/engine_core.cyr.
+# Requires: lib/ai-hwaccel.cyr (cached_registry_new/cached_get/reg_profiles/count_satisfying/
+#   reg_count_by_family/reg_has_accelerator/requirement_name + REQ_*/FAMILY_* constants),
+#   src/error.cyr (ERR_HW_UNAVAILABLE/szal_err), src/step.cyr (step_hardware/step_name),
+#   src/engine_core.cyr (engine_config_set_hardware_ctx), lib/str.cyr (str_builder), lib/result.cyr.
+#
+# PARITY NOTE: szal's StepDef flattened the Rust `AcceleratorRequirement` enum to a plain REQ_* i64
+# (port-plan row 3), dropping the `Tpu { min_chips }` payload. So a REQ_TPU step is "any TPU"
+# (min_chips=1 here). The unavailable-message requirement token is `requirement_name(req)`
+# (e.g. "gpu") rather than Rust's `{:?}` Debug ("Gpu") — cosmetic, and the flattened repr can't
+# reproduce the Rust Debug anyway. Recorded in docs/development/parity-notes.md.
+
+# Default cache TTL for hardware detection (5 minutes). Mirrors DEFAULT_CACHE_TTL_SECS.
+enum HwCacheTtl {
+    HW_DEFAULT_TTL_SECS = 300;
+}
+
+# HardwareContext::detect — a cached registry with the default 5-minute TTL. Returns the ai-hwaccel
+# CachedRegistry handle (the szal HardwareContext). Mirrors hardware.rs 27-29.
+fn hw_detect() {
+    return cached_registry_new(HW_DEFAULT_TTL_SECS);
+}
+
+# HardwareContext::with_ttl — a cached registry with a custom TTL (seconds). Mirrors hardware.rs 33-37.
+fn hw_with_ttl(ttl_secs) {
+    return cached_registry_new(ttl_secs);
+}
+
+# HardwareContext::registry — the current cached registry snapshot (re-detects on TTL miss).
+# Mirrors hardware.rs 41-43.
+fn hw_registry(ctx) {
+    return cached_get(ctx);
+}
+
+# Build the "hardware unavailable" detail message for a step whose requirement no device satisfies.
+fn _hw_unavailable_msg(step, req) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "hardware unavailable: step '");
+    str_builder_add(sb, step_name(step));
+    str_builder_add_cstr(sb, "' requires ");
+    str_builder_add_cstr(sb, requirement_name(req));
+    str_builder_add_cstr(sb, " but no matching device found");
+    return str_builder_build(sb);
+}
+
+# HardwareContext::check_requirements — validate that every step's hardware requirement can be met
+# by some available device. Returns Ok(0), or Err(ERR_HW_UNAVAILABLE) for the FIRST step whose
+# requirement cannot be satisfied (detail message in the szal last-error buffer). Mirrors
+# hardware.rs 49-64. min_chips=1 (szal flattened Tpu{min_chips}; see PARITY NOTE above).
+fn hw_check_requirements(ctx, steps) {
+    var reg = cached_get(ctx);
+    var profs = reg_profiles(reg);
+    var n = vec_len(steps);
+    var i = 0;
+    while (i < n) {
+        var s = vec_get(steps, i);
+        i = i + 1;
+        var req = step_hardware(s);
+        if (req == REQ_NONE) {
+            continue;
+        }
+        if (count_satisfying(req, 1, profs) == 0) {
+            var msg = _hw_unavailable_msg(s, req);
+            return szal_err(ERR_HW_UNAVAILABLE, msg);
+        }
+    }
+    return Ok(0);
+}
+
+# HardwareContext::effective_concurrency — cap concurrency by available device count when steps
+# require accelerators; CPU-only steps are unconstrained. Returns at least 1. Mirrors
+# hardware.rs 72-100. (Latent: the engine never calls this yet — ported for surface parity.)
+fn hw_effective_concurrency(ctx, steps, base_concurrency) {
+    var reg = cached_get(ctx);
+    var n = vec_len(steps);
+    var gpu_needed = 0;
+    var tpu_needed = 0;
+    var i = 0;
+    while (i < n) {
+        var req = step_hardware(vec_get(steps, i));
+        i = i + 1;
+        if (req == REQ_GPU) {
+            gpu_needed = 1;
+        }
+        if (req == REQ_TPU) {
+            tpu_needed = 1;
+        }
+        if (req == REQ_GPU_OR_TPU) {
+            gpu_needed = 1;
+            tpu_needed = 1;
+        }
+    }
+
+    var limit = base_concurrency;
+    if (gpu_needed == 1) {
+        var gpu_count = reg_count_by_family(reg, FAMILY_GPU);
+        if (gpu_count < 1) {
+            gpu_count = 1;
+        }
+        if (gpu_count < limit) {
+            limit = gpu_count;
+        }
+    }
+    if (tpu_needed == 1) {
+        var tpu_count = reg_count_by_family(reg, FAMILY_TPU);
+        if (tpu_count < 1) {
+            tpu_count = 1;
+        }
+        if (tpu_count < limit) {
+            limit = tpu_count;
+        }
+    }
+
+    if (limit < 1) {
+        limit = 1;
+    }
+    return limit;
+}
+
+# Debug rendering of a HardwareContext: "HardwareContext { devices: <N>, has_accelerator: <bool> }".
+# Mirrors the Rust Debug impl (hardware.rs 103-111): device count + accelerator presence.
+fn hw_debug(ctx) {
+    var reg = cached_get(ctx);
+    var devices = vec_len(reg_profiles(reg));
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "HardwareContext { devices: ");
+    str_builder_add_int(sb, devices);
+    str_builder_add_cstr(sb, ", has_accelerator: ");
+    if (reg_has_accelerator(reg) == 1) {
+        str_builder_add_cstr(sb, "true");
+    } else {
+        str_builder_add_cstr(sb, "false");
+    }
+    str_builder_add_cstr(sb, " }");
+    return str_builder_build(sb);
+}
+
+# EngineConfig::with_hardware — enable hardware-aware scheduling with automatic device detection.
+# Mirrors mod.rs 246-249 (sets config.hardware = Some(HardwareContext::detect())). Returns c.
+fn engine_config_with_hardware(c) {
+    engine_config_set_hardware_ctx(c, hw_detect());
+    return c;
+}
