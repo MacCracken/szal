@@ -1,15 +1,19 @@
 # `registry_new` symbol collision — bote-core × ai-hwaccel
 
-**Status:** ⏳ **upstream fix in progress (2026-06-11)** — the preferred resolution (the ai-hwaccel
-rename, option 1 below) is being actively pursued. szal's interim vendored-copy rename is the
-fallback if the upstream rename isn't ready when row 17 `engine_hardware` is picked up.
+**Status:** ✅ **RESOLVED (2026-06-13) — bote-side rename.** bote `2.7.5` renamed its tool-registry
+ctor `registry_new` → `tool_registry_new` upstream (not the option-1 ai-hwaccel rename, but it
+dissolves the clash all the same: bote no longer owns the `registry_new` symbol). szal re-synced the
+vendored copy to 2.7.5 (`scripts/sync-bote.sh`) and updated its sole caller
+`src/mcp.cyr register_tools_with`. ai-hwaccel may still define `registry_new`, but there is no longer
+a second definition to collide with — **row 17 `engine_hardware` is unblocked.** Original analysis
+(options 1–3) retained below for history.
 **Filed:** 2026-06-11 during the szal Rust→Cyrius port (M2 engine arc)
 **Severity:** Medium — **blocks szal `engine_hardware` (port-plan §4 row 17)**;
 the rest of M2 shipped around it. Tracked as a **P2 blocker-from-completion** in
 [`../roadmap.md`](../roadmap.md) (M2 cannot close until this resolves).
 **Affects:** any Cyrius consumer that includes BOTH `dist/bote-core.cyr` (or
 `dist/bote.cyr`) and `dist/ai-hwaccel.cyr` in one compile unit — szal is the first.
-**Repos:** bote `2.7.3` · ai-hwaccel `2.3.9` (issue also filed in both repos' `docs/development/issues/`).
+**Repos:** bote `2.7.5` (fixed; was `2.7.3`) · ai-hwaccel `2.3.9` (issue also filed in both repos' `docs/development/issues/`).
 
 ## Summary
 

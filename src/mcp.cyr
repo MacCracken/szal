@@ -24,7 +24,7 @@
 # result_*/validate_path/mcp_tool_*/register_tools*/McpErrorCode consts; helpers use _.
 #
 # Usage: include "src/mcp.cyr" (after src/vendor/bote-core.cyr + lib/bayan + lib/str + lib/result).
-# Requires: src/vendor/bote-core.cyr (registry_new/dispatcher_*/tool_def_new/schema_new),
+# Requires: src/vendor/bote-core.cyr (tool_registry_new/dispatcher_*/tool_def_new/schema_new),
 #   lib/bayan.cyr (json_v build), lib/str.cyr, lib/vec.cyr, lib/result.cyr (Ok/Err),
 #   lib/syscalls.cyr (raw getcwd), src/error.cyr is NOT needed (MCP codes are their own taxonomy).
 
@@ -230,7 +230,7 @@ fn mcp_tool_handler_of(t) { return load64(t + MT_HANDLER); }
 # None). Mirrors register_tools_with (mod.rs 47-82): build a registry, register every ToolDef, make
 # the dispatcher, attach sinks, then wire each handler. Returns the ready dispatcher.
 fn register_tools_with(tools, audit, events) {
-    var reg = registry_new();
+    var reg = tool_registry_new();
     var n = vec_len(tools);
     var i = 0;
     while (i < n) {

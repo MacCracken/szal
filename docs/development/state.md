@@ -50,12 +50,13 @@ modules ported, tested, wired into `main`; adversarial parity audit run + both f
     Some(0) from None; Rust struct has no `skip_serializing_if`, so serde emits `0`). Fix: added
     `WE_DURATION_SET` presence flag (mirrors the existing `WE_ATTEMPT_SET`); WE_SIZE 72→80; +3 assertions.
 
-**M2 — Engine core + executors. ⏳ in progress (rows 8–21 done; only the GATED row 17 remains).**
-Ported port-plan §4 rows 8–21 in topological order. **Q10 (concurrency) + Q11 (logging) are RESOLVED
-in practice** — the parallel/dag/queue/distributed rows shipped on the cooperative-cancel +
-thread-safe-`alloc` model (parity-notes §8); only **Q9 (`registry_new` collision)** still gates
-`engine_hardware` (row 17). The `Engine` (row 20) drives all six modes end-to-end, and
-`sub_flow_handler` (row 21) runs nested flows — **M2 is feature-complete except the gated row 17.**
+**M2 — Engine core + executors. ⏳ in progress (rows 8–21 done; row 17 now UNBLOCKED, not yet ported).**
+Ported port-plan §4 rows 8–21 in topological order. **Q9, Q10, Q11 all RESOLVED.** Q10 (concurrency)
++ Q11 (logging) shipped in practice on the cooperative-cancel + thread-safe-`alloc` model
+(parity-notes §8). **Q9 (`registry_new` collision) resolved 2026-06-13** by the bote 2.7.5 re-sync
+(bote renamed `registry_new`→`tool_registry_new`), so `engine_hardware` (row 17) is now portable —
+it just hasn't been written yet. The `Engine` (row 20) drives all six modes end-to-end, and
+`sub_flow_handler` (row 21) runs nested flows — **M2 is feature-complete except row 17 (now unblocked).**
 
 **M3 — Streaming, persistence, MCP. ⏳ in progress (rows 22–23 done; bote vendored + MCP core done;
 MCP pool/tenant + the 54 tools remain).**
@@ -75,11 +76,14 @@ MCP pool/tenant + the 54 tools remain).**
   writer — patra writes synchronously, so ADR-0001 ordering holds trivially). Postgres dropped (Q6).
   Divergences in parity-notes §10. `tests/szal_sql_store.tcyr` (20, incl. a real `engine_run`
   persistence check through `engine_sink`). lint/fmt/doc clean. **First functional use of stdlib patra.**
-- ✅ **bote-core vendored** `src/vendor/bote-core.cyr` (bote 2.7.3 `dist/bote-core.cyr`, 2,025 lines)
-  via `scripts/sync-bote.sh`, with a 1-symbol rename `compiled_compile`→`bote_compiled_compile` (vs
-  szal's condition compiler; full fn/var collision scan otherwise clean — bote's `registry_new` is
-  kept since ai-hwaccel isn't vendored). NOT blocked by Q9 (that collision is bote × ai-hwaccel; MCP
-  uses bote-core's `registry_new` alone). hoosh pattern (no `[deps.bote]` block → no recursive bloat).
+- ✅ **bote-core vendored** `src/vendor/bote-core.cyr` (bote **2.7.5** `dist/bote-core.cyr`, 2,025
+  lines) via `scripts/sync-bote.sh`, with a 1-symbol rename `compiled_compile`→`bote_compiled_compile`
+  (vs szal's condition compiler; full fn/var collision scan otherwise clean). hoosh pattern (no
+  `[deps.bote]` block → no recursive bloat). **Re-synced 2.7.3→2.7.5 (2026-06-13):** bote renamed its
+  tool-registry ctor `registry_new`→`tool_registry_new` upstream; szal's sole caller
+  (`mcp.cyr register_tools_with`) updated to match. This **dissolves Q9** — bote no longer owns the
+  `registry_new` symbol, so the bote×ai-hwaccel collision that gated row 17 is gone. Full suite green
+  on 2.7.5 (27 files / 1026 assertions).
 - ✅ **row 24 (core) `src/mcp.cyr`** — `result_ok/ok_json/error/error_typed` (JSON `{content,isError}`
   + `_meta.error_code/retryable`), `McpErrorCode` (6; Timeout/IoError/Internal retryable),
   **`validate_path`** (the SECURITY boundary: lexical component-walk resolving `.`/`..` + CWD
@@ -237,11 +241,12 @@ MCP pool/tenant + the 54 tools remain).**
   `fn(step, ctx) → Result<json_v, Str>`. `tests/szal_engine_subflow.tcyr` (14) ports
   sub_flow_execution (output FlowResult shape) + delegation + missing-flow_name + not-found. lint/fmt/
   doc clean; self-parity-checked vs mod.rs (oracle pristine). **All engine modules are ported.**
-- ⏳ **Next: row 17 `engine_hardware.cyr` (GATED) or begin M3.** Row 17 is the only unported §4
-  engine row — blocked on **Q9** (`registry_new` collision, bote-core × ai-hwaccel; both define a
-  24-byte vs 32-byte `registry_new`). Needs the port-plan §3.3 resolution (rename in the vendored/
-  synced ai-hwaccel copy, or upstream rename) before porting. Otherwise M3 surface modules
-  (`stream`, `sql_store`, `mcp*`) begin — see roadmap.md.
+- ⏳ **Next: row 17 `engine_hardware.cyr` (now UNBLOCKED) or continue M3.** Row 17 is the only
+  unported §4 engine row. **Q9 was resolved 2026-06-13** (bote 2.7.5 renamed `registry_new`→
+  `tool_registry_new`, dissolving the bote×ai-hwaccel clash), so it can now be ported: overlay
+  ai-hwaccel via `cyrius deps`, `HardwareContext` over `cached_registry_new(300)`,
+  `hw_check_requirements(steps)` wired into engine_runner's deferred `config.hardware != 0` check.
+  Otherwise continue M3 surface (MCP pool/tenant + the 54 tools) — see roadmap.md.
 
 ## Toolchain gotchas found during the port (for docs/cyrius-feedback.md)
 
@@ -273,8 +278,9 @@ warnings); only `cyrius build` verdicts are authoritative.
 - `[deps.ai-hwaccel]` 2.3.9 (declared; overlaid by `cyrius deps` from M2 onward).
 - **majra 2.4.6 — VENDORED** at `src/vendor/majra.cyr` (full dist, 9-symbol collision rename; needs
   `lib/thread.cyr`). Re-sync: `scripts/sync-majra.sh`. See [`majra-vendoring.md`](majra-vendoring.md).
-- **bote-core 2.7.3 — VENDORED** at `src/vendor/bote-core.cyr` (2,025 lines; 1-symbol rename
-  `compiled_compile`→`bote_compiled_compile`). Re-sync: `scripts/sync-bote.sh`.
+- **bote-core 2.7.5 — VENDORED** at `src/vendor/bote-core.cyr` (2,025 lines; 1-symbol rename
+  `compiled_compile`→`bote_compiled_compile`). Re-sync: `scripts/sync-bote.sh`. 2.7.5 renamed
+  `registry_new`→`tool_registry_new` (Q9 dissolved; see below).
 
 ## Consumers
 
@@ -283,13 +289,15 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 ## Next — ▶ START HERE (handoff)
 
 **Done so far (M1 ✅ + M2 rows 8–21 ✅ + M3 rows 22–23 + bote vendoring + MCP core ✅, all
-parity-verified 0-findings): 26 modules, 1024 assertions, 0 failures, oracle pristine. Pin 6.1.37.**
+parity-verified 0-findings): 26 modules, 1026 assertions, 0 failures, oracle pristine. Pin 6.1.37
+(installed wrapper drifted to 6.2.2 — suite green under both; reconcile the pin).**
 All engine modules ported (six modes + core + step_exec + Engine + sub_flow). M3: streaming
 (`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` — result/errcode/
-**validate_path security**/registration) done; bote-core 2.7.3 vendored. Full majra 2.4.6 vendored.
+**validate_path security**/registration) done; **bote-core 2.7.5 vendored (re-synced 2026-06-13;
+Q9 dissolved)**. Full majra 2.4.6 vendored.
 Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence the lib-shadow note).
 
-**Pick up at: MCP pool/tenant + the 54 tools (M3) — or the gated row 17 `engine_hardware` (P2).**
+**Pick up at: MCP pool/tenant + the 54 tools (M3) — or row 17 `engine_hardware` (now UNBLOCKED).**
 
 MCP infra is in place: bote-core vendored, `mcp.cyr` core (incl. `validate_path` + `register_tools`)
 tested. Remaining MCP:
@@ -309,15 +317,13 @@ tested. Remaining MCP:
    timeout; git: `validate_git_ref` rejects leading `-`, log cap 100; net: `is_safe_url` SSRF guard
    (metadata endpoints + localhost + RFC1918) + the pool rate-limit checks. Port + test per tool group.
 
-**Gated row 17 `engine_hardware.cyr`** (P2 blocker-from-completion, see
-[`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md)):
-blocked on the `registry_new` collision. **Status (2026-06-11): the upstream fix is being actively
-pursued** — the preferred resolution is the ai-hwaccel rename `registry_new`→`hw_registry_new`
-(owner working it); the vendored-copy sed-rename (hoosh pattern) remains the interim fallback if the
-upstream rename isn't ready when row 17 is picked up. When unblocked: `HardwareContext` over
-`cached_registry_new(300)`; `hw_check_requirements(steps)` (first unsatisfiable → ERR_HW_UNAVAILABLE,
-wire into engine_runner's deferred check where `config.hardware != 0`); `hw_effective_concurrency`
-(latent — port anyway). Circle back after MCP.
+**Row 17 `engine_hardware.cyr` — NOW UNBLOCKED (Q9 resolved 2026-06-13, see
+[`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md)):**
+bote 2.7.5 renamed its `registry_new`→`tool_registry_new`, so the bote×ai-hwaccel collision is gone
+(no second `registry_new` to clash with). To port: overlay ai-hwaccel via `cyrius deps`,
+`HardwareContext` over `cached_registry_new(300)`; `hw_check_requirements(steps)` (first unsatisfiable
+→ ERR_HW_UNAVAILABLE, wire into engine_runner's deferred check where `config.hardware != 0`);
+`hw_effective_concurrency` (latent — port anyway). Can be done now or after MCP.
 
 See [`roadmap.md`](roadmap.md) M3, [`port-plan.md`](port-plan.md) §4 (per-module spec),
 [`parity-notes.md`](parity-notes.md) (accepted divergences §1–10 + audit log), and

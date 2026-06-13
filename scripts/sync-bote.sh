@@ -12,9 +12,11 @@
 #                                                 compiler; bote's is a JSON-schema compiler. The
 #                                                 sed renames bote's definition AND its internal
 #                                                 callers together, so bote stays self-consistent.)
-# bote-core's registry_new is KEPT as-is: szal's only other registry_new is ai-hwaccel's, which is
-# NOT vendored (engine_hardware/row 17 is deferred). That cross-library clash is tracked in
-# docs/development/issues/2026-06-11-registry-new-collision.md.
+# NOTE (bote 2.7.5+): bote renamed its tool registry ctor registry_new -> tool_registry_new
+# upstream. szal's only caller (src/mcp.cyr register_tools_with) was updated to match. This also
+# DISSOLVES the old Q9 cross-library collision (bote registry_new x ai-hwaccel registry_new): bote
+# no longer owns the registry_new symbol, so overlaying ai-hwaccel for engine_hardware/row 17 no
+# longer clashes. See docs/development/issues/2026-06-11-registry-new-collision.md (resolved).
 #
 # After bumping bote, RE-RUN the collision scan:
 #   grep -oE '^fn [a-zA-Z_][a-zA-Z0-9_]*' ../bote/dist/bote-core.cyr | awk '{print $2}' | sort -u \
