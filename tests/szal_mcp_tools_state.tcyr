@@ -1,0 +1,159 @@
+# szal_mcp_tools_state.tcyr — state MCP tools (mcp_tools_state.cyr): szal_state_check,
+# szal_state_transition, szal_state_lifecycle.
+#
+# Ports rust-old/src/mcp/tools/state_tools.rs tests + validation + registration.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_state.tcyr build/test_mcp_tools_state
+#   ./build/test_mcp_tools_state
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/state.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_state.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_state_check ---
+
+# running is non-terminal. (state_tools.rs 165-171)
+fn t_check_running() {
+    var r = _call(&_state_check_handler, "{\"state\": \"running\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "check running ok");
+    assert(str_contains(_result_text(r), str_from("\"is_terminal\": false")), "running non-terminal");
+    return 0;
+}
+
+# completed is terminal. (state_tools.rs 173-179)
+fn t_check_completed() {
+    var r = _call(&_state_check_handler, "{\"state\": \"completed\"}");
+    assert(str_contains(_result_text(r), str_from("\"is_terminal\": true")), "completed terminal");
+    return 0;
+}
+
+# running lists its valid transitions (e.g. completed).
+fn t_check_transitions() {
+    var r = _call(&_state_check_handler, "{\"state\": \"running\"}");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("completed")), "running -> completed listed");
+    assert(str_contains(text, str_from("paused")), "running -> paused listed");
+    return 0;
+}
+
+# An unknown state is a validation error. (state_tools.rs 181-185)
+fn t_check_invalid() {
+    var r = _call(&_state_check_handler, "{\"state\": \"nope\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "invalid state -> error");
+    assert(str_contains(r, str_from("invalid state: nope")), "names the bad state");
+    return 0;
+}
+
+# Missing state is a validation error.
+fn t_check_missing() {
+    var r = _call(&_state_check_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no state -> error");
+    assert(str_contains(r, str_from("missing required field: state")), "validation message");
+    return 0;
+}
+
+# --- szal_state_transition ---
+
+# created -> running is valid. (state_tools.rs 187-194)
+fn t_trans_valid() {
+    var r = _call(&_state_transition_handler, "{\"from\": \"created\", \"to\": \"running\"}");
+    assert(str_contains(_result_text(r), str_from("\"valid\": true")), "created->running valid");
+    return 0;
+}
+
+# completed -> running is invalid. (state_tools.rs 196-203)
+fn t_trans_invalid() {
+    var r = _call(&_state_transition_handler, "{\"from\": \"completed\", \"to\": \"running\"}");
+    assert(str_contains(_result_text(r), str_from("\"valid\": false")), "completed->running invalid");
+    return 0;
+}
+
+# A bad 'from' state is a validation error.
+fn t_trans_bad_from() {
+    var r = _call(&_state_transition_handler, "{\"from\": \"bogus\", \"to\": \"running\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "bad from -> error");
+    assert(str_contains(r, str_from("missing or invalid 'from' state")), "from message");
+    return 0;
+}
+
+# --- szal_state_lifecycle ---
+
+# The lifecycle lists all 8 states. (state_tools.rs 205-212)
+fn t_lifecycle() {
+    var r = _call(&_state_lifecycle_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "lifecycle ok");
+    var arr = bayan_json_v_parse(_result_text(r));
+    assert_eq(bayan_json_v_is_arr(arr), 1, "lifecycle is an array");
+    assert_eq(bayan_json_v_arr_len(arr), 8, "eight states");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(state_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_state_check"), 1, "state_check registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_state_transition"), 1, "state_transition registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_state_lifecycle"), 1, "state_lifecycle registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 3, "three state tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_state_check");
+    t_check_running();
+    t_check_completed();
+    t_check_transitions();
+    t_check_invalid();
+    t_check_missing();
+
+    test_group("szal_state_transition");
+    t_trans_valid();
+    t_trans_invalid();
+    t_trans_bad_from();
+
+    test_group("szal_state_lifecycle");
+    t_lifecycle();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

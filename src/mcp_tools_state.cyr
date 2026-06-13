@@ -1,0 +1,148 @@
+# mcp_tools_state.cyr — MCP state tools (ports mcp/tools/state_tools.rs): szal_state_check,
+# szal_state_transition, szal_state_lifecycle.
+#
+# All three reuse szal's own state.cyr FSM (state_name / state_from_name / state_is_terminal /
+# state_valid_transition), so the state semantics are inherited exactly. Handlers follow the bote ABI
+# + the porting pattern in docs/development/state.md.
+#
+# Usage: include AFTER src/state.cyr + src/mcp.cyr (+ lib/bayan, lib/str).
+
+enum StateTools {
+    STATE_COUNT = 8;
+}
+
+fn _state_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# JSON array of the snake_case names of every state `st` may transition to.
+fn _state_transitions_arr(st) {
+    var arr = bayan_json_v_arr_new();
+    var t = 0;
+    while (t < STATE_COUNT) {
+        if (state_valid_transition(st, t) == 1) {
+            var nm = state_name(t);
+            bayan_json_v_arr_push(arr, bayan_json_v_str_new(str_from(nm)));
+        }
+        t = t + 1;
+    }
+    return arr;
+}
+
+# szal_state_check: terminal-ness + valid transitions of a state. Mirrors StateCheck::call (state_tools.rs 41-76).
+fn _state_check_handler(args, claims) {
+    var o = _state_parse_args(args);
+    var sv = bayan_json_v_obj_get(o, "state");
+    if (bayan_json_v_is_str(sv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: state"));
+        return str_data(e);
+    }
+    var ss = bayan_json_v_str(sv);
+    var st = state_from_name(str_cstr(ss));
+    if (st < 0) {
+        var ib = str_builder_new();
+        str_builder_add_cstr(ib, "invalid state: ");
+        str_builder_add(ib, ss);
+        var ie = result_error_typed(MCP_VALIDATION, str_builder_build(ib));
+        return str_data(ie);
+    }
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("state"), bayan_json_v_str_new(ss));
+    bayan_json_v_obj_set(out, str_from("is_terminal"), bayan_json_v_bool_new(state_is_terminal(st)));
+    bayan_json_v_obj_set(out, str_from("valid_transitions"), _state_transitions_arr(st));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# Read a state field as a parsed WorkflowState, or -1 if missing/invalid.
+fn _state_field(o, field) {
+    var fv = bayan_json_v_obj_get(o, field);
+    if (bayan_json_v_is_str(fv) == 0) { return (0 - 1); }
+    return state_from_name(str_cstr(bayan_json_v_str(fv)));
+}
+
+# szal_state_transition: is from->to a valid transition? Mirrors StateTransition::call (state_tools.rs 94-131).
+fn _state_transition_handler(args, claims) {
+    var o = _state_parse_args(args);
+    var from = _state_field(o, "from");
+    if (from < 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing or invalid 'from' state"));
+        return str_data(e);
+    }
+    var to = _state_field(o, "to");
+    if (to < 0) {
+        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing or invalid 'to' state"));
+        return str_data(e2);
+    }
+
+    var from_s = bayan_json_v_str(bayan_json_v_obj_get(o, "from"));
+    var to_s = bayan_json_v_str(bayan_json_v_obj_get(o, "to"));
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("from"), bayan_json_v_str_new(from_s));
+    bayan_json_v_obj_set(out, str_from("to"), bayan_json_v_str_new(to_s));
+    bayan_json_v_obj_set(out, str_from("valid"), bayan_json_v_bool_new(state_valid_transition(from, to)));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# szal_state_lifecycle: the full FSM as an array of {state, is_terminal, transitions_to}. Mirrors
+# StateLifecycle::call (state_tools.rs 146-158).
+fn _state_lifecycle_handler(args, claims) {
+    var arr = bayan_json_v_arr_new();
+    var s = 0;
+    while (s < STATE_COUNT) {
+        var obj = bayan_json_v_obj_new();
+        var nm = state_name(s);
+        bayan_json_v_obj_set(obj, str_from("state"), bayan_json_v_str_new(str_from(nm)));
+        bayan_json_v_obj_set(obj, str_from("is_terminal"), bayan_json_v_bool_new(state_is_terminal(s)));
+        bayan_json_v_obj_set(obj, str_from("transitions_to"), _state_transitions_arr(s));
+        bayan_json_v_arr_push(arr, obj);
+        s = s + 1;
+    }
+    var r = result_ok_json(arr);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _state_check_props() {
+    var v = vec_new();
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{ \"type\": \"string\", \"enum\": [\"created\",\"running\",\"paused\",");
+    str_builder_add_cstr(sb, "\"completed\",\"failed\",\"rolling_back\",\"rolled_back\",\"cancelled\"] }");
+    var state_c = str_cstr(str_builder_build(sb));
+    vec_push(v, schema_prop_new("state", state_c));
+    return v;
+}
+
+fn _state_transition_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("from", "{ \"type\": \"string\" }"));
+    vec_push(v, schema_prop_new("to", "{ \"type\": \"string\" }"));
+    return v;
+}
+
+# The state tool group: szal_state_check, szal_state_transition, szal_state_lifecycle.
+fn state_tools() {
+    var tools = vec_new();
+    var c_req = vec_new();
+    vec_push(c_req, "state");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_state_check", "Check if a workflow state is terminal and list its valid transitions",
+    _state_check_props(), c_req), &_state_check_handler));
+
+    var t_req = vec_new();
+    vec_push(t_req, "from");
+    vec_push(t_req, "to");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_state_transition", "Check if a state transition from one state to another is valid",
+    _state_transition_props(), t_req), &_state_transition_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_state_lifecycle",
+    "Show the complete workflow state machine — all states, transitions, and terminal states",
+    vec_new(), vec_new()), &_state_lifecycle_handler));
+    return tools;
+}
