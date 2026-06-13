@@ -1,0 +1,262 @@
+# mcp_tenant.cyr — ports mcp/tenant.rs (multi-tenant isolation + per-tenant quota/tool-access).
+#
+# A TenantRegistry maps tenant_id -> TenantCtx (identity + quota + optional tool allowlist). Two
+# standalone checks gate dispatch: check_tenant_quota (shared rate limiter keyed by tenant_id) and
+# check_tenant_tool_access (allowlist membership). Both are PERMISSIVE for unknown tenants — an
+# unregistered id is allowed (tenant.rs 95-107 / 117-135).
+#
+# Rust uses RwLock<HashMap> + LazyLock globals; the port uses a mutex-guarded `map_new_str` registry
+# and the prescribed lazy-global idiom (0 = uninitialised). Like the rest of the szal core the
+# RwLock collapses to a single mutex (parity-notes §7) — observably identical under MCP dispatch.
+#
+# The per-tenant quota rate is an f64 (stored as bit pattern). It is round-tripped in serde but, as
+# in Rust, NOT used by check_tenant_quota — the actual limiter is the shared TENANT_LIMITER
+# (100/s burst 500) keyed per tenant_id; quota.max_requests_per_sec is descriptive metadata.
+#
+# Usage: include AFTER src/vendor/majra.cyr + lib/bayan.cyr + lib/hashmap.cyr + lib/str.cyr +
+#   lib/result.cyr + lib/vec.cyr. Requires those + lib/alloc.cyr.
+
+# --- TenantQuota: { rate_f64@0 (f64 bits), max_concurrent_flows@8 } ---
+enum TenantQuotaL {
+    TQ_RATE = 0;
+    TQ_MAX_FLOWS = 8;
+    TQ_SIZE = 16;
+}
+
+# TenantQuota { max_requests_per_sec, max_concurrent_flows }. rate is an f64 bit pattern (f64_from).
+fn tenant_quota_new(rate_f64, max_flows) {
+    var q = alloc(TQ_SIZE);
+    store64(q + TQ_RATE, rate_f64);
+    store64(q + TQ_MAX_FLOWS, max_flows);
+    return q;
+}
+# Max requests/sec (f64 bit pattern).
+fn tenant_quota_rate(q) { return load64(q + TQ_RATE); }
+# Max concurrent flows (i64).
+fn tenant_quota_max_flows(q) { return load64(q + TQ_MAX_FLOWS); }
+
+# --- TenantCtx: { id Str@0, display_name@8 (Str|0=None), quota@16, allowed_tools@24 (set map|0=None) } ---
+enum TenantCtxL {
+    TC_ID = 0;
+    TC_DISPLAY = 8;
+    TC_QUOTA = 16;
+    TC_ALLOWED = 24;
+    TC_SIZE = 32;
+}
+
+# TenantCtx. display_name 0 = None; allowed_tools 0 = None (no restriction → all tools allowed),
+# else a `map_new_str` used as a set (tool-name Str -> 1).
+fn tenant_ctx_new(id, display_name, quota, allowed_tools) {
+    var c = alloc(TC_SIZE);
+    store64(c + TC_ID, id);
+    store64(c + TC_DISPLAY, display_name);
+    store64(c + TC_QUOTA, quota);
+    store64(c + TC_ALLOWED, allowed_tools);
+    return c;
+}
+# Tenant id (Str).
+fn tenant_ctx_id(c) { return load64(c + TC_ID); }
+# Display name (Str, or 0 = None).
+fn tenant_ctx_display_name(c) { return load64(c + TC_DISPLAY); }
+# Quota struct pointer.
+fn tenant_ctx_quota(c) { return load64(c + TC_QUOTA); }
+# Allowed-tools set (map_new_str, or 0 = None = no restriction).
+fn tenant_ctx_allowed_tools(c) { return load64(c + TC_ALLOWED); }
+
+# Build an allowed-tools set (map_new_str, value 1) from a vec of tool-name Strs. Returns the set.
+fn tenant_allowed_set(tool_names) {
+    var s = map_new_str();
+    var n = vec_len(tool_names);
+    var i = 0;
+    while (i < n) {
+        map_set(s, vec_get(tool_names, i), 1);
+        i = i + 1;
+    }
+    return s;
+}
+
+# --- serde (TenantCtx) ---
+# Shape (serde derive, no rename/skip): {"tenant_id":str, "display_name":str|null,
+# "quota":{"max_requests_per_sec":float,"max_concurrent_flows":int}, "allowed_tools":[str]|null}.
+fn tenant_ctx_to_json(c) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("tenant_id"), bayan_json_v_str_new(tenant_ctx_id(c)));
+
+    var dn = tenant_ctx_display_name(c);
+    if (dn != 0) {
+        bayan_json_v_obj_set(o, str_from("display_name"), bayan_json_v_str_new(dn));
+    } else {
+        bayan_json_v_obj_set(o, str_from("display_name"), bayan_json_v_null());
+    }
+
+    var q = tenant_ctx_quota(c);
+    var qo = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(qo, str_from("max_requests_per_sec"),
+    bayan_json_v_float_new(tenant_quota_rate(q)));
+    bayan_json_v_obj_set(qo, str_from("max_concurrent_flows"),
+    bayan_json_v_int_new(tenant_quota_max_flows(q)));
+    bayan_json_v_obj_set(o, str_from("quota"), qo);
+
+    var allowed = tenant_ctx_allowed_tools(c);
+    if (allowed != 0) {
+        var arr = bayan_json_v_arr_new();
+        var keys = map_keys(allowed);
+        var n = vec_len(keys);
+        var i = 0;
+        while (i < n) {
+            bayan_json_v_arr_push(arr, bayan_json_v_str_new(vec_get(keys, i)));
+            i = i + 1;
+        }
+        bayan_json_v_obj_set(o, str_from("allowed_tools"), arr);
+    } else {
+        bayan_json_v_obj_set(o, str_from("allowed_tools"), bayan_json_v_null());
+    }
+
+    return bayan_json_v_build(o);
+}
+
+# Rebuild a TenantCtx from a parsed json_v object. serde-default lenient: missing/null Option fields
+# -> None; missing quota fields -> 0.
+fn _tenant_ctx_from_v(o) {
+    var id = 0;
+    var id_v = bayan_json_v_obj_get(o, "tenant_id");
+    if (bayan_json_v_is_str(id_v) == 1) { id = bayan_json_v_str(id_v); }
+
+    var dn = 0;
+    var dn_v = bayan_json_v_obj_get(o, "display_name");
+    if (bayan_json_v_is_str(dn_v) == 1) { dn = bayan_json_v_str(dn_v); }
+
+    var rate = f64_from(0);
+    var max_flows = 0;
+    var q_v = bayan_json_v_obj_get(o, "quota");
+    if (q_v != 0) {
+        var r_v = bayan_json_v_obj_get(q_v, "max_requests_per_sec");
+        if (bayan_json_v_is_float(r_v) == 1 || bayan_json_v_is_int(r_v) == 1) {
+            rate = bayan_json_v_float(r_v);
+        }
+        var mf_v = bayan_json_v_obj_get(q_v, "max_concurrent_flows");
+        if (bayan_json_v_is_int(mf_v) == 1) { max_flows = bayan_json_v_int(mf_v); }
+    }
+
+    var allowed = 0;
+    var at_v = bayan_json_v_obj_get(o, "allowed_tools");
+    if (bayan_json_v_is_arr(at_v) == 1) {
+        allowed = map_new_str();
+        var n = bayan_json_v_arr_len(at_v);
+        var i = 0;
+        while (i < n) {
+            var e = bayan_json_v_arr_get(at_v, i);
+            if (bayan_json_v_is_str(e) == 1) { map_set(allowed, bayan_json_v_str(e), 1); }
+            i = i + 1;
+        }
+    }
+
+    return tenant_ctx_new(id, dn, tenant_quota_new(rate, max_flows), allowed);
+}
+
+# Deserialize a TenantCtx from a JSON object Str. Inverse of tenant_ctx_to_json; 0 on parse error.
+fn tenant_ctx_from_json(json) {
+    var o = bayan_json_v_parse(json);
+    if (o == 0) { return 0; }
+    return _tenant_ctx_from_v(o);
+}
+
+# --- TenantRegistry: { map@0 (map_new_str), mutex@8 } ---
+enum TenantRegL {
+    TR_MAP = 0;
+    TR_MUTEX = 8;
+    TR_SIZE = 16;
+}
+
+# Create an empty tenant registry (mutex-guarded Str-keyed map).
+fn tenant_registry_new() {
+    var r = alloc(TR_SIZE);
+    store64(r + TR_MAP, map_new_str());
+    store64(r + TR_MUTEX, mutex_new());
+    return r;
+}
+
+# Register (overwrites any existing entry for the same id). Keyed by the ctx's own tenant_id Str.
+fn tenant_register(reg, ctx) {
+    var mtx = load64(reg + TR_MUTEX);
+    mutex_lock(mtx);
+    map_set(load64(reg + TR_MAP), tenant_ctx_id(ctx), ctx);
+    mutex_unlock(mtx);
+    return 0;
+}
+
+# Look up a tenant by id (Str). Returns the TenantCtx ptr or 0 (not found).
+fn tenant_get(reg, id) {
+    var mtx = load64(reg + TR_MUTEX);
+    mutex_lock(mtx);
+    var ctx = map_get(load64(reg + TR_MAP), id);
+    mutex_unlock(mtx);
+    return ctx;
+}
+
+# Remove a tenant from the registry.
+fn tenant_deregister(reg, id) {
+    var mtx = load64(reg + TR_MUTEX);
+    mutex_lock(mtx);
+    map_delete(load64(reg + TR_MAP), id);
+    mutex_unlock(mtx);
+    return 0;
+}
+
+# --- global registry + shared per-tenant limiter (LazyLock idiom) ---
+var _tenant_registry = 0;
+# Accessor for the lazily-initialised global TenantRegistry (Rust's TENANT_REGISTRY).
+fn tenant_registry() {
+    if (_tenant_registry == 0) {
+        _tenant_registry = tenant_registry_new();
+    }
+    return _tenant_registry;
+}
+
+# Shared per-tenant rate limiter: RateLimiter::new(100.0, 500) -> ratelimit_new(100000, 500).
+var _tenant_limiter = 0;
+# Accessor for the lazily-initialised shared per-tenant rate limiter (Rust's TENANT_LIMITER).
+fn tenant_limiter() {
+    if (_tenant_limiter == 0) {
+        _tenant_limiter = ratelimit_new(100000, 500);
+    }
+    return _tenant_limiter;
+}
+
+# check_tenant_quota(tenant_id Str) -> Result. Unknown tenant -> Ok(0) (permissive). Registered:
+# Ok(0) if the shared limiter allows, else Err("rate limit exceeded for tenant <id>"). (tenant.rs 95)
+fn check_tenant_quota(tenant_id) {
+    if (tenant_get(tenant_registry(), tenant_id) == 0) {
+        return Ok(0);
+    }
+    if (ratelimit_check(tenant_limiter(), str_cstr(tenant_id)) == 1) {
+        return Ok(0);
+    }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "rate limit exceeded for tenant ");
+    str_builder_add(sb, tenant_id);
+    return Err(str_builder_build(sb));
+}
+
+# check_tenant_tool_access(tenant_id Str, tool_name Str) -> Result. Unknown tenant or no allowlist
+# -> Ok(0). Otherwise the tool must be in the allowlist, else
+# Err("tenant <id> is not permitted to use tool <tool>"). (tenant.rs 117)
+fn check_tenant_tool_access(tenant_id, tool_name) {
+    var ctx = tenant_get(tenant_registry(), tenant_id);
+    if (ctx == 0) {
+        return Ok(0);
+    }
+    var allowed = tenant_ctx_allowed_tools(ctx);
+    if (allowed == 0) {
+        return Ok(0);
+    }
+    if (map_has(allowed, tool_name) == 1) {
+        return Ok(0);
+    }
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "tenant ");
+    str_builder_add(sb, tenant_id);
+    str_builder_add_cstr(sb, " is not permitted to use tool ");
+    str_builder_add(sb, tool_name);
+    return Err(str_builder_build(sb));
+}

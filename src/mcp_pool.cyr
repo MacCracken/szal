@@ -1,0 +1,60 @@
+# mcp_pool.cyr — ports mcp/pool.rs (NetworkPool: per-category rate limiting / backpressure).
+#
+# Three independent token-bucket rate limiters (HTTP / DNS / port scan) guard the network tools
+# against abuse. Rust uses `majra::ratelimit::RateLimiter` at f64 rates; the vendored majra ABI is
+# fixed-point (rate × 1000), so RateLimiter::new(10.0, 50) -> ratelimit_new(10000, 50). Defaults
+# (pool.rs 29-35): HTTP 10/s burst 50, DNS 100/s burst 200, Port 50/s burst 100.
+#
+# Keys are cstr (NUL-terminated): majra's ratelimit_check buckets per-key via a cstr-content-keyed
+# `map_new`, so the same host shares a bucket across calls and distinct hosts are independent
+# (pool.rs separate_hosts_have_independent_limits). check_* return 1 (allowed) / 0 (rejected).
+#
+# Usage: include AFTER src/vendor/majra.cyr (ratelimit_new/ratelimit_check) + lib/alloc.cyr.
+# Requires: src/vendor/majra.cyr, lib/alloc.cyr.
+
+# NetworkPool layout: { http_rl@0, dns_rl@8, port_rl@16 }.
+enum NetPoolL {
+    NP_HTTP = 0;
+    NP_DNS = 8;
+    NP_PORT = 16;
+    NP_SIZE = 24;
+}
+
+# NetworkPool::new — three rate limiters with the pool.rs default rate/burst settings.
+fn network_pool_new() {
+    var p = alloc(NP_SIZE);
+    store64(p + NP_HTTP, ratelimit_new(10000, 50));
+    store64(p + NP_DNS, ratelimit_new(100000, 200));
+    store64(p + NP_PORT, ratelimit_new(50000, 100));
+    return p;
+}
+
+# NetworkPool::check_http — is an HTTP request to `host` (cstr) allowed under the rate limit?
+fn pool_check_http(p, host) {
+    return ratelimit_check(load64(p + NP_HTTP), host);
+}
+
+# NetworkPool::check_dns — is a DNS lookup for `domain` (cstr) allowed under the rate limit?
+fn pool_check_dns(p, domain) {
+    return ratelimit_check(load64(p + NP_DNS), domain);
+}
+
+# NetworkPool::check_port — is a port scan for `key` (cstr) allowed under the rate limit?
+fn pool_check_port(p, key) {
+    return ratelimit_check(load64(p + NP_PORT), key);
+}
+
+# Global network pool (Rust's `static NETWORK_POOL: LazyLock<NetworkPool>`). The lazy-init guard is
+# the prescribed Cyrius idiom (state.md): 0 = uninitialised. ratelimit_check is internally
+# mutex-guarded; the first-call init race is benign for a process-global pool (worst case: a
+# duplicate NetworkPool is allocated and one is dropped — never observed under the single-threaded
+# MCP dispatch entry, and tolerable since buckets only relax limits).
+var _network_pool = 0;
+
+# Accessor for the lazily-initialised global NetworkPool (Rust's NETWORK_POOL).
+fn pool() {
+    if (_network_pool == 0) {
+        _network_pool = network_pool_new();
+    }
+    return _network_pool;
+}

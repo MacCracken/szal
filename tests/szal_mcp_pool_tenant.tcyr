@@ -1,0 +1,278 @@
+# szal_mcp_pool_tenant.tcyr — NetworkPool (mcp_pool.cyr) + tenant isolation (mcp_tenant.cyr) tests.
+#
+# Ports the #[cfg(test)] modules from rust-old/src/mcp/pool.rs and tenant.rs: per-category rate-limit
+# burst exhaustion / rejection / refill / per-host independence + the global pool; tenant CRUD,
+# permissive-unknown quota/tool checks, allowlist enforcement, and TenantCtx serde round-trip.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_pool_tenant.tcyr build/test_mcp_pool_tenant
+#   ./build/test_mcp_pool_tenant
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "src/vendor/majra.cyr"
+include "src/mcp_pool.cyr"
+include "src/mcp_tenant.cyr"
+
+# --- NetworkPool ---
+
+# HTTP burst is 50 — exactly 50 of 60 calls for one host are allowed. (pool.rs 70-80)
+fn t_http_burst() {
+    var p = network_pool_new();
+    var allowed = 0;
+    var i = 0;
+    while (i < 60) {
+        if (pool_check_http(p, "example.com") == 1) { allowed = allowed + 1; }
+        i = i + 1;
+    }
+    assert_eq(allowed, 50, "HTTP burst allows exactly 50");
+    return 0;
+}
+
+# After draining the burst, the next request is rejected. (pool.rs 82-94)
+fn t_http_rejects() {
+    var p = network_pool_new();
+    var i = 0;
+    while (i < 50) { pool_check_http(p, "test.com"); i = i + 1; }
+    assert_eq(pool_check_http(p, "test.com"), 0, "HTTP rejects after burst");
+    return 0;
+}
+
+# DNS burst is 200. (pool.rs 96-106)
+fn t_dns_burst() {
+    var p = network_pool_new();
+    var allowed = 0;
+    var i = 0;
+    while (i < 210) {
+        if (pool_check_dns(p, "example.com") == 1) { allowed = allowed + 1; }
+        i = i + 1;
+    }
+    assert_eq(allowed, 200, "DNS burst allows exactly 200");
+    return 0;
+}
+
+# Port burst is 100. (pool.rs 108-118)
+fn t_port_burst() {
+    var p = network_pool_new();
+    var allowed = 0;
+    var i = 0;
+    while (i < 110) {
+        if (pool_check_port(p, "host:8080") == 1) { allowed = allowed + 1; }
+        i = i + 1;
+    }
+    assert_eq(allowed, 100, "port burst allows exactly 100");
+    return 0;
+}
+
+# Distinct hosts have independent buckets. (pool.rs 120-130)
+fn t_separate_hosts() {
+    var p = network_pool_new();
+    var i = 0;
+    while (i < 50) { pool_check_http(p, "host-a.com"); i = i + 1; }
+    assert_eq(pool_check_http(p, "host-a.com"), 0, "host-a exhausted");
+    assert_eq(pool_check_http(p, "host-b.com"), 1, "host-b independent");
+    return 0;
+}
+
+# The lazy global pool initializes and works. (pool.rs 132-136)
+fn t_global_pool() {
+    assert_eq(pool_check_dns(pool(), "global-test.com"), 1, "global pool usable");
+    return 0;
+}
+
+# Tokens refill over time: 10 req/s = 1 per 100ms, so 150ms restores at least one. (pool.rs 138-153)
+fn t_refill() {
+    var p = network_pool_new();
+    var i = 0;
+    while (i < 50) { pool_check_http(p, "refill.com"); i = i + 1; }
+    assert_eq(pool_check_http(p, "refill.com"), 0, "exhausted before refill");
+    sleep_ms(150);
+    assert_eq(pool_check_http(p, "refill.com"), 1, "allowed after refill");
+    return 0;
+}
+
+# --- tenant ---
+
+# Build a TenantCtx: id, rate (whole number), optional allowlist (a vec of tool-name Strs or 0).
+fn _ctx(id, rate, tools) {
+    var dn = str_builder_new();
+    str_builder_add_cstr(dn, "Test Tenant ");
+    str_builder_add(dn, str_from(id));
+    var allowed = 0;
+    if (tools != 0) { allowed = tenant_allowed_set(tools); }
+    return tenant_ctx_new(str_from(id), str_builder_build(dn),
+    tenant_quota_new(f64_from(rate), 5), allowed);
+}
+
+fn _tools1(a) { var v = vec_new(); vec_push(v, str_from(a)); return v; }
+fn _tools2(a, b) { var v = vec_new(); vec_push(v, str_from(a)); vec_push(v, str_from(b)); return v; }
+
+# register + get returns the stored context. (tenant.rs 153-162)
+fn t_register_get() {
+    var reg = tenant_registry_new();
+    tenant_register(reg, _ctx("t1", 10, 0));
+    var got = tenant_get(reg, str_from("t1"));
+    assert(got != 0, "t1 found");
+    assert(str_eq_cstr(tenant_ctx_id(got), "t1"), "id is t1");
+    assert(str_eq_cstr(tenant_ctx_display_name(got), "Test Tenant t1"), "display name");
+    return 0;
+}
+
+# get of an absent id returns 0. (tenant.rs 164-168)
+fn t_get_missing() {
+    var reg = tenant_registry_new();
+    assert_eq(tenant_get(reg, str_from("nonexistent")), 0, "missing -> 0");
+    return 0;
+}
+
+# deregister removes the entry. (tenant.rs 170-178)
+fn t_deregister() {
+    var reg = tenant_registry_new();
+    tenant_register(reg, _ctx("t2", 10, 0));
+    assert(tenant_get(reg, str_from("t2")) != 0, "t2 present");
+    tenant_deregister(reg, str_from("t2"));
+    assert_eq(tenant_get(reg, str_from("t2")), 0, "t2 removed");
+    return 0;
+}
+
+# register overwrites an existing id. (tenant.rs 180-199)
+fn t_overwrite() {
+    var reg = tenant_registry_new();
+    tenant_register(reg, _ctx("t3", 10, 0));
+    tenant_register(reg, tenant_ctx_new(str_from("t3"), str_from("Updated"),
+    tenant_quota_new(f64_from(20), 10), 0));
+    var got = tenant_get(reg, str_from("t3"));
+    assert(str_eq_cstr(tenant_ctx_display_name(got), "Updated"), "overwritten display");
+    assert_eq(tenant_quota_max_flows(tenant_ctx_quota(got)), 10, "overwritten max_flows");
+    return 0;
+}
+
+# quota check is permissive for an unknown tenant. (tenant.rs 201-204)
+fn t_quota_unknown() {
+    assert_eq(is_ok(check_tenant_quota(str_from("unknown-tenant"))), 1, "unknown quota -> Ok");
+    return 0;
+}
+
+# a freshly-registered tenant is allowed initially. (tenant.rs 206-210)
+fn t_quota_initial() {
+    tenant_register(tenant_registry(), _ctx("quota-ok", 10, 0));
+    assert_eq(is_ok(check_tenant_quota(str_from("quota-ok"))), 1, "registered quota -> Ok");
+    return 0;
+}
+
+# the shared limiter eventually rejects after its burst (500) is drained. (tenant.rs 212-225)
+fn t_quota_rejects() {
+    tenant_register(tenant_registry(), _ctx("quota-burst", 1, 0));
+    var rejected = 0;
+    var i = 0;
+    while (i < 600) {
+        if (is_ok(check_tenant_quota(str_from("quota-burst"))) == 0) { rejected = 1; i = 600; }
+        i = i + 1;
+    }
+    assert_eq(rejected, 1, "quota rejected after burst");
+    return 0;
+}
+
+# tool access is permissive for an unknown tenant. (tenant.rs 227-229)
+fn t_tool_unknown() {
+    assert_eq(is_ok(check_tenant_tool_access(str_from("unknown"), str_from("any_tool"))), 1,
+    "unknown tool access -> Ok");
+    return 0;
+}
+
+# a tenant with no allowlist may use any tool. (tenant.rs 232-237)
+fn t_tool_no_restriction() {
+    tenant_register(tenant_registry(), _ctx("tool-all", 10, 0));
+    assert_eq(is_ok(check_tenant_tool_access(str_from("tool-all"), str_from("szal_http"))), 1,
+    "no allowlist -> any tool");
+    assert_eq(is_ok(check_tenant_tool_access(str_from("tool-all"), str_from("szal_dns_lookup"))), 1,
+    "no allowlist -> any tool 2");
+    return 0;
+}
+
+# an allowlisted tool is permitted. (tenant.rs 239-248)
+fn t_tool_listed() {
+    tenant_register(tenant_registry(), _ctx("tool-restricted", 10, _tools2("szal_http", "szal_dns_lookup")));
+    assert_eq(is_ok(check_tenant_tool_access(str_from("tool-restricted"), str_from("szal_http"))), 1,
+    "listed tool allowed");
+    assert_eq(is_ok(check_tenant_tool_access(str_from("tool-restricted"), str_from("szal_dns_lookup"))), 1,
+    "listed tool allowed 2");
+    return 0;
+}
+
+# an unlisted tool is rejected with a descriptive message. (tenant.rs 250-260)
+fn t_tool_unlisted() {
+    tenant_register(tenant_registry(), _ctx("tool-denied", 10, _tools1("szal_http")));
+    var r = check_tenant_tool_access(str_from("tool-denied"), str_from("szal_port_check"));
+    assert_eq(is_ok(r), 0, "unlisted tool rejected");
+    var msg = err_code_of(r);
+    assert(str_contains(msg, str_from("not permitted")), "msg says not permitted");
+    assert(str_contains(msg, str_from("tool-denied")), "msg names tenant");
+    assert(str_contains(msg, str_from("szal_port_check")), "msg names tool");
+    return 0;
+}
+
+# TenantCtx round-trips through serde. (tenant.rs 268-276)
+fn t_serde() {
+    var ctx = _ctx("ser-test", 50, _tools1("szal_http"));
+    var json = tenant_ctx_to_json(ctx);
+    var back = tenant_ctx_from_json(json);
+    assert(str_eq_cstr(tenant_ctx_id(back), "ser-test"), "tenant_id round-trips");
+    assert_eq(f64_eq(tenant_quota_rate(tenant_ctx_quota(back)), f64_from(50)), 1,
+    "rate round-trips as 50.0");
+    assert(map_has(tenant_ctx_allowed_tools(back), str_from("szal_http")) == 1,
+    "allowlist round-trips");
+    return 0;
+}
+
+fn main() {
+    test_group("NetworkPool");
+    t_http_burst();
+    t_http_rejects();
+    t_dns_burst();
+    t_port_burst();
+    t_separate_hosts();
+    t_global_pool();
+    t_refill();
+
+    test_group("tenant registry");
+    t_register_get();
+    t_get_missing();
+    t_deregister();
+    t_overwrite();
+
+    test_group("tenant quota");
+    t_quota_unknown();
+    t_quota_initial();
+    t_quota_rejects();
+
+    test_group("tenant tool access");
+    t_tool_unknown();
+    t_tool_no_restriction();
+    t_tool_listed();
+    t_tool_unlisted();
+
+    test_group("tenant serde");
+    t_serde();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

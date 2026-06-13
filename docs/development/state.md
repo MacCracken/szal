@@ -96,14 +96,24 @@ MCP pool/tenant + the 54 tools remain).**
   validate_path traversal rejection `/etc/passwd` + `../../`, dispatcher registration). lint/fmt/doc
   clean. The 54-tool `all_tools()`/`szal_register_tools()` aggregator is deferred to the last tool
   file (single-pass: no forward ref).
-- ⏳ **Next: MCP pool/tenant + the 54 tools.** `mcp_pool.cyr` (3 majra `ratelimit_new` buckets: HTTP
-  10/s b50, DNS 100/s b200, Port 50/s b100, fixed-point ×1000; lazy global `pool()`) + `mcp_tenant.cyr`
-  (TenantQuota/TenantCtx/TenantRegistry mutex map; unknown tenant → permissive Ok). Then
-  `mcp_tools_*.cyr` (15 files, 54 tools — each a `mcp_tool_new(mcp_tool_def(...), &handler)`;
-  **security checks must not regress**: validate_path on all file ops, 1 MiB read cap / 10k dir
-  entries / depth 20; process: no shell, reject `..`/`/`, 30s timeout; git: `validate_git_ref` rejects
-  leading `-`, log cap 100; net: `is_safe_url` SSRF guard — metadata/localhost/RFC1918 — + rate
-  limits). Port + test in tool-group batches; aggregate with `all_tools()` in the final file.
+- ✅ **row 24 (pool) `src/mcp_pool.cyr`** (2026-06-13) — `NetworkPool` = 3 majra `ratelimit_new`
+  buckets (HTTP 10/s b50, DNS 100/s b200, Port 50/s b100; fixed-point ×1000, cstr-content-keyed so
+  hosts get independent buckets). `network_pool_new`/`pool_check_http`/`_dns`/`_port` + lazy global
+  `pool()` (Rust `NETWORK_POOL` LazyLock). **First functional use of vendored majra `ratelimit_*`.**
+- ✅ **row 24 (tenant) `src/mcp_tenant.cyr`** (2026-06-13) — `TenantQuota` (rate f64 + max_flows),
+  `TenantCtx` (id/display_name?/quota/allowed_tools set?), `TenantRegistry` (mutex-guarded
+  `map_new_str`; RwLock→mutex per parity-notes §7). `tenant_register`/`get`/`deregister`,
+  `check_tenant_quota` (unknown→permissive Ok; shared `tenant_limiter()` 100/s b500 keyed by id) +
+  `check_tenant_tool_access` (allowlist membership; exact `tenant <id> is not permitted to use tool
+  <tool>` msg). `tenant_ctx_to/from_json` serde (rate as JSON float via `bayan_json_v_float*`;
+  allowed_tools as array). Shared `tests/szal_mcp_pool_tenant.tcyr` (32) ports all pool.rs + tenant.rs
+  tests (incl. burst exhaustion, time-based refill, serde round-trip). lint/fmt/doc clean.
+- ⏳ **Next: the 54 MCP tools** (`mcp_tools_*.cyr`, 15 files, ~4,300 ln — each a
+  `mcp_tool_new(mcp_tool_def(...), &handler)`; **security checks must not regress**: validate_path on
+  all file ops, 1 MiB read cap / 10k dir entries / depth 20; process: no shell, reject `..`/`/`, 30s
+  timeout; git: `validate_git_ref` rejects leading `-`, log cap 100; net: `is_safe_url` SSRF guard —
+  metadata/localhost/RFC1918 — + the `pool()` rate-limit checks). Port + test in tool-group batches;
+  aggregate with `all_tools()`/`szal_register_tools()` in the final file (single-pass: no forward ref).
 
 - ✅ **row 8 `src/engine_result.cyr` (`FlowResult`)** — ported + wired into `main`, cross-checked
   vs `engine/result.rs`. `FlowResult {flow_name, steps vec, total_duration_ms, success,
@@ -300,25 +310,20 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 ## Next — ▶ START HERE (handoff)
 
-**Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 rows 22–23 + bote vendoring + MCP core ✅, all
-parity-verified 0-findings): 27 modules, 1036 assertions, 0 failures, oracle pristine. Pin 6.1.37
+**Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 rows 22–24-core + pool/tenant + bote vendoring,
+all parity-verified 0-findings): 29 modules, 1068 assertions, 0 failures, oracle pristine. Pin 6.1.37
 (installed wrapper drifted to 6.2.2 — suite green under both; reconcile the pin).**
 All engine modules ported (six modes + core + step_exec + Engine + sub_flow + **hardware/row 17**).
 M3: streaming (`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` —
-result/errcode/**validate_path security**/registration) done; **bote-core 2.7.5 vendored (re-synced
-2026-06-13; Q9 dissolved)**. Full majra 2.4.6 + ai-hwaccel 2.3.9 (overlaid) in the build.
-Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence the lib-shadow note).
+result/errcode/**validate_path security**/registration) + **MCP pool + tenant** done; **bote-core
+2.7.5 vendored (re-synced 2026-06-13; Q9 dissolved)**. Full majra 2.4.6 + ai-hwaccel 2.3.9 (overlaid)
+in the build. Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence lib-shadow).
 
-**Pick up at: MCP pool/tenant + the 54 tools (M3). No engine rows remain — M2 is complete.**
+**Pick up at: the 54 MCP tools (M3). No engine rows remain — M2 is complete; MCP pool/tenant done.**
 
-MCP infra is in place: bote-core vendored, `mcp.cyr` core (incl. `validate_path` + `register_tools`)
-tested. Remaining MCP:
-1. **`src/mcp_pool.cyr`** (mcp/pool.rs): `NetworkPool` = 3 majra `ratelimit_new` buckets (HTTP 10/s
-   b50, DNS 100/s b200, Port 50/s b100 — fixed-point ×1000) + `check_http/dns/port(key)`; lazy global
-   `var _pool = 0; fn pool() { if (_pool==0){...} }`.
-2. **`src/mcp_tenant.cyr`** (mcp/tenant.rs): TenantQuota/TenantCtx/TenantRegistry (mutex map),
-   `check_tenant_quota` (unknown → permissive Ok), `check_tenant_tool_access`.
-3. **`src/mcp_tools_*.cyr`** (15 files, 54 tools, ~4,300 ln) — order-free; suggested system →
+MCP infra is fully in place: bote-core vendored, `mcp.cyr` core (`validate_path` + `register_tools`),
+`mcp_pool.cyr` (rate limiting), `mcp_tenant.cyr` (quota/tool-access) — all tested. Remaining MCP:
+1. **`src/mcp_tools_*.cyr`** (15 files, 54 tools, ~4,300 ln) — order-free; suggested system →
    encoding → hash → template → conversion → math → json → file → process → git → net → state → step
    → flow → engine. Each tool: `mcp_tool_new(mcp_tool_def(name, desc, props_vec, required_vec),
    &handler)` with handler `fn(args_cstr, claims) → result_cstr` returning a `result_*` string. The

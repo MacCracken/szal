@@ -69,6 +69,8 @@ include "src/engine_subflow.cyr"
 include "src/stream.cyr"
 include "src/sql_store.cyr"
 include "src/mcp.cyr"
+include "src/mcp_pool.cyr"
+include "src/mcp_tenant.cyr"
 
 fn main() {
     alloc_init();
