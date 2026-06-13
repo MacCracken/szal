@@ -1,0 +1,152 @@
+# szal_mcp_tools_hash.tcyr — hash MCP tools (mcp_tools_hash.cyr): szal_sha256, szal_md5, szal_random_token.
+#
+# Ports rust-old/src/mcp/tools/hash_tools.rs tests: SHA-256 of a string (known vector) + of a file,
+# missing-input error, MD5 of a string, and random-token default/custom lengths. Plus registration.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_hash.tcyr build/test_mcp_tools_hash
+#   ./build/test_mcp_tools_hash
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/ct.cyr"
+include "lib/thread_local.cyr"
+include "lib/sigil.cyr"
+include "lib/random.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/md5.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_hash.cyr"
+
+# Invoke a handler with a JSON-args cstr; return its result envelope as a Str.
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+# Extract content[0].text (a Str) from a result envelope Str.
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_sha256 ---
+
+# SHA-256 of "hello" matches the well-known vector. (hash_tools.rs 167-174)
+fn t_sha256_string() {
+    var r = _call(&_sha256_handler, "{\"input\": \"hello\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "sha256 string ok");
+    var text = _result_text(r);
+    assert(str_contains(text,
+    str_from("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")),
+    "sha256(hello) is the known digest");
+    return 0;
+}
+
+# SHA-256 of a file under cwd succeeds (routed through validate_path). (hash_tools.rs 176-186)
+fn t_sha256_file() {
+    file_write_all("szal_hash_test.bin", "test content", 12);
+    var r = _call(&_sha256_handler, "{\"file\": \"szal_hash_test.bin\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "sha256 file ok");
+    return 0;
+}
+
+# Neither input nor file is a validation error. (hash_tools.rs 188-192)
+fn t_sha256_no_input() {
+    var r = _call(&_sha256_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "sha256 no-input -> error");
+    assert(str_contains(r, str_from("provide either 'input' or 'file'")), "validation message");
+    return 0;
+}
+
+# --- szal_md5 ---
+
+# MD5 of a string reports the algorithm + a hash. (hash_tools.rs 194-201)
+fn t_md5_string() {
+    var r = _call(&_md5_handler, "{\"input\": \"hello\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "md5 string ok");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("\"algorithm\": \"md5\"")), "md5 algorithm field");
+    assert(str_contains(text, str_from("5d41402abc4b2a76b9719d911017c592")), "md5(hello) digest");
+    return 0;
+}
+
+# Missing required input is a validation error.
+fn t_md5_missing() {
+    var r = _call(&_md5_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "md5 missing -> error");
+    assert(str_contains(r, str_from("missing required field: input")), "validation message");
+    return 0;
+}
+
+# --- szal_random_token ---
+
+# The default token is 32 bytes = 64 hex chars. (hash_tools.rs 203-209)
+fn t_random_default() {
+    var r = _call(&_random_token_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "random default ok");
+    assert_eq(str_len(_result_text(r)), 64, "default token is 64 hex chars");
+    return 0;
+}
+
+# A custom byte count of 16 = 32 hex chars. (hash_tools.rs 211-217)
+fn t_random_custom() {
+    var r = _call(&_random_token_handler, "{\"bytes\": 16}");
+    assert(str_contains(r, str_from("\"isError\":false")), "random custom ok");
+    assert_eq(str_len(_result_text(r)), 32, "16-byte token is 32 hex chars");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(hash_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_sha256"), 1, "szal_sha256 registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_md5"), 1, "szal_md5 registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_random_token"), 1, "szal_random_token registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 3, "three hash tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_sha256");
+    t_sha256_string();
+    t_sha256_file();
+    t_sha256_no_input();
+
+    test_group("szal_md5");
+    t_md5_string();
+    t_md5_missing();
+
+    test_group("szal_random_token");
+    t_random_default();
+    t_random_custom();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

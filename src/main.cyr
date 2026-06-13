@@ -72,6 +72,15 @@ include "src/mcp.cyr"
 include "src/mcp_pool.cyr"
 include "src/mcp_tenant.cyr"
 include "src/mcp_tools_encoding.cyr"
+# sigil (sha256/hex_encode) + random (random_bytes) for the hash tools. Included HERE, after the
+# szal core modules, NOT in the stdlib block: sigil defines its own `ERR_NONE` enum constant that
+# collides with src/error.cyr's, and including it before error.cyr breaks that enum's resolution
+# (error.cyr:36 `var buf[SZAL_ERR_MSG_CAP]`). Late inclusion keeps error.cyr's enum authoritative.
+include "lib/ct.cyr"
+include "lib/thread_local.cyr"
+include "lib/sigil.cyr"
+include "lib/random.cyr"
+include "src/mcp_tools_hash.cyr"
 
 fn main() {
     alloc_init();

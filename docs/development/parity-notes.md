@@ -230,6 +230,21 @@ malformed input is a roadmap follow-up if a consumer needs it. See `src/mcp_tool
 
 ---
 
+## 13. sha256 file hashing capped at 1 MiB (`mcp_tools_hash.cyr`, szal_sha256)
+
+**What:** Rust's `szal_sha256` with a `file` arg reads the whole file uncapped (`tokio::fs::read`).
+The port reads through a single fixed `HASH_FILE_CAP` (1 MiB) buffer via `file_read_all`.
+
+**Divergence:** a file larger than 1 MiB hashes only its first 1 MiB (rather than the full contents).
+String hashing (`input`) is unaffected and exact; the Rust `sha256_file` test uses a 12-byte file.
+
+**Why accepted:** a fixed buffer is the simplest correct read in Cyrius (no streaming digest wired
+yet) and a 1 MiB cap matches szal's file-tool read-cap security posture. Streaming the digest
+(`sha256_init`/`_update` over chunks) to remove the cap is a roadmap follow-up. See
+`src/mcp_tools_hash.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/

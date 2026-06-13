@@ -1,0 +1,158 @@
+# mcp_tools_hash.cyr — MCP hash tools (ports mcp/tools/hash_tools.rs): szal_sha256, szal_md5, szal_random_token.
+#
+# szal_sha256 hashes a string (`input`) or a file (`file`, routed through validate_path); szal_md5
+# hashes a string; szal_random_token emits a cryptographically-random hex token. Each handler has the
+# bote ABI `fn(args_cstr, claims) -> result_cstr`; see the "MCP tool-handler porting pattern" in
+# docs/development/state.md (cstr/Str parse trap, CO-01 binding, result-envelope shape).
+#
+# PARITY NOTE (sha256 file cap): Rust's szal_sha256 reads the whole file uncapped (tokio::fs::read).
+# The port caps the file read at HASH_FILE_CAP (1 MiB) — a single fixed buffer, consistent with szal's
+# file-tool read cap and the security posture. Files larger than the cap hash only their first 1 MiB.
+# Recorded in docs/development/parity-notes.md. (The hash_tools.rs file test uses 12 bytes.)
+#
+# Usage: include AFTER src/md5.cyr + lib/sigil.cyr (sha256_hex/hex_encode) + lib/random.cyr +
+#   lib/io.cyr (file_read_all) + src/mcp.cyr (validate_path/result_*).
+
+enum HashTools {
+    HASH_FILE_CAP = 1048576;
+    RANDOM_TOKEN_MAX = 256;
+}
+
+# Parse a handler's args cstr into a json_v object (bayan wants a Str — wrap the cstr first).
+fn _hash_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# Build {"algorithm":<algo>, "hash":<hex>, "input_bytes":<n>} as a result_ok_json string's cstr.
+fn _hash_result(algo, hex_c, nbytes) {
+    var obj = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(obj, str_from("algorithm"), bayan_json_v_str_new(str_from(algo)));
+    var hs = str_from(hex_c);
+    bayan_json_v_obj_set(obj, str_from("hash"), bayan_json_v_str_new(hs));
+    bayan_json_v_obj_set(obj, str_from("input_bytes"), bayan_json_v_int_new(nbytes));
+    var r = result_ok_json(obj);
+    return str_data(r);
+}
+
+# szal_sha256 handler: hash `input` (string) or `file` (path, via validate_path). Neither -> Validation.
+# Mirrors Sha256::call (hash_tools.rs 26-65).
+fn _sha256_handler(args, claims) {
+    var o = _hash_parse_args(args);
+
+    var iv = bayan_json_v_obj_get(o, "input");
+    if (bayan_json_v_is_str(iv) == 1) {
+        var input = bayan_json_v_str(iv);
+        var h = sha256_hex(str_data(input), str_len(input));
+        return _hash_result("sha256", h, str_len(input));
+    }
+
+    var fv = bayan_json_v_obj_get(o, "file");
+    if (bayan_json_v_is_str(fv) == 1) {
+        var path = bayan_json_v_str(fv);
+        var vr = validate_path(path);
+        if (is_err_result(vr) == 1) {
+            var e = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr));
+            return str_data(e);
+        }
+        var vpath = result_unwrap(vr);
+        var pc = str_cstr(vpath);
+        var buf = alloc(HASH_FILE_CAP);
+        var n = file_read_all(pc, buf, HASH_FILE_CAP);
+        if (n < 0) {
+            var eb = str_builder_new();
+            str_builder_add_cstr(eb, "failed to read ");
+            str_builder_add(eb, vpath);
+            var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+            return str_data(er);
+        }
+        var fh = sha256_hex(buf, n);
+        return _hash_result("sha256", fh, n);
+    }
+
+    var ev = result_error_typed(MCP_VALIDATION, str_from("provide either 'input' or 'file'"));
+    return str_data(ev);
+}
+
+# szal_md5 handler: hash the required `input` string. Mirrors Md5::call (hash_tools.rs 83-109).
+fn _md5_handler(args, claims) {
+    var o = _hash_parse_args(args);
+    var iv = bayan_json_v_obj_get(o, "input");
+    if (bayan_json_v_is_str(iv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: input"));
+        return str_data(e);
+    }
+    var input = bayan_json_v_str(iv);
+    var h = md5_hex(str_data(input), str_len(input));
+    return _hash_result("md5", h, str_len(input));
+}
+
+# szal_random_token handler: `bytes` random bytes (default 32, cap 256) as a hex token. Mirrors
+# RandomToken::call (hash_tools.rs 125-159).
+fn _random_token_handler(args, claims) {
+    var o = _hash_parse_args(args);
+    var nbytes = 32;
+    var bv = bayan_json_v_obj_get(o, "bytes");
+    if (bayan_json_v_is_int(bv) == 1) {
+        var b = bayan_json_v_int(bv);
+        if (b >= 0) { nbytes = b; }
+    }
+    if (nbytes > RANDOM_TOKEN_MAX) { nbytes = RANDOM_TOKEN_MAX; }
+
+    var buf = alloc(nbytes + 1);
+    var nr = random_bytes(buf, nbytes);
+    if (nr < 0) {
+        var e = result_error_typed(MCP_IO_ERROR, str_from("failed to read random bytes"));
+        return str_data(e);
+    }
+    var hexc = hex_encode(buf, nbytes);
+    var hs = str_from(hexc);
+    var r = result_ok(hs);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _sha256_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("input",
+    "{ \"type\": \"string\", \"description\": \"String to hash (mutually exclusive with file)\" }"));
+    vec_push(v, schema_prop_new("file",
+    "{ \"type\": \"string\", \"description\": \"File path to hash (mutually exclusive with input)\" }"));
+    return v;
+}
+
+fn _md5_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("input", "{ \"type\": \"string\", \"description\": \"String to hash\" }"));
+    return v;
+}
+
+fn _random_token_props() {
+    var v = vec_new();
+    var b = str_builder_new();
+    str_builder_add_cstr(b, "{ \"type\": \"integer\", \"description\": ");
+    str_builder_add_cstr(b, "\"Number of random bytes (default: 32, output is 2x hex chars)\" }");
+    var bytes_c = str_cstr(str_builder_build(b));
+    vec_push(v, schema_prop_new("bytes", bytes_c));
+    return v;
+}
+
+# The hash tool group: szal_sha256, szal_md5, szal_random_token. Returns a fresh vec of Tool pairs.
+fn hash_tools() {
+    var tools = vec_new();
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_sha256", "Compute SHA-256 hash of a string or file contents",
+    _sha256_props(), vec_new()), &_sha256_handler));
+
+    var md5_req = vec_new();
+    vec_push(md5_req, "input");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_md5", "Compute MD5 hash of a string (for checksums, not security)",
+    _md5_props(), md5_req), &_md5_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_random_token", "Generate a cryptographically random hex token",
+    _random_token_props(), vec_new()), &_random_token_handler));
+    return tools;
+}
