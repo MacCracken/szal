@@ -1,0 +1,209 @@
+# mcp_tools_step.cyr — MCP step tools (ports mcp/tools/step_tools.rs): szal_step_create,
+# szal_step_validate, szal_step_inspect.
+#
+# All three reuse szal's own step.cyr (StepDef builders + step_to_json/step_from_json), so the step
+# shape/serde is inherited exactly. Handlers follow the bote ABI + the porting pattern in
+# docs/development/state.md.
+#
+# Usage: include AFTER src/uuid.cyr + src/step.cyr + src/mcp.cyr (+ lib/bayan, lib/str, lib/vec).
+
+fn _stp_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# szal_step_create: build a StepDef from optional fields. Mirrors StepCreate::call (step_tools.rs 34-89).
+fn _step_create_handler(args, claims) {
+    var o = _stp_parse_args(args);
+    var nv = bayan_json_v_obj_get(o, "name");
+    if (bayan_json_v_is_str(nv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: name"));
+        return str_data(e);
+    }
+    var step = step_new(bayan_json_v_str(nv));
+
+    var dv = bayan_json_v_obj_get(o, "description");
+    if (bayan_json_v_is_str(dv) == 1) { store64(step + SD_DESCRIPTION, bayan_json_v_str(dv)); }
+
+    var tv = bayan_json_v_obj_get(o, "timeout_ms");
+    if (bayan_json_v_is_int(tv) == 1) { step = step_with_timeout(step, bayan_json_v_int(tv)); }
+
+    var rv = bayan_json_v_obj_get(o, "max_retries");
+    if (bayan_json_v_is_int(rv) == 1) {
+        var delay = 1000;
+        var ddv = bayan_json_v_obj_get(o, "retry_delay_ms");
+        if (bayan_json_v_is_int(ddv) == 1) { delay = bayan_json_v_int(ddv); }
+        step = step_with_retries(step, bayan_json_v_int(rv), delay);
+    }
+
+    var bv = bayan_json_v_obj_get(o, "rollbackable");
+    if (bayan_json_v_is_bool(bv) == 1) {
+        if (bayan_json_v_bool(bv) == 1) { step = step_with_rollback(step); }
+    }
+
+    var deps = bayan_json_v_obj_get(o, "depends_on");
+    if (bayan_json_v_is_arr(deps) == 1) {
+        var n = bayan_json_v_arr_len(deps);
+        var i = 0;
+        while (i < n) {
+            var dep = bayan_json_v_arr_get(deps, i);
+            if (bayan_json_v_is_str(dep) == 1) {
+                var idc = str_cstr(bayan_json_v_str(dep));
+                var hi, lo = uuid_parse(idc);
+                if (hi == (0 - 1)) {
+                    var ib = str_builder_new();
+                    str_builder_add_cstr(ib, "invalid UUID: ");
+                    str_builder_add(ib, bayan_json_v_str(dep));
+                    var ie = result_error_typed(MCP_VALIDATION, str_builder_build(ib));
+                    return str_data(ie);
+                }
+                step = step_depends_on_add(step, hi, lo);
+            }
+            i = i + 1;
+        }
+    }
+
+    var sj = step_to_json(step);
+    var jv = bayan_json_v_parse(sj);
+    var r = result_ok_json(jv);
+    return str_data(r);
+}
+
+# szal_step_validate: parse a StepDef JSON and flag empty name / zero timeout. Mirrors StepValidate::call
+# (step_tools.rs 107-145).
+fn _step_validate_handler(args, claims) {
+    var o = _stp_parse_args(args);
+    var jv = bayan_json_v_obj_get(o, "step_json");
+    if (bayan_json_v_is_str(jv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: step_json"));
+        return str_data(e);
+    }
+    var step = step_from_json(bayan_json_v_str(jv));
+    if (step == 0) {
+        var ej = result_error_typed(MCP_VALIDATION, str_from("invalid JSON"));
+        return str_data(ej);
+    }
+
+    var name_empty = 0;
+    if (str_len(step_name(step)) == 0) { name_empty = 1; }
+    var timeout_zero = 0;
+    if (step_timeout_ms(step) == 0) { timeout_zero = 1; }
+
+    if (name_empty == 0 && timeout_zero == 0) {
+        var vb = str_builder_new();
+        str_builder_add_cstr(vb, "valid: step '");
+        str_builder_add(vb, step_name(step));
+        str_builder_add_cstr(vb, "' (id=");
+        var idc = uuid_to_cstr(step_id_hi(step), step_id_lo(step));
+        var ids = str_from(idc);
+        str_builder_add(vb, ids);
+        str_builder_add_cstr(vb, ")");
+        var rok = result_ok(str_builder_build(vb));
+        return str_data(rok);
+    }
+
+    var ib = str_builder_new();
+    str_builder_add_cstr(ib, "issues: ");
+    var first = 1;
+    if (name_empty == 1) { str_builder_add_cstr(ib, "name is empty"); first = 0; }
+    if (timeout_zero == 1) {
+        if (first == 0) { str_builder_add_cstr(ib, ", "); }
+        str_builder_add_cstr(ib, "timeout_ms is zero");
+    }
+    var er = result_error_typed(MCP_VALIDATION, str_builder_build(ib));
+    return str_data(er);
+}
+
+# szal_step_inspect: structured config of a StepDef. Mirrors StepInspect::call (step_tools.rs 163-198).
+fn _step_inspect_handler(args, claims) {
+    var o = _stp_parse_args(args);
+    var jv = bayan_json_v_obj_get(o, "step_json");
+    if (bayan_json_v_is_str(jv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: step_json"));
+        return str_data(e);
+    }
+    var step = step_from_json(bayan_json_v_str(jv));
+    if (step == 0) {
+        var ej = result_error_typed(MCP_VALIDATION, str_from("invalid JSON"));
+        return str_data(ej);
+    }
+
+    var info = bayan_json_v_obj_new();
+    var idc = uuid_to_cstr(step_id_hi(step), step_id_lo(step));
+    var ids = str_from(idc);
+    bayan_json_v_obj_set(info, str_from("id"), bayan_json_v_str_new(ids));
+    bayan_json_v_obj_set(info, str_from("name"), bayan_json_v_str_new(step_name(step)));
+    bayan_json_v_obj_set(info, str_from("description"), bayan_json_v_str_new(step_description(step)));
+    bayan_json_v_obj_set(info, str_from("timeout_ms"), bayan_json_v_int_new(step_timeout_ms(step)));
+    bayan_json_v_obj_set(info, str_from("max_retries"), bayan_json_v_int_new(step_max_retries(step)));
+    bayan_json_v_obj_set(info, str_from("retry_delay_ms"), bayan_json_v_int_new(step_retry_delay_ms(step)));
+    bayan_json_v_obj_set(info, str_from("rollbackable"), bayan_json_v_bool_new(step_rollbackable(step)));
+    bayan_json_v_obj_set(info, str_from("dependency_count"), bayan_json_v_int_new(step_depends_on_len(step)));
+
+    var arr = bayan_json_v_arr_new();
+    var n = step_depends_on_len(step);
+    var i = 0;
+    while (i < n) {
+        var dc = uuid_to_cstr(step_depends_on_hi(step, i), step_depends_on_lo(step, i));
+        var ds = str_from(dc);
+        bayan_json_v_arr_push(arr, bayan_json_v_str_new(ds));
+        i = i + 1;
+    }
+    bayan_json_v_obj_set(info, str_from("depends_on"), arr);
+
+    var r = result_ok_json(info);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _step_create_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("name", "{ \"type\": \"string\", \"description\": \"Step name\" }"));
+    vec_push(v, schema_prop_new("description",
+    "{ \"type\": \"string\", \"description\": \"Step description\" }"));
+    vec_push(v, schema_prop_new("timeout_ms",
+    "{ \"type\": \"integer\", \"description\": \"Timeout in milliseconds (default: 30000)\" }"));
+    vec_push(v, schema_prop_new("max_retries",
+    "{ \"type\": \"integer\", \"description\": \"Max retry attempts (default: 0)\" }"));
+    vec_push(v, schema_prop_new("retry_delay_ms",
+    "{ \"type\": \"integer\", \"description\": \"Delay between retries in ms (default: 1000)\" }"));
+    vec_push(v, schema_prop_new("rollbackable",
+    "{ \"type\": \"boolean\", \"description\": \"Whether step supports rollback (default: false)\" }"));
+    var db = str_builder_new();
+    str_builder_add_cstr(db, "{ \"type\": \"array\", \"items\": { \"type\": \"string\" }, ");
+    str_builder_add_cstr(db, "\"description\": \"UUIDs of steps this depends on\" }");
+    var deps_c = str_cstr(str_builder_build(db));
+    vec_push(v, schema_prop_new("depends_on", deps_c));
+    return v;
+}
+
+fn _step_json_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("step_json",
+    "{ \"type\": \"string\", \"description\": \"Step definition as JSON string\" }"));
+    return v;
+}
+
+# The step tool group: szal_step_create, szal_step_validate, szal_step_inspect.
+fn step_tools() {
+    var tools = vec_new();
+    var c_req = vec_new();
+    vec_push(c_req, "name");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_step_create", "Create a workflow step definition with timeout, retry, and rollback config",
+    _step_create_props(), c_req), &_step_create_handler));
+
+    var v_req = vec_new();
+    vec_push(v_req, "step_json");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_step_validate", "Validate a step definition JSON, checking all fields are well-formed",
+    _step_json_props(), v_req), &_step_validate_handler));
+
+    var i_req = vec_new();
+    vec_push(i_req, "step_json");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_step_inspect", "Inspect a step definition, returning its configuration details",
+    _step_json_props(), i_req), &_step_inspect_handler));
+    return tools;
+}

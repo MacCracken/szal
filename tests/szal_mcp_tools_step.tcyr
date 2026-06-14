@@ -1,0 +1,183 @@
+# szal_mcp_tools_step.tcyr — step MCP tools (mcp_tools_step.cyr): szal_step_create,
+# szal_step_validate, szal_step_inspect.
+#
+# Ports rust-old/src/mcp/tools/step_tools.rs tests + validation + registration. Step JSON for the
+# validate/inspect tools is built via step.cyr + bayan (so escaping is handled correctly).
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_step.tcyr build/test_mcp_tools_step
+#   ./build/test_mcp_tools_step
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/error.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_step.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# Call a handler with {step_json: <sj>} built via bayan (handles escaping).
+fn _call_step_json(fp, sj) {
+    var args_obj = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(args_obj, str_from("step_json"), bayan_json_v_str_new(sj));
+    var args_cstr = str_cstr(bayan_json_v_build(args_obj));
+    return _call(fp, args_cstr);
+}
+
+# --- szal_step_create ---
+
+# Basic create echoes the step with its name. (step_tools.rs 205-213)
+fn t_create_basic() {
+    var r = _call(&_step_create_handler, "{\"name\": \"build\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "create ok");
+    var step = bayan_json_v_parse(_result_text(r));
+    assert(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(step, "name")), "build"), "name = build");
+    return 0;
+}
+
+# Full create applies timeout/retries/rollback. (step_tools.rs 215-233)
+fn t_create_full() {
+    var r = _call(&_step_create_handler,
+    "{\"name\": \"deploy\", \"timeout_ms\": 60000, \"max_retries\": 3, \"retry_delay_ms\": 5000, \"rollbackable\": true}");
+    assert(str_contains(r, str_from("\"isError\":false")), "create full ok");
+    var step = bayan_json_v_parse(_result_text(r));
+    assert_eq(bayan_json_v_int(bayan_json_v_obj_get(step, "timeout_ms")), 60000, "timeout 60000");
+    assert_eq(bayan_json_v_int(bayan_json_v_obj_get(step, "max_retries")), 3, "max_retries 3");
+    assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(step, "rollbackable")), 1, "rollbackable true");
+    return 0;
+}
+
+# A bad dependency UUID is a validation error.
+fn t_create_bad_dep() {
+    var r = _call(&_step_create_handler, "{\"name\": \"x\", \"depends_on\": [\"not-a-uuid\"]}");
+    assert(str_contains(r, str_from("\"isError\":true")), "bad dep -> error");
+    assert(str_contains(r, str_from("invalid UUID: not-a-uuid")), "names the bad uuid");
+    return 0;
+}
+
+# Missing name is a validation error. (step_tools.rs 235-240)
+fn t_create_missing_name() {
+    var r = _call(&_step_create_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no name -> error");
+    assert(str_contains(r, str_from("missing required field: name")), "validation message");
+    return 0;
+}
+
+# --- szal_step_validate ---
+
+# A well-formed step validates. (step_tools.rs 242-249)
+fn t_validate_valid() {
+    var s = step_new(str_from("test"));
+    var sj = step_to_json(s);
+    var r = _call_step_json(&_step_validate_handler, sj);
+    assert(str_contains(r, str_from("\"isError\":false")), "valid step ok");
+    assert(str_contains(r, str_from("valid: step 'test'")), "reports valid");
+    return 0;
+}
+
+# Bad JSON is a validation error. (step_tools.rs 251-256)
+fn t_validate_bad_json() {
+    var r = _call_step_json(&_step_validate_handler, str_from("not json"));
+    assert(str_contains(r, str_from("\"isError\":true")), "bad json -> error");
+    assert(str_contains(r, str_from("invalid JSON")), "invalid-JSON message");
+    return 0;
+}
+
+# Missing step_json is a validation error.
+fn t_validate_missing() {
+    var r = _call(&_step_validate_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no step_json -> error");
+    assert(str_contains(r, str_from("missing required field: step_json")), "validation message");
+    return 0;
+}
+
+# --- szal_step_inspect ---
+
+# Inspect surfaces retries + rollback. (step_tools.rs 258-268)
+fn t_inspect() {
+    var s = step_with_rollback(step_with_retries(step_new(str_from("build")), 3, 5000));
+    var sj = step_to_json(s);
+    var r = _call_step_json(&_step_inspect_handler, sj);
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("\"rollbackable\": true")), "rollbackable true");
+    assert(str_contains(text, str_from("\"max_retries\": 3")), "max_retries 3");
+    return 0;
+}
+
+# Inspect reports dependency_count.
+fn t_inspect_deps() {
+    var s = step_new(str_from("dep-test"));
+    var hi, lo = uuid_generate();
+    s = step_depends_on_add(s, hi, lo);
+    var sj = step_to_json(s);
+    var r = _call_step_json(&_step_inspect_handler, sj);
+    assert(str_contains(_result_text(r), str_from("\"dependency_count\": 1")), "one dependency");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(step_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_step_create"), 1, "step_create registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_step_validate"), 1, "step_validate registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_step_inspect"), 1, "step_inspect registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 3, "three step tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_step_create");
+    t_create_basic();
+    t_create_full();
+    t_create_bad_dep();
+    t_create_missing_name();
+
+    test_group("szal_step_validate");
+    t_validate_valid();
+    t_validate_bad_json();
+    t_validate_missing();
+
+    test_group("szal_step_inspect");
+    t_inspect();
+    t_inspect_deps();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
