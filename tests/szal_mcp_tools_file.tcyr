@@ -1,0 +1,192 @@
+# szal_mcp_tools_file.tcyr — file MCP tools (mcp_tools_file.cyr): szal_file_read, szal_file_write,
+# szal_dir_list, szal_file_stat, szal_path_exists.
+#
+# Ports rust-old/src/mcp/tools/file_tools.rs tests. Uses cwd-relative paths (validate_path confines
+# to the working directory) and cleans up its artifacts. Mirrors the Rust cwd_tempdir approach.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_file.tcyr build/test_mcp_tools_file
+#   ./build/test_mcp_tools_file
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/fs.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_file.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_file_write / szal_file_read ---
+
+# Write then read round-trips "hello". (file_tools.rs 379-393)
+fn t_read_write() {
+    var w = _call(&_file_write_handler, "{\"path\": \"szal_ftest.txt\", \"content\": \"hello\"}");
+    assert(str_contains(w, str_from("\"isError\":false")), "write ok");
+    var r = _call(&_file_read_handler, "{\"path\": \"szal_ftest.txt\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "read ok");
+    assert(str_eq_cstr(_result_text(r), "hello"), "read recovers 'hello'");
+    syscall(87, "szal_ftest.txt");
+    return 0;
+}
+
+# Append concatenates. (file_tools.rs 395-410)
+fn t_append() {
+    _call(&_file_write_handler, "{\"path\": \"szal_fapp.txt\", \"content\": \"a\"}");
+    _call(&_file_write_handler, "{\"path\": \"szal_fapp.txt\", \"content\": \"b\", \"append\": true}");
+    var r = _call(&_file_read_handler, "{\"path\": \"szal_fapp.txt\"}");
+    assert(str_eq_cstr(_result_text(r), "ab"), "append -> 'ab'");
+    syscall(87, "szal_fapp.txt");
+    return 0;
+}
+
+# A path outside cwd is rejected. (file_tools.rs 412-419)
+fn t_read_outside() {
+    var r = _call(&_file_read_handler, "{\"path\": \"/nonexistent/file/xyz\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "outside path rejected");
+    return 0;
+}
+
+# Path traversal to /etc/passwd is rejected with the confinement message. (file_tools.rs 421-427)
+fn t_read_traversal() {
+    var r = _call(&_file_read_handler, "{\"path\": \"/etc/passwd\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "traversal rejected");
+    assert(str_contains(r, str_from("outside working directory")), "confinement message");
+    return 0;
+}
+
+# Missing path is a validation error.
+fn t_read_missing_field() {
+    var r = _call(&_file_read_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no path -> error");
+    assert(str_contains(r, str_from("missing required field: path")), "validation message");
+    return 0;
+}
+
+# --- szal_dir_list ---
+
+# Listing a directory with two files returns two entries. (file_tools.rs 429-442)
+fn t_dir_list() {
+    syscall(83, "szal_fdir", 0x1FF);
+    file_write_all("szal_fdir/a.txt", "", 0);
+    file_write_all("szal_fdir/b.txt", "", 0);
+    var r = _call(&_dir_list_handler, "{\"path\": \"szal_fdir\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "dir_list ok");
+    var arr = bayan_json_v_parse(_result_text(r));
+    assert_eq(bayan_json_v_arr_len(arr), 2, "two entries");
+    syscall(87, "szal_fdir/a.txt");
+    syscall(87, "szal_fdir/b.txt");
+    syscall(84, "szal_fdir");
+    return 0;
+}
+
+# --- szal_file_stat ---
+
+# Stat reports size + file type. (file_tools.rs 444-457)
+fn t_file_stat() {
+    file_write_all("szal_fstat.txt", "12345", 5);
+    var r = _call(&_file_stat_handler, "{\"path\": \"szal_fstat.txt\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "stat ok");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("\"size\": 5")), "size 5");
+    assert(str_contains(text, str_from("\"type\": \"file\"")), "type file");
+    syscall(87, "szal_fstat.txt");
+    return 0;
+}
+
+# --- szal_path_exists ---
+
+# "." exists and is a directory. (file_tools.rs 459-467)
+fn t_exists_cwd() {
+    var r = _call(&_path_exists_handler, "{\"path\": \".\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "exists ok");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("\"exists\": true")), "exists true");
+    assert(str_contains(text, str_from("\"is_dir\": true")), "is_dir true");
+    return 0;
+}
+
+# A path outside cwd is rejected. (file_tools.rs 469-475)
+fn t_exists_outside() {
+    var r = _call(&_path_exists_handler, "{\"path\": \"/tmp\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "outside rejected");
+    assert(str_contains(r, str_from("outside working directory")), "confinement message");
+    return 0;
+}
+
+# A non-existent path under cwd reports exists:false (not an error).
+fn t_exists_absent() {
+    var r = _call(&_path_exists_handler, "{\"path\": \"szal_does_not_exist_123\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "absent is ok (not error)");
+    assert(str_contains(_result_text(r), str_from("\"exists\": false")), "exists false");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(file_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_file_read"), 1, "file_read registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_file_write"), 1, "file_write registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_dir_list"), 1, "dir_list registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_file_stat"), 1, "file_stat registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_path_exists"), 1, "path_exists registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 5, "five file tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("write/read");
+    t_read_write();
+    t_append();
+    t_read_outside();
+    t_read_traversal();
+    t_read_missing_field();
+
+    test_group("szal_dir_list");
+    t_dir_list();
+
+    test_group("szal_file_stat");
+    t_file_stat();
+
+    test_group("szal_path_exists");
+    t_exists_cwd();
+    t_exists_outside();
+    t_exists_absent();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

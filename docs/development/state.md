@@ -177,8 +177,15 @@ MCP pool/tenant + the 54 tools remain).**
   JSON-shaping — no szal core module needed. `tests/szal_mcp_tools_engine.tcyr` (28) ports all
   engine_tools.rs tests + result counting + validation + registration. One accepted divergence
   (parity-notes §20: server version hardcoded — keep in sync with VERSION). lint/fmt/doc clean.
-- ⏳ **Next: MCP tool groups 12–15/15** (~18 tools left; **the security-sensitive ones**:
-  file → process → git → net). Each a
+- ✅ **MCP tools group 12/15 `src/mcp_tools_file.cyr`** (2026-06-13) — `szal_file_read` (max_bytes cap),
+  `szal_file_write` (create/append), `szal_dir_list` (recursive, depth-20/max-entries bounded),
+  `szal_file_stat`, `szal_path_exists`. **EVERY op routed through validate_path** (CWD confinement);
+  stat via `newfstatat` (syscall 262, x86_64-stable). `tests/szal_mcp_tools_file.tcyr` (28) ports all
+  file_tools.rs tests **including the path-traversal/outside-cwd rejections** + round-trip/append/
+  dir-list/stat + registration (cwd-relative paths, self-cleaning). Two divergences (parity-notes §21:
+  byte-boundary read truncation; second-precision stat mtime). lint/fmt/doc clean.
+- ⏳ **Next: MCP tool groups 13–15/15** (~13 tools left; **security-sensitive**:
+  process → git → net). Each a
   `mcp_tool_new(mcp_tool_def(...), &handler)` + a `<group>_tools()` accumulator; the LAST file defines
   `all_tools()`/`szal_register_tools()`. **Security checks must not regress**: validate_path on all
   file ops, 1 MiB read cap / 10k dir entries / depth 20; process: no shell, reject `..`/`/`, 30s
@@ -410,7 +417,7 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 ## Next — ▶ START HERE (handoff)
 
 **Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 rows 22–24-core + pool/tenant + tool groups
-1–11/15 (encoding…engine) + bote vendoring, all parity-verified 0-findings): 40 modules, 1319
+1–12/15 (encoding…file) + bote vendoring, all parity-verified 0-findings): 41 modules, 1347
 assertions, 0 failures, oracle pristine. Pin 6.1.37 (installed 6.2.2 — green both).**
 All engine modules ported (six modes + core + step_exec + Engine + sub_flow + **hardware/row 17**).
 M3: streaming (`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` —
@@ -418,21 +425,20 @@ result/errcode/**validate_path security**/registration) + **MCP pool + tenant** 
 2.7.5 vendored (re-synced 2026-06-13; Q9 dissolved)**. Full majra 2.4.6 + ai-hwaccel 2.3.9 (overlaid)
 in the build. Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence lib-shadow).
 
-**Pick up at: MCP tool groups 12–15 (M3) — the SECURITY-SENSITIVE ones. Groups 1–11/15 done; ~18
-tools left.** No engine rows remain; MCP infra + pool/tenant done. **Read the "MCP tool-handler
-porting pattern" gotchas above first** — cstr/Str parse trap, CO-01, base64 `{ptr,len}`, result-text
-extraction, sigil/`ERR_NONE` ordering, and helper-name collisions with condition.cyr (prefix locals).
+**Pick up at: MCP tool groups 13–15 (M3) — the remaining SECURITY-SENSITIVE ones. Groups 1–12/15
+done; ~13 tools left.** No engine rows remain; MCP infra + pool/tenant done. **Read the "MCP
+tool-handler porting pattern" gotchas above first.** File group establishes the validate_path +
+`newfstatat` stat pattern to reuse.
 
 MCP infra is fully in place: bote-core vendored, `mcp.cyr` core, `mcp_pool.cyr`, `mcp_tenant.cyr`,
-and 11 tool groups: encoding, hash, system, json, template, conversion, math, state, step, flow,
-engine (engine_create/result_inspect/step_status_list/error_list/server_info) — all tested.
-**SECURITY (do NOT regress): file group needs validate_path on all ops + 1 MiB read / 10k dir entries
-/ depth-20 caps; process: no shell, reject `..`/`/`, 30s timeout; git: validate_git_ref rejects
-leading `-`, log cap 100; net: is_safe_url SSRF guard (metadata/localhost/RFC1918) + pool() rate
-limits.** The LAST tool file must define `all_tools()` (aggregate all 15 groups' vecs) +
+and 12 tool groups: encoding, hash, system, json, template, conversion, math, state, step, flow,
+engine, file (file_read/write/dir_list/file_stat/path_exists, validate_path-gated) — all tested.
+**SECURITY (do NOT regress): process: no shell, reject `..`/`/`, 30s timeout; git: validate_git_ref
+rejects leading `-`, log cap 100; net: is_safe_url SSRF guard (metadata/localhost/RFC1918) + pool()
+rate limits.** The LAST tool file (net) must define `all_tools()` (aggregate all 15 groups' vecs) +
 `szal_register_tools()` = `register_tools(all_tools())`. Remaining MCP:
-1. **`src/mcp_tools_*.cyr`** (4 files left, ~18 tools; first 11 groups ✅ done) — order-free; suggested
-   file → process → git → net. Each tool:
+1. **`src/mcp_tools_*.cyr`** (3 files left, ~13 tools; first 12 groups ✅ done) — order-free; suggested
+   process → git → net. Each tool:
    `mcp_tool_new(mcp_tool_def(name, desc, props_vec, required_vec),
    &handler)` with handler `fn(args_cstr, claims) → result_cstr` returning a `result_*` string. The
    LAST file defines `all_tools()` (aggregates every group's tools into one vec) + `szal_register_tools()`

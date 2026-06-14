@@ -358,6 +358,23 @@ roadmap follow-up. See `src/mcp_tools_engine.cyr`.
 
 ---
 
+## 21. file_read truncates at a byte boundary (`mcp_tools_file.cyr`, szal_file_read)
+
+**What:** Rust's `szal_file_read` reads the whole file then truncates the *string* to `max_bytes` at
+the nearest UTF-8 char boundary ≤ max_bytes. The port reads at most `max_bytes` raw bytes
+(`file_read_all`), so a file larger than `max_bytes` may cut mid-codepoint.
+
+**Divergence:** only when a file exceeds `max_bytes` AND the cut lands inside a multi-byte UTF-8
+sequence. Files ≤ `max_bytes` (the default is 1 MiB) are byte-identical. The security boundary
+(validate_path on every op) and all other file tools are exact.
+
+**Why accepted:** Cyrius reads into a fixed buffer (no read-whole-then-truncate-on-char-boundary
+primitive); the `file_tools.rs` tests use small files. `szal_file_stat`'s `modified` field is
+second-precision iso8601 (the chrono limitation, §14). stat uses `newfstatat` (syscall 262, stable on
+x86_64; raw SYS_STAT is aarch64-fragile per syscalls.cyr). See `src/mcp_tools_file.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/

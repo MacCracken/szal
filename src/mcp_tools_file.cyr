@@ -1,0 +1,388 @@
+# mcp_tools_file.cyr — MCP file tools (ports mcp/tools/file_tools.rs): szal_file_read, szal_file_write,
+# szal_dir_list, szal_file_stat, szal_path_exists.
+#
+# SECURITY: EVERY path is routed through validate_path (mcp.cyr's lexical CWD-confinement boundary)
+# before any filesystem access — paths outside the working directory or with `..` escapes are rejected
+# with PermissionDenied. Read is capped (DEFAULT_MAX_READ_BYTES), directory listing is bounded
+# (MAX_DIR_ENTRIES + MAX_DIR_DEPTH). Do NOT add a filesystem op that skips validate_path.
+#
+# stat uses newfstatat (syscall 262, stable on x86_64-linux; raw SYS_STAT=4 is aarch64-fragile per
+# syscalls.cyr). Handlers follow the bote ABI + the porting pattern in docs/development/state.md.
+#
+# PARITY NOTES:
+# - file_read truncates at a raw byte boundary (read max_bytes), not Rust's UTF-8 char boundary — a
+#   file larger than max_bytes may cut mid-codepoint. Files ≤ max_bytes are exact. (§21)
+# - file_stat `modified` is second-precision UTC iso8601 (the chrono limitation, §14), not RFC3339.
+#
+# Usage: include AFTER src/mcp.cyr + lib/fs.cyr (dir_list/path_join) + lib/io.cyr (file_*) + lib/chrono.
+
+enum FileTools {
+    DEFAULT_MAX_READ_BYTES = 1048576;
+    MAX_DIR_ENTRIES = 10000;
+    DEFAULT_DIR_ENTRIES = 500;
+    MAX_DIR_DEPTH = 20;
+    STAT_BUF_SIZE = 144;
+    STAT_MODE_OFF = 24;
+    STAT_SIZE_OFF = 48;
+    STAT_MTIME_OFF = 88;
+}
+
+fn _file_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# newfstatat(AT_FDCWD, path_cstr, statbuf, flags). Returns a 144-byte statbuf or 0 on error.
+# nofollow=1 -> AT_SYMLINK_NOFOLLOW (lstat semantics); 0 -> follow symlinks (stat semantics).
+fn _fs_stat(path_c, nofollow) {
+    var sb = alloc(STAT_BUF_SIZE);
+    var flags = 0;
+    if (nofollow == 1) { flags = 256; }
+    var rc = syscall(262, (0 - 100), path_c, sb, flags);
+    if (rc < 0) { return 0; }
+    return sb;
+}
+
+# Low 16 bits of st_mode (file type + permission bits).
+fn _fs_mode(sb) { return load64(sb + STAT_MODE_OFF) & 0xFFFF; }
+
+# "directory" / "symlink" / "file" for a st_mode value (S_IFMT classification).
+fn _fs_kind(mode) {
+    var fmt = mode & 0xF000;
+    if (fmt == 0x4000) { return "directory"; }
+    if (fmt == 0xA000) { return "symlink"; }
+    return "file";
+}
+
+# Validate `path` (a Str); returns the normalized path Str on success, or writes a PermissionDenied
+# result cstr to *out_err and returns 0.
+fn _fs_validate(path, out_err) {
+    var vr = validate_path(path);
+    if (is_err_result(vr) == 1) {
+        var e = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr));
+        store64(out_err, str_data(e));
+        return 0;
+    }
+    return result_unwrap(vr);
+}
+
+# szal_file_read: read up to max_bytes of a validated path. Mirrors FileRead::call (file_tools.rs 37-79).
+fn _file_read_handler(args, claims) {
+    var o = _file_parse_args(args);
+    var pv = bayan_json_v_obj_get(o, "path");
+    if (bayan_json_v_is_str(pv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: path"));
+        return str_data(e);
+    }
+    var errc = alloc(8);
+    store64(errc, 0);
+    var vpath = _fs_validate(bayan_json_v_str(pv), errc);
+    if (vpath == 0) { return load64(errc); }
+
+    var max_bytes = DEFAULT_MAX_READ_BYTES;
+    var mbv = bayan_json_v_obj_get(o, "max_bytes");
+    if (bayan_json_v_is_int(mbv) == 1) {
+        var mb = bayan_json_v_int(mbv);
+        if (mb > 0) { max_bytes = mb; }
+    }
+
+    var pc = str_cstr(vpath);
+    var buf = alloc(max_bytes);
+    var n = file_read_all(pc, buf, max_bytes);
+    if (n < 0) {
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "failed to read ");
+        str_builder_add(eb, vpath);
+        var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+        return str_data(er);
+    }
+    var content = str_new(buf, n);
+    var r = result_ok(content);
+    return str_data(r);
+}
+
+# szal_file_write: write/append content to a validated path. Mirrors FileWrite::call (file_tools.rs 99-154).
+fn _file_write_handler(args, claims) {
+    var o = _file_parse_args(args);
+    var pv = bayan_json_v_obj_get(o, "path");
+    if (bayan_json_v_is_str(pv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: path"));
+        return str_data(e);
+    }
+    var errc = alloc(8);
+    store64(errc, 0);
+    var vpath = _fs_validate(bayan_json_v_str(pv), errc);
+    if (vpath == 0) { return load64(errc); }
+
+    var cv = bayan_json_v_obj_get(o, "content");
+    if (bayan_json_v_is_str(cv) == 0) {
+        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: content"));
+        return str_data(e2);
+    }
+    var content = bayan_json_v_str(cv);
+    var clen = str_len(content);
+    var cdata = str_data(content);
+    var pc = str_cstr(vpath);
+
+    var append = 0;
+    var av = bayan_json_v_obj_get(o, "append");
+    if (bayan_json_v_is_bool(av) == 1) { append = bayan_json_v_bool(av); }
+
+    var rc = 0;
+    if (append == 1) {
+        var fd = file_open(pc, O_WRONLY | O_CREAT | O_APPEND, 0x1A4);
+        if (fd < 0) { rc = fd; } else {
+            rc = file_write(fd, cdata, clen);
+            file_close(fd);
+        }
+    } else {
+        rc = file_write_all(pc, cdata, clen);
+    }
+    if (rc < 0) {
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "failed to write ");
+        str_builder_add(eb, vpath);
+        var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+        return str_data(er);
+    }
+
+    var wb = str_builder_new();
+    str_builder_add_cstr(wb, "wrote ");
+    str_builder_add_int(wb, clen);
+    str_builder_add_cstr(wb, " bytes to ");
+    str_builder_add(wb, vpath);
+    var r = result_ok(str_builder_build(wb));
+    return str_data(r);
+}
+
+# One dir entry json: {name, path, type, [size if file]}. `dir_path` is the parent Str.
+fn _fs_entry(dir_path, name) {
+    var full = path_join(dir_path, name);
+    var sb = _fs_stat(str_cstr(full), 1);
+    var kind = "file";
+    var is_file = 0;
+    var size = 0;
+    if (sb != 0) {
+        var mode = _fs_mode(sb);
+        kind = _fs_kind(mode);
+        if ((mode & 0xF000) == 0x8000) { is_file = 1; size = load64(sb + STAT_SIZE_OFF); }
+    }
+    var info = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(info, str_from("name"), bayan_json_v_str_new(name));
+    bayan_json_v_obj_set(info, str_from("path"), bayan_json_v_str_new(full));
+    bayan_json_v_obj_set(info, str_from("type"), bayan_json_v_str_new(str_from(kind)));
+    if (is_file == 1) {
+        bayan_json_v_obj_set(info, str_from("size"), bayan_json_v_int_new(size));
+    }
+    return info;
+}
+
+# Recursively collect directory entries into `entries` (bounded by max + MAX_DIR_DEPTH). Mirrors
+# collect_dir (file_tools.rs 208-257).
+fn _fs_collect_dir(dir_path, recursive, max, entries, depth) {
+    if (depth > MAX_DIR_DEPTH) { return 0; }
+    var names = dir_list(dir_path);
+    var n = vec_len(names);
+    var i = 0;
+    while (i < n) {
+        if (vec_len(entries) >= max) { return 0; }
+        var name = vec_get(names, i);
+        i = i + 1;
+        var full = path_join(dir_path, name);
+        var sb = _fs_stat(str_cstr(full), 1);
+        var is_dir = 0;
+        if (sb != 0) {
+            if ((_fs_mode(sb) & 0xF000) == 0x4000) { is_dir = 1; }
+        }
+        vec_push(entries, _fs_entry(dir_path, name));
+        if (recursive == 1 && is_dir == 1 && vec_len(entries) < max) {
+            _fs_collect_dir(full, 1, max, entries, depth + 1);
+        }
+    }
+    return 0;
+}
+
+# szal_dir_list: list a validated directory (optionally recursive). Mirrors DirList::call (file_tools.rs 174-205).
+fn _dir_list_handler(args, claims) {
+    var o = _file_parse_args(args);
+    var path = str_from(".");
+    var pv = bayan_json_v_obj_get(o, "path");
+    if (bayan_json_v_is_str(pv) == 1) { path = bayan_json_v_str(pv); }
+
+    var errc = alloc(8);
+    store64(errc, 0);
+    var vpath = _fs_validate(path, errc);
+    if (vpath == 0) { return load64(errc); }
+
+    var recursive = 0;
+    var rv = bayan_json_v_obj_get(o, "recursive");
+    if (bayan_json_v_is_bool(rv) == 1) { recursive = bayan_json_v_bool(rv); }
+
+    var max = DEFAULT_DIR_ENTRIES;
+    var mv = bayan_json_v_obj_get(o, "max_entries");
+    if (bayan_json_v_is_int(mv) == 1) {
+        var m = bayan_json_v_int(mv);
+        if (m >= 0) { max = m; }
+    }
+    if (max > MAX_DIR_ENTRIES) { max = MAX_DIR_ENTRIES; }
+
+    var entries = vec_new();
+    _fs_collect_dir(vpath, recursive, max, entries, 0);
+
+    var arr = bayan_json_v_arr_new();
+    var n = vec_len(entries);
+    var i = 0;
+    while (i < n) {
+        bayan_json_v_arr_push(arr, vec_get(entries, i));
+        i = i + 1;
+    }
+    var r = result_ok_json(arr);
+    return str_data(r);
+}
+
+# szal_file_stat: metadata of a validated path. Mirrors FileStat::call (file_tools.rs 272-320).
+fn _file_stat_handler(args, claims) {
+    var o = _file_parse_args(args);
+    var pv = bayan_json_v_obj_get(o, "path");
+    if (bayan_json_v_is_str(pv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: path"));
+        return str_data(e);
+    }
+    var errc = alloc(8);
+    store64(errc, 0);
+    var vpath = _fs_validate(bayan_json_v_str(pv), errc);
+    if (vpath == 0) { return load64(errc); }
+
+    var sb = _fs_stat(str_cstr(vpath), 1);
+    if (sb == 0) {
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "failed to stat ");
+        str_builder_add(eb, vpath);
+        var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+        return str_data(er);
+    }
+    var mode = _fs_mode(sb);
+    var readonly = 0;
+    if ((mode & 0x92) == 0) { readonly = 1; }
+    var modc = iso8601(load64(sb + STAT_MTIME_OFF));
+    var mods = str_from(modc);
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("path"), bayan_json_v_str_new(vpath));
+    bayan_json_v_obj_set(out, str_from("type"), bayan_json_v_str_new(str_from(_fs_kind(mode))));
+    bayan_json_v_obj_set(out, str_from("size"), bayan_json_v_int_new(load64(sb + STAT_SIZE_OFF)));
+    bayan_json_v_obj_set(out, str_from("readonly"), bayan_json_v_bool_new(readonly));
+    bayan_json_v_obj_set(out, str_from("modified"), bayan_json_v_str_new(mods));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# szal_path_exists: existence + file/dir of a validated path (follows symlinks). Mirrors PathExists::call
+# (file_tools.rs 336-365).
+fn _path_exists_handler(args, claims) {
+    var o = _file_parse_args(args);
+    var pv = bayan_json_v_obj_get(o, "path");
+    if (bayan_json_v_is_str(pv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: path"));
+        return str_data(e);
+    }
+    var errc = alloc(8);
+    store64(errc, 0);
+    var vpath = _fs_validate(bayan_json_v_str(pv), errc);
+    if (vpath == 0) { return load64(errc); }
+
+    var sb = _fs_stat(str_cstr(vpath), 0);
+    var exists = 0;
+    var is_file = 0;
+    var is_dir = 0;
+    if (sb != 0) {
+        exists = 1;
+        var fmt = _fs_mode(sb) & 0xF000;
+        if (fmt == 0x8000) { is_file = 1; }
+        if (fmt == 0x4000) { is_dir = 1; }
+    }
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("path"), bayan_json_v_str_new(vpath));
+    bayan_json_v_obj_set(out, str_from("exists"), bayan_json_v_bool_new(exists));
+    bayan_json_v_obj_set(out, str_from("is_file"), bayan_json_v_bool_new(is_file));
+    bayan_json_v_obj_set(out, str_from("is_dir"), bayan_json_v_bool_new(is_dir));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _file_read_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("path", "{ \"type\": \"string\", \"description\": \"File path to read\" }"));
+    vec_push(v, schema_prop_new("max_bytes",
+    "{ \"type\": \"integer\", \"description\": \"Max bytes to read (default: 1MB)\" }"));
+    return v;
+}
+
+fn _file_write_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("path", "{ \"type\": \"string\", \"description\": \"File path to write\" }"));
+    vec_push(v, schema_prop_new("content", "{ \"type\": \"string\", \"description\": \"Content to write\" }"));
+    vec_push(v, schema_prop_new("append",
+    "{ \"type\": \"boolean\", \"description\": \"Append instead of overwrite (default: false)\" }"));
+    return v;
+}
+
+fn _dir_list_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("path",
+    "{ \"type\": \"string\", \"description\": \"Directory path (default: current dir)\" }"));
+    vec_push(v, schema_prop_new("recursive",
+    "{ \"type\": \"boolean\", \"description\": \"Recurse into subdirectories (default: false)\" }"));
+    vec_push(v, schema_prop_new("max_entries",
+    "{ \"type\": \"integer\", \"description\": \"Max entries to return (default: 500)\" }"));
+    return v;
+}
+
+fn _path_props(desc_c) {
+    var v = vec_new();
+    var b = str_builder_new();
+    str_builder_add_cstr(b, "{ \"type\": \"string\"");
+    str_builder_add_cstr(b, desc_c);
+    str_builder_add_cstr(b, " }");
+    var p_c = str_cstr(str_builder_build(b));
+    vec_push(v, schema_prop_new("path", p_c));
+    return v;
+}
+
+# The file tool group: file_read, file_write, dir_list, file_stat, path_exists.
+fn file_tools() {
+    var tools = vec_new();
+    var p_req = vec_new();
+    vec_push(p_req, "path");
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_file_read", "Read a file's contents as text", _file_read_props(), p_req),
+    &_file_read_handler));
+
+    var w_req = vec_new();
+    vec_push(w_req, "path");
+    vec_push(w_req, "content");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_file_write", "Write text content to a file (creates or overwrites)",
+    _file_write_props(), w_req), &_file_write_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_dir_list", "List files and directories in a path", _dir_list_props(), vec_new()),
+    &_dir_list_handler));
+
+    var s_req = vec_new();
+    vec_push(s_req, "path");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_file_stat", "Get metadata for a file or directory (size, permissions, timestamps)",
+    _path_props(", \"description\": \"File or directory path\""), s_req), &_file_stat_handler));
+
+    var e_req = vec_new();
+    vec_push(e_req, "path");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_path_exists", "Check if a file or directory exists", _path_props(""), e_req),
+    &_path_exists_handler));
+    return tools;
+}
