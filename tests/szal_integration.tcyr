@@ -1,0 +1,98 @@
+# szal_integration.tcyr — cross-cutting integration tests (ports rust-old/src/tests/mod.rs).
+#
+# The 4 end-to-end smokes from the Rust integration suite: a full sequential flow, a diamond DAG, a
+# state-lifecycle check, and the RetryExhausted error Display. Completes test parity (294 Rust tests).
+#
+#   cyrius build --strict --no-deps tests/szal_integration.tcyr build/test_integration
+#   ./build/test_integration
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+
+# A full 3-step sequential pipeline builds + validates. (tests/mod.rs 3-11)
+fn t_full_sequential_flow() {
+    var flow = flow_new(str_from("deploy-pipeline"), FLOW_SEQUENTIAL);
+    flow_add_step(flow, step_with_timeout(step_new(str_from("build")), 60000));
+    flow_add_step(flow, step_with_retries(step_new(str_from("test")), 2, 1000));
+    flow_add_step(flow, step_with_rollback(step_new(str_from("deploy"))));
+    assert_eq(flow_steps_len(flow), 3, "three steps");
+    assert_eq(is_ok(flow_validate(flow)), 1, "sequential flow validates");
+    return 0;
+}
+
+# A diamond DAG (build → {unit, integ} → deploy) validates. (tests/mod.rs 13-28)
+fn t_dag_flow_with_diamond() {
+    var build = step_new(str_from("build"));
+    var unit = step_depends_on_add(step_new(str_from("unit-test")), step_id_hi(build), step_id_lo(build));
+    var integ = step_depends_on_add(step_new(str_from("integ-test")), step_id_hi(build), step_id_lo(build));
+    var deploy = step_new(str_from("deploy"));
+    deploy = step_depends_on_add(deploy, step_id_hi(unit), step_id_lo(unit));
+    deploy = step_depends_on_add(deploy, step_id_hi(integ), step_id_lo(integ));
+
+    var flow = flow_new(str_from("diamond"), FLOW_DAG);
+    flow_add_step(flow, build);
+    flow_add_step(flow, unit);
+    flow_add_step(flow, integ);
+    flow_add_step(flow, deploy);
+    assert_eq(is_ok(flow_validate(flow)), 1, "diamond DAG validates");
+    return 0;
+}
+
+# Created is a non-terminal state that may transition to Running. (tests/mod.rs 30-35)
+fn t_workflow_state_lifecycle() {
+    assert_eq(state_valid_transition(STATE_CREATED, STATE_RUNNING), 1, "Created -> Running valid");
+    assert_eq(state_is_terminal(STATE_CREATED), 0, "Created is not terminal");
+    return 0;
+}
+
+# The RetryExhausted error Display carries the step name + attempt count. (tests/mod.rs 37-45)
+fn t_error_display() {
+    var msg = _retry_exhausted_msg(str_from("deploy"), 3);
+    assert(str_contains(msg, str_from("deploy")), "names the step");
+    assert(str_contains(msg, str_from("3")), "carries the attempt count");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("integration");
+    t_full_sequential_flow();
+    t_dag_flow_with_diamond();
+    t_workflow_state_lifecycle();
+    t_error_display();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

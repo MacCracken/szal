@@ -24,14 +24,6 @@ stdlib = ["string", "fmt", "alloc", "freelist", "vec", "str", "syscalls", "io", 
           "thread", "sync", "async", "atomic", "process", "net", "random", "log",
           "sakshi", "patra", "sigil", "bayan", "bench"]
 
-# ai-hwaccel has no git sub-deps -> safe as a normal dep block. Overlaid by `cyrius deps`
-# into lib/ai-hwaccel.cyr. Needed from M2 (engine_hardware) onward.
-[deps.ai-hwaccel]
-git = "https://github.com/MacCracken/ai-hwaccel"
-path = "../ai-hwaccel"
-tag = "2.3.9"
-modules = ["dist/ai-hwaccel.cyr"]
-
 # bote-core + majra are VENDORED at src/vendor/ (hoosh pattern): a [deps.bote] block would
 # make `cyrius deps` recurse into bote's own [deps.libro]/[deps.majra] git blocks (lib/ bloat
 # + last-definition-wins symbol collisions). Pins: bote 2.7.5 dist/bote-core.cyr,
@@ -42,3 +34,11 @@ modules = ["dist/ai-hwaccel.cyr"]
 # majra_step_result_new). main.cyr includes it after lib/thread.cyr (its only extra stdlib dep).
 # bote-core 2.7.5 vendored at src/vendor/bote-core.cyr (M3 MCP; its registry_new→tool_registry_new
 # rename dissolved the Q9 ai-hwaccel collision). Full rationale: docs/development/majra-vendoring.md.
+#
+# ai-hwaccel 2.3.9 is ALSO VENDORED at src/vendor/ai-hwaccel.cyr (scripts/sync-ai-hwaccel.sh) — the
+# former [deps.ai-hwaccel] block was removed: as a git dep, `cyrius build` resolves it on the
+# full-deps path, which on x86_64 mis-resolves szal's `var buf[ENUM_CONST]` idiom (error.cyr). With
+# all three (majra/bote-core/ai-hwaccel) vendored, szal has ZERO git deps -> CI is `cyrius lib sync`
+# (stdlib only) + `cyrius build --strict --no-deps` (the project build recipe). No `cyrius deps` /
+# cyrius.lock needed. REQ_*/FAMILY_* are shared with src/step.cyr; ERR_NONE/BYTES_PER_GB are unused
+# duplicates of szal core (harmless under the single-pass include order).

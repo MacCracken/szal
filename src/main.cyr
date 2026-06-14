@@ -28,13 +28,14 @@ include "lib/thread.cyr"
 include "lib/async.cyr"
 include "lib/patra.cyr"
 
-# ai-hwaccel dist (declared [deps.ai-hwaccel]; overlaid into lib/ by `cyrius deps`). Provides the
-# CachedRegistry + REQ_*/FAMILY_* surface for src/engine_hardware.cyr (row 17). Its registry_new is
-# no longer a collision: bote-core 2.7.5 renamed its tool registry ctor to tool_registry_new (Q9).
-# ai-hwaccel's detectors shell out (nvidia-smi, etc.) + read sysfs, so it needs fs + process.
+# ai-hwaccel VENDORED at src/vendor/ai-hwaccel.cyr (NOT a [deps] block — see cyrius.cyml: a git dep
+# forces the full-deps build path that mis-resolves error.cyr's enum-array on x86_64). Provides the
+# CachedRegistry + REQ_*/FAMILY_* surface for src/engine_hardware.cyr (row 17). Its detectors shell
+# out (nvidia-smi, etc.) + read sysfs, so it needs fs + process. Included AFTER src/error.cyr is not
+# required (vendored, no overlay), but it sits here next to its fs/process deps.
 include "lib/fs.cyr"
 include "lib/process.cyr"
-include "lib/ai-hwaccel.cyr"
+include "src/vendor/ai-hwaccel.cyr"
 
 # --- vendored deps (hoosh pattern). Full majra 2.4.6 dist with szal-collision renames applied
 # (MJ_ERR_/MJ_STEP_/MJ_TRIGGER_ + majra_uuid_generate/majra_step_result_new) — synced by

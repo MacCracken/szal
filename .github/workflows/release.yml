@@ -24,29 +24,45 @@ jobs:
           FILE_VERSION=$(cat VERSION | tr -d '[:space:]')
           TAG_VERSION="${GITHUB_REF_NAME}"
           test "$FILE_VERSION" = "$TAG_VERSION" || { echo "VERSION ($FILE_VERSION) != tag ($TAG_VERSION)"; exit 1; }
+          # cyrius.cyml version = ${file:VERSION}, so it derives from VERSION; tag == VERSION suffices.
+          echo "Version verified: $TAG_VERSION"
 
       - name: Install Cyrius toolchain
         run: |
-          CYRIUS_VERSION="${CYRIUS_VERSION:-$(grep 'cyrius *= *"' cyrius.cyml 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+          set -e
+          # Pin from cyrius.cyml is the single source of truth (no hardcoded version).
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sLO "https://github.com/MacCracken/cyrius/releases/download/$CYRIUS_VERSION/cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          tar xzf "cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          CYRIUS_DIR="cyrius-$CYRIUS_VERSION-x86_64-linux"
-          mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
-          cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
-          cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
-          chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
-          echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
-          echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain matches pin
+        run: |
+          PIN="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          GOT="$(cyrius --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+          [ "$PIN" = "$GOT" ] || { echo "ERROR: toolchain $GOT != pin $PIN"; exit 1; }
+          echo "Cyrius $GOT matches pin"
 
       - name: Build
+        # Zero git deps (all vendored at src/vendor/) -> stdlib provision + --no-deps build
+        # (the project recipe; full-deps build mis-resolves szal's enum-array idiom on x86_64).
         run: |
-          cyrius deps
+          cyrius lib sync
           mkdir -p build
-          cyrius build src/main.cyr build/${{ github.event.repository.name }}
+          cyrius build --strict --no-deps src/main.cyr "build/${{ github.event.repository.name }}"
+
+      - name: Archive
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          git archive --format=tar.gz --prefix="szal-${TAG}/" -o "szal-${TAG}-src.tar.gz" HEAD
+          sha256sum szal-*.tar.gz "build/${{ github.event.repository.name }}" > SHA256SUMS
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: build/*
+          files: |
+            szal-*.tar.gz
+            build/${{ github.event.repository.name }}
+            SHA256SUMS

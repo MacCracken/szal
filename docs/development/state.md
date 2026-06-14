@@ -375,6 +375,17 @@ ported, tested (per-group + full-stack), security-audited (validate_path / no-sh
 
 ## Toolchain gotchas found during the port (for docs/cyrius-feedback.md)
 
+- **🔴 full-deps `cyrius build` breaks `var buf[ENUM_CONST]` on x86_64 (6.2.2; ≥6.2.1):** building the
+  normal way (`cyrius build src/main.cyr …`, with dependency resolution) fails at `src/error.cyr:36`
+  with `array size identifier must be an enum constant (compile-time literal)` — the enum constant
+  (`SZAL_ERR_MSG_CAP`) isn't recognized as compile-time when deps are resolved. **`cyrius build
+  --no-deps` works** (proven by a minimal repro: `error.cyr` + basic stdlib only — no vendored/git
+  deps — still fails full, passes `--no-deps`). This is WHY the szal build/test recipe is `--no-deps`
+  everywhere, and why **CI uses `cyrius lib sync` (stdlib) + `cyrius build --strict --no-deps`, never
+  `cyrius deps`/`cyrius test`** (which take the full-deps path). To keep `--no-deps` self-sufficient,
+  szal vendors ALL git deps (majra/bote-core/**ai-hwaccel**, the last moved off `[deps.ai-hwaccel]`
+  2026-06-13 for exactly this reason) → zero git deps, no `cyrius.lock`. File for cyrius-feedback: a
+  dep-resolution pass is clobbering the enum-constant table before the entry TU's own enums register.
 - **bayan inline-parse miscompile (6.1.34):** calling `bayan_json_v_parse(...)` directly in `main()`
   when bayan + several project modules are included makes the parser globals read stale → every
   parse returns 0. Fix: wrap parsing in a one-line helper fn (`ctx_of(json)`); never call it inline.
@@ -422,8 +433,15 @@ cyrius build --strict --no-deps src/main.cyr build/szal      # entry build
 cyrius build --strict --no-deps tests/szal_<mod>.tcyr build/test_<mod> && ./build/test_<mod>
 ```
 
+**`--no-deps` is REQUIRED, not optional** — full-deps `cyrius build` (and `cyrius test`) break on the
+`var buf[ENUM_CONST]` idiom (see the 🔴 toolchain gotcha above). szal has zero git deps (all vendored
+at `src/vendor/`), so `cyrius lib sync` (stdlib) + `--no-deps` is complete; do NOT run `cyrius deps`.
+**CI (`.github/workflows/ci.yml`) follows exactly this**: install.sh (pin from cyrius.cyml) → verify
+toolchain == pin → `cyrius lib sync` → `--no-deps` build + lint(src/*.cyr) + per-suite test loop + fuzz.
+
 Note: editor/LSP diagnostics over-approximate (false "undefined function" / "array size"
-warnings); only `cyrius build` verdicts are authoritative.
+warnings); only `cyrius build --no-deps` verdicts are authoritative (the LSP mirrors the broken
+full-deps path, so `error.cyr:36 array size` shows in the editor but the `--no-deps` build is clean).
 
 ## Dependencies
 

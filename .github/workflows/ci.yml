@@ -13,32 +13,94 @@ concurrency:
 
 jobs:
   build:
-    name: Build
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Cyrius toolchain
         run: |
-          CYRIUS_VERSION="${CYRIUS_VERSION:-$(grep 'cyrius *= *"' cyrius.cyml 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+          set -e
+          # cyrius.cyml [package].cyrius is the SINGLE source of truth for the
+          # toolchain version (no hardcoded version anywhere else). Read the pin
+          # and hand it to the official installer (matches patra/sigil/agnosys).
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sLO "https://github.com/MacCracken/cyrius/releases/download/$CYRIUS_VERSION/cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          tar xzf "cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          CYRIUS_DIR="cyrius-$CYRIUS_VERSION-x86_64-linux"
-          mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
-          cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
-          cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
-          chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
-          echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
-          echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
 
-      - name: Resolve dependencies
-        run: cyrius deps
+      - name: Verify toolchain matches pin
+        # Fail fast if the installer landed a different version than the pin
+        # (e.g. a missing release asset / silent fallback). Catches toolchain
+        # drift in CI instead of building against the wrong cycc undetected.
+        run: |
+          PIN="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          GOT="$(cyrius --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+          [ "$PIN" = "$GOT" ] || { echo "ERROR: toolchain $GOT != pin $PIN"; exit 1; }
+          echo "Cyrius $GOT matches pin"
+
+      - name: Provision stdlib
+        # szal vendors ALL git deps (majra / bote-core / ai-hwaccel at src/vendor/),
+        # so there is NO `cyrius deps` step — only the stdlib needs provisioning.
+        run: cyrius lib sync
 
       - name: Build
+        # Build --no-deps: szal has zero git deps (all vendored) and the project
+        # build recipe is --no-deps. Full-deps `cyrius build` mis-resolves szal's
+        # `var buf[ENUM_CONST]` idiom at error.cyr on x86_64 (toolchain gotcha —
+        # see docs/development/state.md); --no-deps is the supported path.
         run: |
           mkdir -p build
-          cyrius build src/main.cyr build/${{ github.event.repository.name }}
+          cyrius build --strict --no-deps src/main.cyr "build/${{ github.event.repository.name }}"
+          "./build/${{ github.event.repository.name }}"
+
+      - name: Lint
+        # Hard gate: any cyrlint `warn` line fails CI. Only szal-authored src/*.cyr
+        # are linted (src/vendor/* are upstream dists, exempt).
+        run: |
+          fail=0
+          for f in src/*.cyr; do
+            out=$(cyrius lint "$f" 2>&1 || true)
+            if echo "$out" | grep -qE '^[[:space:]]*warn '; then
+              echo "lint: warnings in $f"; echo "$out"; fail=1
+            fi
+          done
+          [ $fail -eq 0 ] || { echo "lint: warnings present"; exit 1; }
+
+      - name: Test suite
+        # Each tests/szal_*.tcyr is a self-contained --no-deps suite (the project
+        # recipe). Build + run each; any compile or assertion failure fails CI.
+        run: |
+          pass=0; fail=0
+          for t in tests/szal_*.tcyr tests/szal.tcyr; do
+            [ -f "$t" ] || continue
+            name=$(basename "$t" .tcyr)
+            if cyrius build --strict --no-deps "$t" "build/$name" >/dev/null 2>&1 \
+               && "build/$name" >/dev/null 2>&1; then
+              pass=$((pass+1))
+            else
+              echo "FAIL: $name"; fail=$((fail+1))
+            fi
+          done
+          rm -f szal_hash_test.bin; rm -rf szal_fdir   # transient file/hash-tool artifacts
+          echo "$pass passed, $fail failed"
+          test $fail -eq 0
+
+      - name: Fuzz
+        # Property harnesses exit 0 on success, non-zero on a violated invariant.
+        # Skips cleanly until fuzz/*.fcyr land.
+        run: |
+          if ls fuzz/*.fcyr >/dev/null 2>&1; then
+            for f in fuzz/*.fcyr; do
+              name=$(basename "$f" .fcyr)
+              cyrius build --no-deps "$f" "build/$name"
+              timeout 30 "build/$name" || { echo "FUZZ CRASH: $name"; exit 1; }
+              echo "  $name: ok"
+            done
+          else
+            echo "no fuzz harnesses yet"
+          fi
 
   docs:
     name: Documentation
@@ -50,3 +112,10 @@ jobs:
           for doc in README.md CHANGELOG.md VERSION LICENSE cyrius.cyml; do
             test -f "$doc" && echo "OK: $doc" || { echo "MISSING: $doc"; exit 1; }
           done
+      - name: Verify version consistency
+        run: |
+          FILE_VERSION=$(cat VERSION | tr -d '[:space:]')
+          CYML_RAW=$(grep '^version = ' cyrius.cyml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          if [ "$CYML_RAW" = "\${file:VERSION}" ]; then CYML_VERSION="$FILE_VERSION"; else CYML_VERSION="$CYML_RAW"; fi
+          [ "$FILE_VERSION" = "$CYML_VERSION" ] || { echo "VERSION ($FILE_VERSION) != cyrius.cyml ($CYML_RAW)"; exit 1; }
+          echo "Version consistent: $FILE_VERSION"

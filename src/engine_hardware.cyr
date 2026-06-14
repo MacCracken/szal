@@ -8,8 +8,8 @@
 # reused across flow executions. In Cyrius the "context" IS the ai-hwaccel CachedRegistry handle
 # (cached_registry_new) — AGNOS hands the consumer the handle directly. 0 = None (no hardware ctx).
 #
-# Usage: include AFTER lib/ai-hwaccel.cyr + src/error.cyr + src/step.cyr + src/engine_core.cyr.
-# Requires: lib/ai-hwaccel.cyr (cached_registry_new/cached_get/reg_profiles/count_satisfying/
+# Usage: include AFTER src/vendor/ai-hwaccel.cyr + src/error.cyr + src/step.cyr + src/engine_core.cyr.
+# Requires: src/vendor/ai-hwaccel.cyr (cached_registry_new/cached_get/reg_profiles/count_satisfying/
 #   reg_count_by_family/reg_has_accelerator/requirement_name + REQ_*/FAMILY_* constants),
 #   src/error.cyr (ERR_HW_UNAVAILABLE/szal_err), src/step.cyr (step_hardware/step_name),
 #   src/engine_core.cyr (engine_config_set_hardware_ctx), lib/str.cyr (str_builder), lib/result.cyr.
