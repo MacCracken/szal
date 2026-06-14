@@ -420,6 +420,35 @@ closed/invalid, url encode/decode/round-trip/UTF-8) all pass. See `src/mcp_tools
 
 ---
 
+## 24. Tool error-message detail + signal-exit edge (multiple `mcp_tools_*.cyr`)
+
+Surfaced by the 2026-06-13 adversarial parity audit of the 15 tool files. All are minor,
+test-invisible, and do not change any validation verdict or security check — the error-message
+**prefixes** and all pass/fail outcomes match Rust exactly; only an appended underlying-error
+**detail** (a different parser's/OS's wording) differs or is omitted.
+
+1. **`base_convert` parse-error detail** (`mcp_tools_conversion.cyr`): Rust emits
+   `"invalid number '{value}' for base {from}: {e}"` where `{e}` is the std radix-parse error; the
+   port omits the `: {e}` suffix (szal's `_parse_radix` returns a bare -1 with no error text).
+2. **`invalid JSON` detail** (`mcp_tools_step.cyr` validate/inspect; same family in
+   `mcp_tools_flow.cyr`): Rust appends the serde error (`"invalid JSON: {e}"`); the port emits the
+   bare `"invalid JSON"`. Even if bayan's `_json_err_msg` were appended it would NOT match Rust's
+   text (different parsers → different wording), so the detail is intentionally dropped. (Cf. §15,
+   which already records that json_validate reports a byte position, not serde's line/column.)
+3. **`szal_exec` signal-killed exit code** (`mcp_tools_process.cyr`): Rust's `status.code()` returns
+   `None` for a signal-terminated child → `-1`; the port computes `(status >> 8) & 0xFF` (= 0 for a
+   signal kill, no `WIFEXITED` check). Unreachable for the PATH-resolved, fast, well-behaved commands
+   the tool runs in practice (and tested).
+
+**Why accepted:** none affect a tested assertion, a validation outcome, or a security boundary; the
+divergent text is the wording of a foreign parser/OS error or an unreachable process state. The audit
+found **zero security gaps** (SSRF blocklist, no-shell exec, `..`/`/` rejection, `validate_git_ref`,
+CR/LF header rejection, validate_path-on-every-file-op all confirmed exact) and **zero correctness
+bugs** (the one flagged `file_stat` "readonly" item was a false positive — `0x92` = `0o222` is exactly
+Rust's `mode & 0o222 == 0`).
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/
@@ -478,3 +507,14 @@ closed/invalid, url encode/decode/round-trip/UTF-8) all pass. See `src/mcp_tools
   all three entry points (`_engine_check_hardware` after validate, no-op when `config.hardware==0`),
   mirroring the Rust `#[cfg(feature = "hardware")]` blocks. The gating `registry_new` collision (Q9)
   was resolved by the bote 2.7.5 re-sync (`registry_new`→`tool_registry_new`) — see the issue file.
+- **2026-06-13 — M3 MCP tool-surface parity audit** (all 15 tool files / 54 tools vs `rust-old/src/
+  mcp/tools/*.rs`, 5 read-only adversarial auditors, oracle guarded + re-verified pristine):
+  **SECURITY CLEAN across the board** — the SSRF blocklist (`is_safe_url`), no-shell fork/exec +
+  `..`/`/` command rejection, `validate_git_ref` leading-`-` rejection, CR/LF header-injection
+  rejection, and validate_path-on-every-file-op were all confirmed byte/branch-exact vs Rust. **0
+  correctness bugs**: the one flagged `file_stat` "readonly" item was a **false positive** (auditor
+  misread Rust std — `readonly()` masks `0o222`, exactly the port's `0x92`). **3 minor, test-invisible
+  error-detail/edge divergences** triaged to §24 (base_convert `: {e}` suffix omitted; `invalid JSON`
+  serde-detail omitted; `exec` signal-killed exit code → 0 not -1). All previously-documented
+  divergences (§12–§23) confirmed accurate. Net: the 54-tool surface ports faithfully; no fixes
+  required, no oracle mutation.

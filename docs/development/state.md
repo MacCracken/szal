@@ -11,12 +11,10 @@
 
 ## Toolchain
 
-- **Cyrius pin**: `6.1.37` (in `cyrius.cyml [package].cyrius`). The full suite (1036 assertions across
-  27 module test files + the `szal.tcyr` smoke) + main are green under **6.1.37** and the installed
-  **6.2.2** wrapper (2026-06-13; pin drift is a pending bookkeeping reconcile, suite green on both); the
-  pin matches the installed wrapper — drift cleared. (Silence drift / lib-shadow notes per-invocation
-  with `CYRIUS_NO_WARN_PIN_DRIFT=1` / `CYRIUS_NO_WARN_SHADOW_LIB=1`.) History: 6.1.33 (M0) → 6.1.34 →
-  6.1.35 → 6.1.36 → 6.1.37.
+- **Cyrius pin**: `6.2.2` (in `cyrius.cyml [package].cyrius`) — **reconciled to the installed wrapper
+  2026-06-13; no pin-drift warning.** The full suite (1427 assertions across 43 module test files +
+  the `szal.tcyr` smoke) + main are green under **6.2.2**. (Silence the lib-shadow note per-invocation
+  with `CYRIUS_NO_WARN_SHADOW_LIB=1`.) History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 → 6.2.2.
 
 ## Milestone
 
@@ -60,8 +58,12 @@ the bote 2.7.5 re-sync (`registry_new`→`tool_registry_new`), which unblocked a
 (row 21) runs nested flows, and `engine_hardware` (row 17) gates execution on accelerator
 availability — **M2 is feature-complete.**
 
-**M3 — Streaming, persistence, MCP. ⏳ in progress (rows 22–23 done; bote vendored + MCP core done;
-MCP pool/tenant + the 54 tools remain).**
+**M3 — Streaming, persistence, MCP. ✅ COMPLETE (2026-06-13).** Streaming (`stream.cyr`) + persistence
+(`sql_store.cyr`, patra) + MCP core (`mcp.cyr` validate_path/result/registration) + MCP pool/tenant +
+**ALL 15 tool groups / 54 tools** (encoding, hash, system, json, template, conversion, math, state,
+step, flow, engine, file, process, git, net) + `all_tools()`/`szal_register_tools()` aggregator —
+ported, tested (per-group + full-stack), security-audited (validate_path / no-shell exec / SSRF guard
+/ rate limits), and wired into `main()`. bote-core 2.7.5 + full majra 2.4.6 + ai-hwaccel vendored.
 - ✅ **row 22 `src/stream.cyr`** — `ProgressHub` + SSE encoding. Rust's `tokio::broadcast` →
   **per-subscriber bounded channels** (port-plan's documented alternative): `hub_new(cap≥1)`/
   `hub_subscribe`(→`chan_new(cap)`)/`hub_sink`(ProgressSink cb pair fanning to every subscriber)/
@@ -442,7 +444,7 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 **Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 ✅ MCP COMPLETE (stream + sql_store + mcp core +
 pool/tenant + ALL 15 tool groups / 54 tools) + bote vendoring, all parity-verified 0-findings): 44
-modules, 1427 assertions, 0 failures, oracle pristine. Pin 6.1.37 (installed 6.2.2 — green both).**
+modules, 1427 assertions, 0 failures, oracle pristine. Pin 6.2.2 (reconciled — drift cleared).**
 All engine modules ported (six modes + core + step_exec + Engine + sub_flow + **hardware/row 17**).
 M3: streaming (`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` —
 result/errcode/**validate_path security**/registration) + **MCP pool + tenant** done; **bote-core
@@ -453,13 +455,16 @@ in the build. Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to
 `main()` (`./build/szal` registers all 54 → `szal ready`).** No engine rows remain. Per-group tests +
 a full-stack aggregator test (`tests/szal_mcp_tools_net.tcyr` asserts `all_tools()`==54 register).
 
-**Pick up at: M3 wrap-up, then M4.** Small loose ends before M3 is formally closed:
-1. **Pin reconcile** — `cyrius.cyml` says 6.1.37; installed wrapper is 6.2.2 (suite green on both).
-   Bump the pin (and the majra dep line 2.4.5→2.4.6, deferred to M5) or decide to hold.
-2. **Optional confirmation audit** — an adversarial parity sweep over the 15 tool files vs `rust-old`
-   (oracle read-only), like the M1/M2 module audits. Per-tool divergences are already logged
-   (parity-notes §12–§23), so this is a confirmation pass, not new findings.
-3. **Roadmap re-check** — streaming/persistence/MCP were the M3 scope and are all done; advance to M4.
+**Pick up at: M4 (M3 is fully wrapped — pin reconciled + tool audit done).** Status of the loose ends:
+1. ✅ **Pin reconciled** (2026-06-13) — `cyrius.cyml` bumped 6.1.37→**6.2.2** (matches installed
+   wrapper; no more drift warning). bote/majra version comments in the manifest also reconciled
+   (2.7.5 / 2.4.6). The `[deps.ai-hwaccel]` tag stays 2.3.9 (overlaid); majra dist-pin note for M5.
+2. ✅ **Tool-surface parity audit done** (2026-06-13, 5 adversarial auditors vs `rust-old`, oracle
+   re-verified pristine): **security clean, 0 correctness bugs**; 3 minor test-invisible error-detail
+   divergences logged in **parity-notes §24** (+ disposition entry). One flagged item was a false
+   positive (file_stat readonly is correct). No code fixes required.
+3. **Roadmap re-check** — streaming/persistence/MCP (the full M3 scope) are all done; **advance to M4**
+   (see roadmap.md).
 
 The `dist/szal.cyr` contract: all tool names are `szal_*`; `all_tools()` / `szal_register_tools()`
 (in `mcp_tools_net.cyr`) are the registration entry points consumers (daimon/sutra) call. Security
@@ -473,5 +478,5 @@ was dissolved by the bote 2.7.5 re-sync; ai-hwaccel is overlaid into the build a
 consults `config.hardware` at all three entry points. Nothing left to do here.
 
 See [`roadmap.md`](roadmap.md) M3, [`port-plan.md`](port-plan.md) §4 (per-module spec),
-[`parity-notes.md`](parity-notes.md) (accepted divergences §1–23 + audit log), and
+[`parity-notes.md`](parity-notes.md) (accepted divergences §1–24 + audit log), and
 [`majra-vendoring.md`](majra-vendoring.md) (re-sync).

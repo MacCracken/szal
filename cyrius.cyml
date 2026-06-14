@@ -5,7 +5,7 @@ description = "szal — workflow engine: step/flow execution with branching, ret
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/szal"
 language = "cyrius"
-cyrius = "6.1.37"
+cyrius = "6.2.2"
 
 [build]
 entry = "src/main.cyr"
@@ -34,12 +34,11 @@ modules = ["dist/ai-hwaccel.cyr"]
 
 # bote-core + majra are VENDORED at src/vendor/ (hoosh pattern): a [deps.bote] block would
 # make `cyrius deps` recurse into bote's own [deps.libro]/[deps.majra] git blocks (lib/ bloat
-# + last-definition-wins symbol collisions). Pins: bote 2.7.3 dist/bote-core.cyr,
-# majra 2.4.5 dist/majra.cyr -- re-synced by scripts/sync-bote.sh / sync-majra.sh.
+# + last-definition-wins symbol collisions). Pins: bote 2.7.5 dist/bote-core.cyr,
+# majra 2.4.6 dist/majra.cyr -- re-synced by scripts/sync-bote.sh / sync-majra.sh.
 #
 # FULL majra dist is VENDORED at src/vendor/majra.cyr (majra 2.4.6, synced by scripts/sync-majra.sh
 # with the 9-symbol szal-collision rename: MJ_ERR_/MJ_STEP_/MJ_TRIGGER_ + majra_uuid_generate/
 # majra_step_result_new). main.cyr includes it after lib/thread.cyr (its only extra stdlib dep).
-# Pin note: this comment says majra 2.4.5 above but the vendored dist is 2.4.6 (byte-identical
-# dist) -- reconcile at release. Full rationale: docs/development/majra-vendoring.md. bote-core
-# lands with M3 MCP.
+# bote-core 2.7.5 vendored at src/vendor/bote-core.cyr (M3 MCP; its registry_new→tool_registry_new
+# rename dissolved the Q9 ai-hwaccel collision). Full rationale: docs/development/majra-vendoring.md.
