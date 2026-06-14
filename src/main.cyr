@@ -95,6 +95,10 @@ include "src/mcp_tools_engine.cyr"
 include "src/mcp_tools_file.cyr"
 include "src/mcp_tools_process.cyr"
 include "src/mcp_tools_git.cyr"
+# lib/net.cyr (tcp_socket / net_connect_nb) for szal_port_check. Included here (after core) to avoid
+# any enum-shadow ordering issues, consistent with sigil/math.
+include "lib/net.cyr"
+include "src/mcp_tools_net.cyr"
 
 fn main() {
     alloc_init();
@@ -111,12 +115,21 @@ fn main() {
     flow_add_step(pipe, build);
     flow_add_step(pipe, deploy);
 
-    if (is_ok(flow_validate(pipe))) {
-        println("szal ready");
-        return 0;
+    if (is_ok(flow_validate(pipe)) == 0) {
+        println("szal: foundation smoke failed");
+        return 1;
     }
-    println("szal: foundation smoke failed");
-    return 1;
+
+    # Smoke the MCP surface: register all 54 built-in tools into a dispatcher (proves the full tool
+    # surface links + aggregates). Full assertions live in tests/szal_mcp_tools_*.tcyr.
+    var d = szal_register_tools();
+    if (d == 0 || registry_len(dispatcher_registry(d)) != 54) {
+        println("szal: mcp tool registration failed");
+        return 1;
+    }
+
+    println("szal ready");
+    return 0;
 }
 
 var r = main();

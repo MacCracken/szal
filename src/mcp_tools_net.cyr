@@ -1,0 +1,613 @@
+# mcp_tools_net.cyr — MCP network tools (ports mcp/tools/net_tools.rs): szal_http, szal_dns_lookup,
+# szal_port_check, szal_url_encode. THE FINAL TOOL FILE — also defines all_tools()/szal_register_tools().
+#
+# SECURITY (SSRF + rate limits — do NOT regress):
+#  - szal_http requires http(s):// and runs `is_safe_url` (this file): blocks cloud-metadata endpoints
+#    (169.254.169.254, metadata.google.internal/.goog), localhost/127.0.0.1/::1/0.0.0.0, and RFC1918
+#    ranges (10/8, 192.168/16, 172.16-31/12). Header values with CR/LF are rejected (no header
+#    injection). curl runs via the no-shell _proc_run.
+#  - Every network op consults the majra rate limiter via pool() (mcp_pool.cyr): HTTP per-host, DNS
+#    per-hostname, port per host:port — over-limit → Timeout.
+#
+# PARITY NOTES (§23):
+#  - DNS resolution shells out to `getent ahosts <host>` (no getaddrinfo wired) — addresses are its
+#    first-column IPs, deduped. szal_port_check connects to a dotted-quad host only (no hostname
+#    resolution) via net_connect_nb; the timeout IS enforced (poll-based). url_decode does not
+#    UTF-8-validate (the invalid-UTF8 error branch is unreachable). curl exec inherits the §22 limits.
+#
+# Usage: include AFTER all other mcp_tools_*.cyr + src/mcp_tools_process.cyr + src/mcp_pool.cyr +
+#   lib/net.cyr + src/mcp.cyr (+ lib/bayan, lib/str).
+
+enum NetTools {
+    DEFAULT_HTTP_TIMEOUT_SECS = 30;
+    DEFAULT_PORT_CHECK_TIMEOUT_MS = 3000;
+}
+
+fn _net_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# Lowercase ASCII copy of a Str.
+fn _net_lower(s) {
+    var n = str_len(s);
+    var d = str_data(s);
+    var buf = alloc(n);
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i) & 0xFF;
+        if (c >= 65 && c <= 90) { c = c + 32; }
+        store8(buf + i, c);
+        i = i + 1;
+    }
+    return str_new(buf, n);
+}
+
+# Extract the host (no scheme, no port, no path) from a URL Str.
+fn _net_host(url) {
+    var rest = url;
+    if (str_starts_with(url, str_from("http://")) == 1) { rest = str_substr(url, 7, str_len(url)); }
+    elif (str_starts_with(url, str_from("https://")) == 1) { rest = str_substr(url, 8, str_len(url)); }
+    var d = str_data(rest);
+    var n = str_len(rest);
+    var end = 0;
+    while (end < n) {
+        var c = load8(d + end) & 0xFF;
+        if (c == 47 || c == 58) { end = n + 1; } else { end = end + 1; }
+    }
+    var hlen = 0;
+    while (hlen < n) {
+        var c2 = load8(d + hlen) & 0xFF;
+        if (c2 == 47 || c2 == 58) { return str_new(d, hlen); }
+        hlen = hlen + 1;
+    }
+    return str_new(d, n);
+}
+
+# is_safe_url: 0 if the host is allowed, else an error-message Str. Mirrors is_safe_url (net_tools.rs 14-60).
+fn _net_is_safe(url) {
+    var host = _net_host(url);
+    var lo = _net_lower(host);
+
+    if (str_eq_cstr(lo, "169.254.169.254") == 1 || str_eq_cstr(lo, "metadata.google.internal") == 1
+    || str_eq_cstr(lo, "metadata.goog") == 1) {
+        var mb = str_builder_new();
+        str_builder_add_cstr(mb, "requests to ");
+        str_builder_add(mb, host);
+        str_builder_add_cstr(mb, " are blocked");
+        return str_builder_build(mb);
+    }
+
+    var priv = 0;
+    if (str_eq_cstr(lo, "localhost") == 1 || str_eq_cstr(lo, "127.0.0.1") == 1
+    || str_eq_cstr(lo, "::1") == 1 || str_eq_cstr(lo, "0.0.0.0") == 1) { priv = 1; }
+    if (str_starts_with(lo, str_from("10.")) == 1) { priv = 1; }
+    if (str_starts_with(lo, str_from("192.168.")) == 1) { priv = 1; }
+    if (str_starts_with(lo, str_from("172.")) == 1) {
+        # second octet in 16..=31
+        var d = str_data(lo);
+        var n = str_len(lo);
+        var i = 4;
+        var oct = 0;
+        var got = 0;
+        while (i < n) {
+            var c = load8(d + i) & 0xFF;
+            if (c >= 48 && c <= 57) { oct = oct * 10 + (c - 48); got = 1; i = i + 1; }
+            else { i = n; }
+        }
+        if (got == 1 && oct >= 16 && oct <= 31) { priv = 1; }
+    }
+    if (priv == 1) {
+        var pb = str_builder_new();
+        str_builder_add_cstr(pb, "requests to private/internal addresses are blocked: ");
+        str_builder_add(pb, host);
+        return str_builder_build(pb);
+    }
+    return 0;
+}
+
+# szal_http: HTTP request via curl with SSRF guard + rate limit. Mirrors HttpRequest::call
+# (net_tools.rs 81-205). The successful-curl path is faithful but untested (tests cover rejections).
+fn _http_handler(args, claims) {
+    var o = _net_parse_args(args);
+    var uv = bayan_json_v_obj_get(o, "url");
+    if (bayan_json_v_is_str(uv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: url"));
+        return str_data(e);
+    }
+    var url = bayan_json_v_str(uv);
+    if (str_starts_with(url, str_from("http://")) == 0 && str_starts_with(url, str_from("https://")) == 0) {
+        var es = result_error_typed(MCP_VALIDATION, str_from("only http:// and https:// URLs are allowed"));
+        return str_data(es);
+    }
+    var unsafe_msg = _net_is_safe(url);
+    if (unsafe_msg != 0) {
+        var ep = result_error_typed(MCP_PERMISSION_DENIED, unsafe_msg);
+        return str_data(ep);
+    }
+    var host = _net_host(url);
+    if (pool_check_http(pool(), str_cstr(host)) == 0) {
+        var rb = str_builder_new();
+        str_builder_add_cstr(rb, "rate limit exceeded for host: ");
+        str_builder_add(rb, host);
+        var er = result_error_typed(MCP_TIMEOUT, str_builder_build(rb));
+        return str_data(er);
+    }
+
+    var method = "GET";
+    var mv = bayan_json_v_obj_get(o, "method");
+    if (bayan_json_v_is_str(mv) == 1) { method = str_cstr(bayan_json_v_str(mv)); }
+    var timeout = DEFAULT_HTTP_TIMEOUT_SECS;
+    var tv = bayan_json_v_obj_get(o, "timeout_secs");
+    if (bayan_json_v_is_int(tv) == 1) { timeout = bayan_json_v_int(tv); }
+    var tb = str_builder_new();
+    str_builder_add_int(tb, timeout);
+    var timeout_c = str_cstr(str_builder_build(tb));
+
+    var argv = vec_new();
+    vec_push(argv, "curl");
+    vec_push(argv, "-s");
+    vec_push(argv, "-S");
+    vec_push(argv, "-w");
+    vec_push(argv, "\n%{http_code}");
+    vec_push(argv, "-X");
+    vec_push(argv, method);
+    vec_push(argv, "--max-time");
+    vec_push(argv, timeout_c);
+    vec_push(argv, "-D");
+    vec_push(argv, "-");
+
+    var hv = bayan_json_v_obj_get(o, "headers");
+    if (bayan_json_v_is_obj(hv) == 1) {
+        var pairs = load64(hv + 8);
+        var hn = vec_len(pairs);
+        var hi = 0;
+        while (hi < hn) {
+            var pair = vec_get(pairs, hi);
+            hi = hi + 1;
+            var key = load64(pair);
+            var valv = load64(pair + 8);
+            if (bayan_json_v_is_str(valv) == 1) {
+                var val = bayan_json_v_str(valv);
+                if (_net_has_crlf(key) == 1 || _net_has_crlf(val) == 1) {
+                    var hb = str_builder_new();
+                    str_builder_add_cstr(hb, "header '");
+                    str_builder_add(hb, key);
+                    str_builder_add_cstr(hb, "' contains invalid newline characters");
+                    var eh = result_error_typed(MCP_VALIDATION, str_builder_build(hb));
+                    return str_data(eh);
+                }
+                var kb = str_builder_new();
+                str_builder_add(kb, key);
+                str_builder_add_cstr(kb, ": ");
+                str_builder_add(kb, val);
+                vec_push(argv, "-H");
+                vec_push(argv, str_cstr(str_builder_build(kb)));
+            }
+        }
+    }
+    var bv = bayan_json_v_obj_get(o, "body");
+    if (bayan_json_v_is_str(bv) == 1) {
+        vec_push(argv, "-d");
+        vec_push(argv, str_cstr(bayan_json_v_str(bv)));
+    }
+    vec_push(argv, str_cstr(url));
+
+    var res = _proc_run(argv, 0);
+    if (load64(res + 24) == 0) {
+        var ef = result_error_typed(MCP_IO_ERROR, str_from("failed to execute curl"));
+        return str_data(ef);
+    }
+    # Parse: last stdout line = status code; headers up to the first blank line, then body.
+    var raw = load64(res + 8);
+    var lines = str_split(raw, 10);
+    var nl = vec_len(lines);
+    var status_code = 0;
+    if (nl > 0) {
+        var last = vec_get(lines, nl - 1);
+        status_code = _net_atoi(last);
+    }
+    var headers = bayan_json_v_arr_new();
+    var bodyb = str_builder_new();
+    var in_headers = 1;
+    var first_body = 1;
+    var li = 0;
+    while (li < nl) {
+        var line = vec_get(lines, li);
+        var idx = li;
+        li = li + 1;
+        if (idx == nl - 1) { idx = idx; } else {
+            if (in_headers == 1) {
+                if (str_len(line) == 0) { in_headers = 0; } else {
+                    bayan_json_v_arr_push(headers, bayan_json_v_str_new(line));
+                }
+            } else {
+                if (first_body == 0) { str_builder_add_byte(bodyb, 10); }
+                str_builder_add(bodyb, line);
+                first_body = 0;
+            }
+        }
+    }
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("status_code"), bayan_json_v_int_new(status_code));
+    bayan_json_v_obj_set(out, str_from("headers"), headers);
+    bayan_json_v_obj_set(out, str_from("body"), bayan_json_v_str_new(str_builder_build(bodyb)));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# 1 if a Str contains CR or LF.
+fn _net_has_crlf(s) {
+    var d = str_data(s);
+    var n = str_len(s);
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i) & 0xFF;
+        if (c == 10 || c == 13) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Parse a leading non-negative integer from a Str (0 if none).
+fn _net_atoi(s) {
+    var d = str_data(s);
+    var n = str_len(s);
+    var v = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i) & 0xFF;
+        if (c >= 48 && c <= 57) { v = v * 10 + (c - 48); i = i + 1; } else { i = n; }
+    }
+    return v;
+}
+
+# szal_dns_lookup: resolve a hostname (via `getent ahosts`). Mirrors DnsLookup::call (net_tools.rs 221-258).
+fn _dns_handler(args, claims) {
+    var o = _net_parse_args(args);
+    var hv = bayan_json_v_obj_get(o, "hostname");
+    if (bayan_json_v_is_str(hv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: hostname"));
+        return str_data(e);
+    }
+    var hostname = bayan_json_v_str(hv);
+    if (pool_check_dns(pool(), str_cstr(hostname)) == 0) {
+        var rb = str_builder_new();
+        str_builder_add_cstr(rb, "rate limit exceeded for DNS: ");
+        str_builder_add(rb, hostname);
+        var er = result_error_typed(MCP_TIMEOUT, str_builder_build(rb));
+        return str_data(er);
+    }
+
+    var argv = vec_new();
+    vec_push(argv, "getent");
+    vec_push(argv, "ahosts");
+    vec_push(argv, str_cstr(hostname));
+    var res = _proc_run(argv, 0);
+    if (load64(res + 24) == 0 || load64(res) != 0 || str_len(load64(res + 8)) == 0) {
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "DNS lookup failed for ");
+        str_builder_add(eb, hostname);
+        var ef = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+        return str_data(ef);
+    }
+
+    # Collect the first whitespace-delimited field (the IP) of each line; dedup.
+    var seen = map_new_str();
+    var arr = bayan_json_v_arr_new();
+    var lines = str_split(load64(res + 8), 10);
+    var n = vec_len(lines);
+    var i = 0;
+    while (i < n) {
+        var line = vec_get(lines, i);
+        i = i + 1;
+        var ip = _net_first_field(line);
+        if (str_len(ip) > 0) {
+            if (map_get(seen, ip) == 0) {
+                map_set(seen, ip, 1);
+                bayan_json_v_arr_push(arr, bayan_json_v_str_new(ip));
+            }
+        }
+    }
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("hostname"), bayan_json_v_str_new(hostname));
+    bayan_json_v_obj_set(out, str_from("addresses"), arr);
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# First whitespace-delimited field of a line (Str).
+fn _net_first_field(line) {
+    var d = str_data(line);
+    var n = str_len(line);
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i) & 0xFF;
+        if (c == 32 || c == 9) { return str_new(d, i); }
+        i = i + 1;
+    }
+    return line;
+}
+
+# Parse a dotted-quad IPv4 host into a net-order u32 address, or -1 if not a dotted quad.
+fn _net_parse_ipv4(host) {
+    var d = str_data(host);
+    var n = str_len(host);
+    var octs = alloc(32);
+    var count = 0;
+    var cur = 0;
+    var got = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i) & 0xFF;
+        i = i + 1;
+        if (c >= 48 && c <= 57) { cur = cur * 10 + (c - 48); got = 1; }
+        elif (c == 46) {
+            if (got == 0 || cur > 255 || count >= 4) { return (0 - 1); }
+            store64(octs + count * 8, cur);
+            count = count + 1;
+            cur = 0;
+            got = 0;
+        } else { return (0 - 1); }
+    }
+    if (got == 0 || cur > 255 || count != 3) { return (0 - 1); }
+    store64(octs + 3 * 8, cur);
+    var o1 = load64(octs);
+    var o2 = load64(octs + 8);
+    var o3 = load64(octs + 16);
+    var o4 = load64(octs + 24);
+    return o1 | (o2 << 8) | (o3 << 16) | (o4 << 24);
+}
+
+# szal_port_check: is a TCP port open on a dotted-quad host? Mirrors PortCheck::call (net_tools.rs 278-331).
+fn _port_check_handler(args, claims) {
+    var o = _net_parse_args(args);
+    var host = str_from("127.0.0.1");
+    var hv = bayan_json_v_obj_get(o, "host");
+    if (bayan_json_v_is_str(hv) == 1) { host = bayan_json_v_str(hv); }
+
+    var pv = bayan_json_v_obj_get(o, "port");
+    if (bayan_json_v_is_int(pv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: port"));
+        return str_data(e);
+    }
+    var port = bayan_json_v_int(pv);
+    if (port < 0 || port > 65535) {
+        var rb = str_builder_new();
+        str_builder_add_cstr(rb, "port ");
+        str_builder_add_int(rb, port);
+        str_builder_add_cstr(rb, " out of range (0-65535)");
+        var er = result_error_typed(MCP_VALIDATION, str_builder_build(rb));
+        return str_data(er);
+    }
+    var timeout_ms = DEFAULT_PORT_CHECK_TIMEOUT_MS;
+    var tv = bayan_json_v_obj_get(o, "timeout_ms");
+    if (bayan_json_v_is_int(tv) == 1) { timeout_ms = bayan_json_v_int(tv); }
+
+    var kb = str_builder_new();
+    str_builder_add(kb, host);
+    str_builder_add_byte(kb, 58);
+    str_builder_add_int(kb, port);
+    var key = str_builder_build(kb);
+    if (pool_check_port(pool(), str_cstr(key)) == 0) {
+        var rb2 = str_builder_new();
+        str_builder_add_cstr(rb2, "rate limit exceeded for port check: ");
+        str_builder_add(rb2, key);
+        var er2 = result_error_typed(MCP_TIMEOUT, str_builder_build(rb2));
+        return str_data(er2);
+    }
+
+    var open = 0;
+    var addr = _net_parse_ipv4(host);
+    if (addr != (0 - 1)) {
+        var sr = tcp_socket();
+        if (is_ok(sr) == 1) {
+            var fd = result_unwrap(sr);
+            if (net_connect_nb(fd, addr, port, timeout_ms) == _NET_CONN_NB_OK) { open = 1; }
+            sock_close(fd);
+        }
+    }
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("host"), bayan_json_v_str_new(host));
+    bayan_json_v_obj_set(out, str_from("port"), bayan_json_v_int_new(port));
+    bayan_json_v_obj_set(out, str_from("open"), bayan_json_v_bool_new(open));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# Uppercase hex digit for a 0-15 nibble.
+fn _net_hex(nib) {
+    if (nib < 10) { return 48 + nib; }
+    return 65 + nib - 10;
+}
+fn _net_unhex(c) {
+    if (c >= 48 && c <= 57) { return c - 48; }
+    if (c >= 65 && c <= 70) { return c - 65 + 10; }
+    if (c >= 97 && c <= 102) { return c - 97 + 10; }
+    return (0 - 1);
+}
+
+# szal_url_encode: percent-encode/decode. Mirrors UrlEncode::call (net_tools.rs 350-413).
+fn _url_encode_handler(args, claims) {
+    var o = _net_parse_args(args);
+    var iv = bayan_json_v_obj_get(o, "input");
+    if (bayan_json_v_is_str(iv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: input"));
+        return str_data(e);
+    }
+    var input = bayan_json_v_str(iv);
+    var op = "encode";
+    var ov = bayan_json_v_obj_get(o, "operation");
+    if (bayan_json_v_is_str(ov) == 1) { op = str_cstr(bayan_json_v_str(ov)); }
+
+    if (streq(op, "encode") == 1) {
+        var sb = str_builder_new();
+        var d = str_data(input);
+        var n = str_len(input);
+        var i = 0;
+        while (i < n) {
+            var c = load8(d + i) & 0xFF;
+            i = i + 1;
+            var keep = 0;
+            if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)) { keep = 1; }
+            if (c == 45 || c == 95 || c == 46 || c == 126) { keep = 1; }
+            if (keep == 1) { str_builder_add_byte(sb, c); } else {
+                str_builder_add_byte(sb, 37);
+                str_builder_add_byte(sb, _net_hex((c >> 4) & 0xF));
+                str_builder_add_byte(sb, _net_hex(c & 0xF));
+            }
+        }
+        var re = result_ok(str_builder_build(sb));
+        return str_data(re);
+    }
+    if (streq(op, "decode") == 1) {
+        var sb2 = str_builder_new();
+        var d2 = str_data(input);
+        var n2 = str_len(input);
+        var i2 = 0;
+        while (i2 < n2) {
+            var c2 = load8(d2 + i2) & 0xFF;
+            if (c2 == 37 && i2 + 2 < n2) {
+                var h1 = _net_unhex(load8(d2 + i2 + 1) & 0xFF);
+                var h2 = _net_unhex(load8(d2 + i2 + 2) & 0xFF);
+                if (h1 >= 0 && h2 >= 0) {
+                    str_builder_add_byte(sb2, (h1 << 4) | h2);
+                    i2 = i2 + 3;
+                } else {
+                    str_builder_add_byte(sb2, 37);
+                    i2 = i2 + 1;
+                }
+            } elif (c2 == 43) {
+                str_builder_add_byte(sb2, 32);
+                i2 = i2 + 1;
+            } else {
+                str_builder_add_byte(sb2, c2);
+                i2 = i2 + 1;
+            }
+        }
+        var rd = result_ok(str_builder_build(sb2));
+        return str_data(rd);
+    }
+
+    var sb3 = str_builder_new();
+    str_builder_add_cstr(sb3, "invalid operation: ");
+    str_builder_add_cstr(sb3, op);
+    var rv = result_error_typed(MCP_VALIDATION, str_builder_build(sb3));
+    return str_data(rv);
+}
+
+# --- schema property builders ---
+
+fn _http_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("url", "{ \"type\": \"string\", \"description\": \"URL to request\" }"));
+    var mb = str_builder_new();
+    str_builder_add_cstr(mb, "{ \"type\": \"string\", \"enum\": [\"GET\", \"POST\", \"PUT\", ");
+    str_builder_add_cstr(mb, "\"DELETE\", \"PATCH\", \"HEAD\"], \"description\": \"HTTP method (default: GET)\" }");
+    vec_push(v, schema_prop_new("method", str_cstr(str_builder_build(mb))));
+    vec_push(v, schema_prop_new("headers",
+    "{ \"type\": \"object\", \"description\": \"Request headers as key-value pairs\" }"));
+    vec_push(v, schema_prop_new("body",
+    "{ \"type\": \"string\", \"description\": \"Request body (for POST/PUT/PATCH)\" }"));
+    vec_push(v, schema_prop_new("timeout_secs",
+    "{ \"type\": \"integer\", \"description\": \"Timeout in seconds (default: 30)\" }"));
+    return v;
+}
+
+fn _dns_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("hostname", "{ \"type\": \"string\", \"description\": \"Hostname to resolve\" }"));
+    return v;
+}
+
+fn _port_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("host",
+    "{ \"type\": \"string\", \"description\": \"Host to check (default: 127.0.0.1)\" }"));
+    vec_push(v, schema_prop_new("port", "{ \"type\": \"integer\", \"description\": \"TCP port number\" }"));
+    vec_push(v, schema_prop_new("timeout_ms",
+    "{ \"type\": \"integer\", \"description\": \"Connection timeout in ms (default: 3000)\" }"));
+    return v;
+}
+
+fn _url_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("input", "{ \"type\": \"string\", \"description\": \"String to encode/decode\" }"));
+    var ob = str_builder_new();
+    str_builder_add_cstr(ob, "{ \"type\": \"string\", \"enum\": [\"encode\", \"decode\"], ");
+    str_builder_add_cstr(ob, "\"description\": \"Operation (default: encode)\" }");
+    vec_push(v, schema_prop_new("operation", str_cstr(str_builder_build(ob))));
+    return v;
+}
+
+# The network tool group: szal_http, szal_dns_lookup, szal_port_check, szal_url_encode.
+fn net_tools() {
+    var tools = vec_new();
+    var u_req = vec_new();
+    vec_push(u_req, "url");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_http", "Make an HTTP request via curl and return status, headers, and body",
+    _http_props(), u_req), &_http_handler));
+
+    var h_req = vec_new();
+    vec_push(h_req, "hostname");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_dns_lookup", "Perform a DNS lookup for a hostname", _dns_props(), h_req),
+    &_dns_handler));
+
+    var p_req = vec_new();
+    vec_push(p_req, "port");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_port_check", "Check if a TCP port is open on a host", _port_props(), p_req),
+    &_port_check_handler));
+
+    var i_req = vec_new();
+    vec_push(i_req, "input");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_url_encode", "URL encode or decode a string", _url_props(), i_req),
+    &_url_encode_handler));
+    return tools;
+}
+
+# --- aggregator: all 15 tool groups (54 tools) ---
+
+# Append every Tool pair from `src` into `dst`.
+fn _all_append(dst, src) {
+    var n = vec_len(src);
+    var i = 0;
+    while (i < n) {
+        vec_push(dst, vec_get(src, i));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# All 54 built-in szal MCP tools, in the rust-old all_tools() order. The single source of truth for
+# what register_tools wires into a dispatcher. (mcp/tools/mod.rs all_tools())
+fn all_tools() {
+    var t = vec_new();
+    _all_append(t, step_tools());
+    _all_append(t, flow_tools());
+    _all_append(t, state_tools());
+    _all_append(t, engine_tools());
+    _all_append(t, system_tools());
+    _all_append(t, encoding_tools());
+    _all_append(t, json_tools());
+    _all_append(t, file_tools());
+    _all_append(t, process_tools());
+    _all_append(t, hash_tools());
+    _all_append(t, template_tools());
+    _all_append(t, net_tools());
+    _all_append(t, math_tools());
+    _all_append(t, conversion_tools());
+    _all_append(t, git_tools());
+    return t;
+}
+
+# Register all built-in szal tools into a fresh dispatcher (no audit/event sinks). Mirrors the
+# register_tools(all_tools()) entry point consumers (daimon/sutra) call.
+fn szal_register_tools() {
+    return register_tools(all_tools());
+}

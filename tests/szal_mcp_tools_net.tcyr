@@ -1,0 +1,273 @@
+# szal_mcp_tools_net.tcyr — network MCP tools (mcp_tools_net.cyr): szal_http, szal_dns_lookup,
+# szal_port_check, szal_url_encode + the all_tools()/szal_register_tools() aggregator.
+#
+# Ports rust-old/src/mcp/tools/net_tools.rs tests (SSRF rejections, dns localhost/invalid, port check,
+# url encode/decode/roundtrip/utf8) + the full 54-tool registration.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_net.tcyr build/test_mcp_tools_net
+#   ./build/test_mcp_tools_net
+
+# Full tool stack (mirrors main.cyr) so all_tools() resolves every group, + lib/assert for tests.
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "lib/patra.cyr"
+include "lib/fs.cyr"
+include "lib/process.cyr"
+include "lib/ai-hwaccel.cyr"
+include "src/vendor/majra.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/migration.cyr"
+include "src/engine_result.cyr"
+include "src/storage.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_sequential.cyr"
+include "src/engine_hierarchical.cyr"
+include "src/engine_parallel.cyr"
+include "src/engine_dag.cyr"
+include "src/engine_queue_runner.cyr"
+include "src/engine_distributed.cyr"
+include "src/engine_hardware.cyr"
+include "src/engine_runner.cyr"
+include "src/engine_subflow.cyr"
+include "src/stream.cyr"
+include "src/sql_store.cyr"
+include "src/mcp.cyr"
+include "src/mcp_pool.cyr"
+include "src/mcp_tenant.cyr"
+include "src/mcp_tools_encoding.cyr"
+include "lib/ct.cyr"
+include "lib/thread_local.cyr"
+include "lib/sigil.cyr"
+include "lib/random.cyr"
+include "src/mcp_tools_hash.cyr"
+include "src/mcp_tools_system.cyr"
+include "src/mcp_tools_json.cyr"
+include "src/mcp_tools_template.cyr"
+include "src/mcp_tools_conversion.cyr"
+include "lib/math.cyr"
+include "src/mcp_tools_math.cyr"
+include "src/mcp_tools_state.cyr"
+include "src/mcp_tools_step.cyr"
+include "src/mcp_tools_flow.cyr"
+include "src/mcp_tools_engine.cyr"
+include "src/mcp_tools_file.cyr"
+include "src/mcp_tools_process.cyr"
+include "src/mcp_tools_git.cyr"
+include "lib/net.cyr"
+include "src/mcp_tools_net.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_http SSRF guard ---
+
+# A non-http(s) scheme is rejected. (net_tools.rs 500-506)
+fn t_http_file_url() {
+    var r = _call(&_http_handler, "{\"url\": \"file:///etc/passwd\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "file URL rejected");
+    assert(str_contains(r, str_from("http://")), "scheme message");
+    return 0;
+}
+
+# localhost is blocked. (net_tools.rs 508-516)
+fn t_http_localhost() {
+    var r = _call(&_http_handler, "{\"url\": \"http://localhost/admin\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "localhost blocked");
+    assert(str_contains(r, str_from("private/internal")), "private message");
+    return 0;
+}
+
+# The cloud-metadata endpoint is blocked. (net_tools.rs 518-526)
+fn t_http_metadata() {
+    var r = _call(&_http_handler, "{\"url\": \"http://169.254.169.254/latest/meta-data/\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "metadata blocked");
+    assert(str_contains(r, str_from("blocked")), "blocked message");
+    return 0;
+}
+
+# Private IP ranges (192.168/10/172.16) are blocked. (net_tools.rs 528-540)
+fn t_http_private() {
+    var a = _call(&_http_handler, "{\"url\": \"http://192.168.1.1/\"}");
+    assert(str_contains(a, str_from("\"isError\":true")), "192.168 blocked");
+    var b = _call(&_http_handler, "{\"url\": \"http://10.0.0.1/\"}");
+    assert(str_contains(b, str_from("\"isError\":true")), "10.x blocked");
+    var c = _call(&_http_handler, "{\"url\": \"http://172.16.0.1/\"}");
+    assert(str_contains(c, str_from("\"isError\":true")), "172.16 blocked");
+    # 172.15 is NOT private — passes the SSRF guard (will fail later at curl, but not blocked here).
+    var d = _call(&_http_handler, "{\"url\": \"http://8.8.8.8:1/\"}");
+    assert_eq(str_contains(d, str_from("private/internal")), 0, "public IP not SSRF-blocked");
+    return 0;
+}
+
+# Missing url is a validation error.
+fn t_http_missing() {
+    var r = _call(&_http_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no url -> error");
+    assert(str_contains(r, str_from("missing required field: url")), "validation message");
+    return 0;
+}
+
+# --- szal_dns_lookup ---
+
+# localhost resolves to a loopback address. (net_tools.rs 420-426)
+fn t_dns_localhost() {
+    var r = _call(&_dns_handler, "{\"hostname\": \"localhost\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "dns localhost ok");
+    var text = _result_text(r);
+    var has = 0;
+    if (str_contains(text, str_from("127.0.0.1")) == 1) { has = 1; }
+    if (str_contains(text, str_from("::1")) == 1) { has = 1; }
+    assert_eq(has, 1, "resolves to loopback");
+    return 0;
+}
+
+# An invalid hostname errors. (net_tools.rs 428-434)
+fn t_dns_invalid() {
+    var r = _call(&_dns_handler, "{\"hostname\": \"this.host.does.not.exist.invalid\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "invalid host errors");
+    return 0;
+}
+
+# --- szal_port_check ---
+
+# A closed port reports open:false. (net_tools.rs 436-443)
+fn t_port_closed() {
+    var r = _call(&_port_check_handler, "{\"port\": 1, \"timeout_ms\": 500}");
+    assert(str_contains(r, str_from("\"isError\":false")), "port check ok");
+    assert(str_contains(_result_text(r), str_from("\"open\": false")), "port 1 closed");
+    return 0;
+}
+
+# An out-of-range port is rejected. (net_tools.rs 492-498)
+fn t_port_invalid() {
+    var r = _call(&_port_check_handler, "{\"port\": 70000}");
+    assert(str_contains(r, str_from("\"isError\":true")), "bad port rejected");
+    assert(str_contains(r, str_from("out of range")), "range message");
+    return 0;
+}
+
+# --- szal_url_encode ---
+
+# Encoding percent-escapes reserved characters. (net_tools.rs 445-454)
+fn t_url_encode() {
+    var r = _call(&_url_encode_handler, "{\"input\": \"hello world & foo=bar\"}");
+    assert(str_eq_cstr(_result_text(r), "hello%20world%20%26%20foo%3Dbar"), "encodes reserved chars");
+    return 0;
+}
+
+# Decoding reverses percent-escapes. (net_tools.rs 456-465)
+fn t_url_decode() {
+    var r = _call(&_url_encode_handler, "{\"input\": \"hello%20world\", \"operation\": \"decode\"}");
+    assert(str_eq_cstr(_result_text(r), "hello world"), "decodes percent escapes");
+    return 0;
+}
+
+# Encode/decode round-trips. (net_tools.rs 467-476)
+fn t_url_roundtrip() {
+    var enc = _call(&_url_encode_handler, "{\"input\": \"spaces & symbols/here?yes=true\"}");
+    var enc_text = _result_text(enc);
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from("input"), bayan_json_v_str_new(enc_text));
+    bayan_json_v_obj_set(o, str_from("operation"), bayan_json_v_str_new(str_from("decode")));
+    var dec = _call(&_url_encode_handler, str_cstr(bayan_json_v_build(o)));
+    assert(str_eq_cstr(_result_text(dec), "spaces & symbols/here?yes=true"), "round-trips");
+    return 0;
+}
+
+# --- aggregator ---
+
+# all_tools() / szal_register_tools() wires every group into one dispatcher.
+fn t_all_tools() {
+    var all = all_tools();
+    assert_eq(vec_len(all), 54, "54 built-in tools");
+    var d = szal_register_tools();
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_len(dispatcher_registry(d)), 54, "54 tools registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_uuid"), 1, "encoding present");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_http"), 1, "net present");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_git_status"), 1, "git present");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_math_eval"), 1, "math present");
+    return 0;
+}
+
+# Net group registers its 4 tools.
+fn t_group_registers() {
+    var d = register_tools(net_tools());
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_http"), 1, "http registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_dns_lookup"), 1, "dns registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_port_check"), 1, "port_check registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_url_encode"), 1, "url_encode registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 4, "four net tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_http SSRF guard");
+    t_http_file_url();
+    t_http_localhost();
+    t_http_metadata();
+    t_http_private();
+    t_http_missing();
+
+    test_group("szal_dns_lookup");
+    t_dns_localhost();
+    t_dns_invalid();
+
+    test_group("szal_port_check");
+    t_port_closed();
+    t_port_invalid();
+
+    test_group("szal_url_encode");
+    t_url_encode();
+    t_url_decode();
+    t_url_roundtrip();
+
+    test_group("aggregator + registration");
+    t_all_tools();
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

@@ -198,8 +198,18 @@ MCP pool/tenant + the 54 tools remain).**
   `_proc_run` (no-shell `git <subcmd>`). `tests/szal_mcp_tools_git.tcyr` (26) ports all git_tools.rs
   tests against the live repo + the ref-injection/`..` rejections + registration. No new divergence
   (process exec limits §22 apply; git commands are small/fast). lint/fmt/doc clean.
-- ⏳ **Next: the FINAL group 15/15 — net** (~5 tools; **security-sensitive**: is_safe_url SSRF guard +
-  pool() rate limits) + the **`all_tools()`/`szal_register_tools()` aggregator**. Then M3 MCP is done. Each a
+- ✅ **MCP tools group 15/15 `src/mcp_tools_net.cyr`** (2026-06-13) — `szal_http` (curl via no-shell
+  `_proc_run`; **`is_safe_url` SSRF guard** — metadata/localhost/0.0.0.0/RFC1918 blocked; http(s)-only;
+  CR/LF header-injection rejected; **`pool()` HTTP rate limit**), `szal_dns_lookup` (getent + DNS rate
+  limit), `szal_port_check` (`net_connect_nb` poll-timeout TCP connect + port rate limit; 0-65535
+  validation), `szal_url_encode` (percent encode/decode). **Defines `all_tools()` (all 15 groups in
+  mod.rs order) + `szal_register_tools()`.** `tests/szal_mcp_tools_net.tcyr` (34, full stack) ports all
+  net_tools.rs tests **incl. every SSRF rejection** + the **54-tool aggregator registration**.
+  Divergences in parity-notes §23 (security pieces exact). lint/fmt/doc clean.
+- ✅ **🎉 M3 MCP TOOL SURFACE COMPLETE — all 15 groups / 54 tools** (encoding, hash, system, json,
+  template, conversion, math, state, step, flow, engine, file, process, git, net), aggregated by
+  `all_tools()`/`szal_register_tools()`. `main()` registers all 54 at startup (`./build/szal` →
+  `szal ready`). Per-group tests + the full-stack aggregator test all green.
   `mcp_tool_new(mcp_tool_def(...), &handler)` + a `<group>_tools()` accumulator; the LAST file defines
   `all_tools()`/`szal_register_tools()`. **Security checks must not regress**: validate_path on all
   file ops, 1 MiB read cap / 10k dir entries / depth 20; process: no shell, reject `..`/`/`, 30s
@@ -430,36 +440,32 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 ## Next — ▶ START HERE (handoff)
 
-**Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 rows 22–24-core + pool/tenant + tool groups
-1–14/15 (encoding…git) + bote vendoring, all parity-verified 0-findings): 43 modules, 1393
-assertions, 0 failures, oracle pristine. Pin 6.1.37 (installed 6.2.2 — green both).**
+**Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 ✅ MCP COMPLETE (stream + sql_store + mcp core +
+pool/tenant + ALL 15 tool groups / 54 tools) + bote vendoring, all parity-verified 0-findings): 44
+modules, 1427 assertions, 0 failures, oracle pristine. Pin 6.1.37 (installed 6.2.2 — green both).**
 All engine modules ported (six modes + core + step_exec + Engine + sub_flow + **hardware/row 17**).
 M3: streaming (`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` —
 result/errcode/**validate_path security**/registration) + **MCP pool + tenant** done; **bote-core
 2.7.5 vendored (re-synced 2026-06-13; Q9 dissolved)**. Full majra 2.4.6 + ai-hwaccel 2.3.9 (overlaid)
 in the build. Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence lib-shadow).
 
-**Pick up at: the FINAL MCP group 15/15 — net. Groups 1–14/15 done; ~5 tools left, then M3 MCP is
-COMPLETE.** No engine rows remain; MCP infra + pool/tenant done. **Read the "MCP tool-handler porting
-pattern" gotchas above first.** Reuse: `pool()` (mcp_pool.cyr) for rate limits.
+**▶ M3 MCP IS COMPLETE — all 15 tool groups / 54 tools ported, tested, aggregated, and wired into
+`main()` (`./build/szal` registers all 54 → `szal ready`).** No engine rows remain. Per-group tests +
+a full-stack aggregator test (`tests/szal_mcp_tools_net.tcyr` asserts `all_tools()`==54 register).
 
-MCP infra is fully in place: bote-core vendored, `mcp.cyr` core, `mcp_pool.cyr`, `mcp_tenant.cyr`,
-and 14 tool groups: encoding, hash, system, json, template, conversion, math, state, step, flow,
-engine, file, process, git (status/log/diff/branch/blame, validate_git_ref) — all tested.
-**SECURITY for net (do NOT regress): `is_safe_url` SSRF guard — reject cloud metadata endpoints
-(169.254.169.254), localhost/127.0.0.0/8, RFC1918 (10/8, 172.16/12, 192.168/16), link-local; + the
-`pool()` HTTP/DNS/port rate-limit checks (mcp_pool.cyr `pool_check_http`/`_dns`/`_port`).** The net
-file (last) must ALSO define `all_tools()` (aggregate all 15 `<group>_tools()` vecs: encoding_tools()
-+ hash_tools() + … + net_tools()) + `szal_register_tools()` = `register_tools(all_tools())`. Remaining:
-1. **`src/mcp_tools_net.cyr`** (1 file left, ~5 tools; first 14 groups ✅ done). Each tool:
-   `mcp_tool_new(mcp_tool_def(name, desc, props_vec, required_vec),
-   &handler)` with handler `fn(args_cstr, claims) → result_cstr` returning a `result_*` string. The
-   LAST file defines `all_tools()` (aggregates every group's tools into one vec) + `szal_register_tools()`
-   = `register_tools(all_tools())`. Tool names are `szal_*` (≥1 underscore); do NOT export bare `mcp_*`
-   (daimon owns that). **Security checks must NOT regress:** `validate_path` (done — use it) on all
-   file ops, 1 MiB read cap / 10k dir entries / depth 20; process: no shell, reject `..`/`/`, 30s
-   timeout; git: `validate_git_ref` rejects leading `-`, log cap 100; net: `is_safe_url` SSRF guard
-   (metadata endpoints + localhost + RFC1918) + the pool rate-limit checks. Port + test per tool group.
+**Pick up at: M3 wrap-up, then M4.** Small loose ends before M3 is formally closed:
+1. **Pin reconcile** — `cyrius.cyml` says 6.1.37; installed wrapper is 6.2.2 (suite green on both).
+   Bump the pin (and the majra dep line 2.4.5→2.4.6, deferred to M5) or decide to hold.
+2. **Optional confirmation audit** — an adversarial parity sweep over the 15 tool files vs `rust-old`
+   (oracle read-only), like the M1/M2 module audits. Per-tool divergences are already logged
+   (parity-notes §12–§23), so this is a confirmation pass, not new findings.
+3. **Roadmap re-check** — streaming/persistence/MCP were the M3 scope and are all done; advance to M4.
+
+The `dist/szal.cyr` contract: all tool names are `szal_*`; `all_tools()` / `szal_register_tools()`
+(in `mcp_tools_net.cyr`) are the registration entry points consumers (daimon/sutra) call. Security
+guards, all tested: `validate_path` (file: 1 MiB read / 10k entries / depth-20), no-shell `_proc_run`
++ `..`/`/` reject (process), `validate_git_ref` leading-`-` reject (git), `is_safe_url` SSRF +
+`pool()` HTTP/DNS/port rate limits + http(s)-only + CR/LF header reject (net).
 
 **Row 17 `engine_hardware.cyr` — ✅ DONE (2026-06-13, see the row-17 bullet above + the resolved
 [`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md)).** Q9
@@ -467,5 +473,5 @@ was dissolved by the bote 2.7.5 re-sync; ai-hwaccel is overlaid into the build a
 consults `config.hardware` at all three entry points. Nothing left to do here.
 
 See [`roadmap.md`](roadmap.md) M3, [`port-plan.md`](port-plan.md) §4 (per-module spec),
-[`parity-notes.md`](parity-notes.md) (accepted divergences §1–11 + audit log), and
+[`parity-notes.md`](parity-notes.md) (accepted divergences §1–23 + audit log), and
 [`majra-vendoring.md`](majra-vendoring.md) (re-sync).

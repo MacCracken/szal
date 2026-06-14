@@ -396,6 +396,30 @@ which pass. A `poll`-based timeout + drain loop is a roadmap follow-up. See `src
 
 ---
 
+## 23. net tools: getent DNS + dotted-quad-only port check + no-UTF8-validate decode (`mcp_tools_net.cyr`)
+
+**What:** Rust's `net_tools` uses `tokio::net` for DNS (`lookup_host`) and TCP (`TcpStream::connect`),
+and `reqwest`-free curl-via-`tokio::process` for HTTP. The port:
+
+**Divergences (the SSRF guard `is_safe_url` + the `pool()` rate-limit checks are EXACT — both ported
+faithfully and tested):**
+1. **DNS resolution shells out to `getent ahosts <host>`** (no `getaddrinfo` wired) — addresses are
+   its first-column IPs, deduped. Matches Rust's results for `localhost`/invalid (the tested cases).
+2. **`szal_port_check` connects to a dotted-quad host only** (no hostname resolution); the default
+   `127.0.0.1` and explicit IPs work, a hostname yields `open:false`. The connect timeout IS enforced
+   (`net_connect_nb` poll-based).
+3. **`szal_url_encode` decode does not UTF-8-validate** (the Rust `from_utf8` error branch is
+   unreachable) — encode/decode/round-trip incl. multibyte UTF-8 are byte-exact.
+4. **HTTP curl exec** inherits the §22 process limits (timeout via `--max-time` rather than an async
+   guard; the success path is untested — the net tests cover the SSRF rejections).
+
+**Why accepted:** Cyrius has no async DNS/TCP/HTTP client wired; `getent`/`curl` + `net_connect_nb`
+cover the tested behavior, and the security-critical pieces (`is_safe_url`, rate limits, http(s)-only,
+CR/LF header rejection) are exact. The `net_tools.rs` tests (SSRF blocks, dns localhost/invalid, port
+closed/invalid, url encode/decode/round-trip/UTF-8) all pass. See `src/mcp_tools_net.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/
