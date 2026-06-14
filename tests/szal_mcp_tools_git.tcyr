@@ -1,0 +1,173 @@
+# szal_mcp_tools_git.tcyr — git MCP tools (mcp_tools_git.cyr): szal_git_status, szal_git_log,
+# szal_git_diff, szal_git_branch, szal_git_blame.
+#
+# Ports rust-old/src/mcp/tools/git_tools.rs tests (run against the szal repo itself) + the option-
+# injection / `..` security rejections + registration.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_git.tcyr build/test_mcp_tools_git
+#   ./build/test_mcp_tools_git
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_process.cyr"
+include "src/mcp_tools_git.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_git_status ---
+
+# Status reports a branch. (git_tools.rs 350-356)
+fn t_status() {
+    var r = _call(&_git_status_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "status ok");
+    assert(str_contains(_result_text(r), str_from("\"branch\"")), "reports branch");
+    return 0;
+}
+
+# --- szal_git_log ---
+
+# Log returns commit records with a hash. (git_tools.rs 358-366)
+fn t_log() {
+    var r = _call(&_git_log_handler, "{\"count\": 3}");
+    assert(str_contains(r, str_from("\"isError\":false")), "log ok");
+    var arr = bayan_json_v_parse(_result_text(r));
+    assert_eq(bayan_json_v_is_arr(arr), 1, "log is an array");
+    assert(bayan_json_v_arr_len(arr) > 0, "has commits");
+    var first = bayan_json_v_arr_get(arr, 0);
+    assert(bayan_json_v_is_str(bayan_json_v_obj_get(first, "hash")) == 1, "commit has hash");
+    return 0;
+}
+
+# --- szal_git_diff ---
+
+# Diff --stat succeeds. (git_tools.rs 368-372)
+fn t_diff() {
+    var r = _call(&_git_diff_handler, "{\"stat_only\": true}");
+    assert(str_contains(r, str_from("\"isError\":false")), "diff ok");
+    return 0;
+}
+
+# An option-injection ref is rejected. (git_tools.rs validate_git_ref)
+fn t_diff_bad_ref() {
+    var r = _call(&_git_diff_handler, "{\"ref1\": \"-x\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "bad ref rejected");
+    assert(str_contains(r, str_from("must not start with")), "ref-injection message");
+    return 0;
+}
+
+# --- szal_git_branch ---
+
+# Branch reports the current branch. (git_tools.rs 374-380)
+fn t_branch() {
+    var r = _call(&_git_branch_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "branch ok");
+    assert(str_contains(_result_text(r), str_from("\"current\"")), "reports current");
+    return 0;
+}
+
+# --- szal_git_blame ---
+
+# Blame summarizes total_lines for a tracked file. (git_tools.rs 382-388)
+fn t_blame() {
+    var r = _call(&_git_blame_handler, "{\"file\": \"CLAUDE.md\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "blame ok");
+    assert(str_contains(_result_text(r), str_from("\"total_lines\"")), "reports total_lines");
+    return 0;
+}
+
+# Blame rejects option-injection file names.
+fn t_blame_bad_option() {
+    var r = _call(&_git_blame_handler, "{\"file\": \"-x\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "option-injection rejected");
+    assert(str_contains(r, str_from("must not start with")), "dash message");
+    return 0;
+}
+
+# Blame rejects path traversal.
+fn t_blame_traversal() {
+    var r = _call(&_git_blame_handler, "{\"file\": \"../etc/passwd\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "traversal rejected");
+    assert(str_contains(r, str_from("must not contain")), "dotdot message");
+    return 0;
+}
+
+# Missing file is a validation error.
+fn t_blame_missing() {
+    var r = _call(&_git_blame_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no file -> error");
+    assert(str_contains(r, str_from("missing required field: file")), "validation message");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(git_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_git_status"), 1, "git_status registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_git_log"), 1, "git_log registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_git_diff"), 1, "git_diff registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_git_branch"), 1, "git_branch registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_git_blame"), 1, "git_blame registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 5, "five git tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_git_status");
+    t_status();
+
+    test_group("szal_git_log");
+    t_log();
+
+    test_group("szal_git_diff");
+    t_diff();
+    t_diff_bad_ref();
+
+    test_group("szal_git_branch");
+    t_branch();
+
+    test_group("szal_git_blame");
+    t_blame();
+    t_blame_bad_option();
+    t_blame_traversal();
+    t_blame_missing();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

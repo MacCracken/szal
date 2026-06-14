@@ -94,6 +94,7 @@ include "src/mcp_tools_flow.cyr"
 include "src/mcp_tools_engine.cyr"
 include "src/mcp_tools_file.cyr"
 include "src/mcp_tools_process.cyr"
+include "src/mcp_tools_git.cyr"
 
 fn main() {
     alloc_init();

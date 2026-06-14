@@ -1,0 +1,464 @@
+# mcp_tools_git.cyr — MCP git tools (ports mcp/tools/git_tools.rs): szal_git_status, szal_git_log,
+# szal_git_diff, szal_git_branch, szal_git_blame.
+#
+# SECURITY: every ref/file argument that could be attacker-controlled is checked against option
+# injection — validate_git_ref rejects a leading `-` (so a value can't masquerade as a git flag);
+# git_blame additionally rejects `..` in the file. All git invocations go through the no-shell
+# fork/exec from mcp_tools_process (_proc_run) — `git <subcommand> …`, never a shell. Do NOT regress.
+#
+# Reuses mcp_tools_process._proc_run / _proc_trim_end. As in Rust, the `path` arg sets git's cwd
+# directly (git itself confines to the repo); it is NOT routed through validate_path (git_tools.rs).
+#
+# Usage: include AFTER src/mcp_tools_process.cyr + src/mcp.cyr (+ lib/bayan, lib/str, lib/hashmap).
+
+enum GitTools {
+    DEFAULT_LOG_COUNT = 10;
+    MAX_LOG_COUNT = 100;
+}
+
+fn _git_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# Run `git` with the cstr argv `argv` in `cwd_c` (0 = inherit). Returns { ok@0, output Str@8 }:
+# ok=1 + trimmed stdout on exit 0; ok=0 + trimmed stderr on failure; ok=0 + "git not available" if
+# git is missing. Mirrors git_cmd (git_tools.rs 22-35).
+fn _git_cmd(argv, cwd_c) {
+    var res = _proc_run(argv, cwd_c);
+    var out = alloc(16);
+    if (load64(res + 24) == 0) {
+        store64(out, 0);
+        store64(out + 8, str_from("git not available"));
+        return out;
+    }
+    if (load64(res) == 0) {
+        store64(out, 1);
+        store64(out + 8, _proc_trim_end(load64(res + 8)));
+    } else {
+        store64(out, 0);
+        store64(out + 8, _proc_trim_end(load64(res + 16)));
+    }
+    return out;
+}
+
+fn _git_ok(o) { return load64(o); }
+fn _git_out(o) { return load64(o + 8); }
+
+# 1 if `s` (a Str) starts with '-' (an option-injection ref). Mirrors validate_git_ref (git_tools.rs 14).
+fn _git_ref_bad(s) {
+    if (str_len(s) == 0) { return 0; }
+    if ((load8(str_data(s)) & 0xFF) == 45) { return 1; }
+    return 0;
+}
+
+# Read the optional `path` arg as a cwd cstr (0 if absent).
+fn _git_cwd(o) {
+    var pv = bayan_json_v_obj_get(o, "path");
+    if (bayan_json_v_is_str(pv) == 1) { return str_cstr(bayan_json_v_str(pv)); }
+    return 0;
+}
+
+# szal_git_status: branch + porcelain-derived modified/staged/untracked counts. Mirrors GitStatus::call
+# (git_tools.rs 50-92).
+fn _git_status_handler(args, claims) {
+    var o = _git_parse_args(args);
+    var cwd = _git_cwd(o);
+
+    var ba = vec_new();
+    vec_push(ba, "git");
+    vec_push(ba, "rev-parse");
+    vec_push(ba, "--abbrev-ref");
+    vec_push(ba, "HEAD");
+    var br = _git_cmd(ba, cwd);
+    var branch = str_from("");
+    if (_git_ok(br) == 1) { branch = _git_out(br); }
+
+    var sa = vec_new();
+    vec_push(sa, "git");
+    vec_push(sa, "status");
+    vec_push(sa, "--porcelain");
+    var st = _git_cmd(sa, cwd);
+    var status = str_from("");
+    if (_git_ok(st) == 1) { status = _git_out(st); }
+
+    var modified = 0;
+    var staged = 0;
+    var untracked = 0;
+    var lines = str_split(status, 10);
+    var n = vec_len(lines);
+    var i = 0;
+    while (i < n) {
+        var line = vec_get(lines, i);
+        i = i + 1;
+        if (str_len(line) >= 2) {
+            var d = str_data(line);
+            var b0 = load8(d) & 0xFF;
+            var b1 = load8(d + 1) & 0xFF;
+            if (b0 == 63 && b1 == 63) { untracked = untracked + 1; }
+            elif (b0 == 32) { modified = modified + 1; }
+            elif (b1 == 32) { staged = staged + 1; }
+            else { modified = modified + 1; staged = staged + 1; }
+        }
+    }
+    var clean = 0;
+    if (str_len(status) == 0) { clean = 1; }
+
+    var info = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(info, str_from("branch"), bayan_json_v_str_new(branch));
+    bayan_json_v_obj_set(info, str_from("clean"), bayan_json_v_bool_new(clean));
+    bayan_json_v_obj_set(info, str_from("modified"), bayan_json_v_int_new(modified));
+    bayan_json_v_obj_set(info, str_from("staged"), bayan_json_v_int_new(staged));
+    bayan_json_v_obj_set(info, str_from("untracked"), bayan_json_v_int_new(untracked));
+    var r = result_ok_json(info);
+    return str_data(r);
+}
+
+# Split a "%H|%h|%an|%ae|%aI|%s" log line into a 6-field vec (field 6 keeps any trailing '|'), or 0
+# if fewer than 5 separators (line ignored, as in splitn(6,'|') + len==6 filter).
+fn _git_split6(line) {
+    var d = str_data(line);
+    var n = str_len(line);
+    var pos = alloc(40);
+    var found = 0;
+    var i = 0;
+    while (i < n && found < 5) {
+        if ((load8(d + i) & 0xFF) == 124) { store64(pos + found * 8, i); found = found + 1; }
+        i = i + 1;
+    }
+    if (found < 5) { return 0; }
+    var v = vec_new();
+    var prev = 0;
+    var k = 0;
+    while (k < 5) {
+        var p = load64(pos + k * 8);
+        vec_push(v, str_new(d + prev, p - prev));
+        prev = p + 1;
+        k = k + 1;
+    }
+    vec_push(v, str_new(d + prev, n - prev));
+    return v;
+}
+
+# szal_git_log: recent commits as structured records. Mirrors GitLog::call (git_tools.rs 111-151).
+fn _git_log_handler(args, claims) {
+    var o = _git_parse_args(args);
+    var cwd = _git_cwd(o);
+    var count = DEFAULT_LOG_COUNT;
+    var cv = bayan_json_v_obj_get(o, "count");
+    if (bayan_json_v_is_int(cv) == 1) {
+        var c = bayan_json_v_int(cv);
+        if (c >= 0) { count = c; }
+    }
+    if (count > MAX_LOG_COUNT) { count = MAX_LOG_COUNT; }
+
+    var cb = str_builder_new();
+    str_builder_add_cstr(cb, "-");
+    str_builder_add_int(cb, count);
+    var count_arg = str_cstr(str_builder_build(cb));
+
+    var la = vec_new();
+    vec_push(la, "git");
+    vec_push(la, "log");
+    vec_push(la, count_arg);
+    vec_push(la, "--format=%H|%h|%an|%ae|%aI|%s");
+    var lg = _git_cmd(la, cwd);
+    if (_git_ok(lg) == 0) {
+        var er = result_error_typed(MCP_IO_ERROR, _git_out(lg));
+        return str_data(er);
+    }
+
+    var arr = bayan_json_v_arr_new();
+    var lines = str_split(_git_out(lg), 10);
+    var n = vec_len(lines);
+    var i = 0;
+    while (i < n) {
+        var parts = _git_split6(vec_get(lines, i));
+        i = i + 1;
+        if (parts != 0) {
+            var c2 = bayan_json_v_obj_new();
+            bayan_json_v_obj_set(c2, str_from("hash"), bayan_json_v_str_new(vec_get(parts, 0)));
+            bayan_json_v_obj_set(c2, str_from("short_hash"), bayan_json_v_str_new(vec_get(parts, 1)));
+            bayan_json_v_obj_set(c2, str_from("author"), bayan_json_v_str_new(vec_get(parts, 2)));
+            bayan_json_v_obj_set(c2, str_from("email"), bayan_json_v_str_new(vec_get(parts, 3)));
+            bayan_json_v_obj_set(c2, str_from("date"), bayan_json_v_str_new(vec_get(parts, 4)));
+            bayan_json_v_obj_set(c2, str_from("message"), bayan_json_v_str_new(vec_get(parts, 5)));
+            bayan_json_v_arr_push(arr, c2);
+        }
+    }
+    var r = result_ok_json(arr);
+    return str_data(r);
+}
+
+# szal_git_diff: diff (staged/stat/refs). validate_git_ref on ref1/ref2. Mirrors GitDiff::call
+# (git_tools.rs 173-220).
+fn _git_diff_handler(args, claims) {
+    var o = _git_parse_args(args);
+    var cwd = _git_cwd(o);
+
+    var da = vec_new();
+    vec_push(da, "git");
+    vec_push(da, "diff");
+    var sv = bayan_json_v_obj_get(o, "staged");
+    if (bayan_json_v_is_bool(sv) == 1) {
+        if (bayan_json_v_bool(sv) == 1) { vec_push(da, "--cached"); }
+    }
+    var stv = bayan_json_v_obj_get(o, "stat_only");
+    if (bayan_json_v_is_bool(stv) == 1) {
+        if (bayan_json_v_bool(stv) == 1) { vec_push(da, "--stat"); }
+    }
+
+    var r1v = bayan_json_v_obj_get(o, "ref1");
+    if (bayan_json_v_is_str(r1v) == 1) {
+        var r1 = bayan_json_v_str(r1v);
+        if (_git_ref_bad(r1) == 1) {
+            var e = result_error_typed(MCP_PERMISSION_DENIED, _git_ref_msg(r1));
+            return str_data(e);
+        }
+        vec_push(da, str_cstr(r1));
+        var r2v = bayan_json_v_obj_get(o, "ref2");
+        if (bayan_json_v_is_str(r2v) == 1) {
+            var r2 = bayan_json_v_str(r2v);
+            if (_git_ref_bad(r2) == 1) {
+                var e2 = result_error_typed(MCP_PERMISSION_DENIED, _git_ref_msg(r2));
+                return str_data(e2);
+            }
+            vec_push(da, str_cstr(r2));
+        }
+    }
+
+    var df = _git_cmd(da, cwd);
+    if (_git_ok(df) == 0) {
+        var er = result_error_typed(MCP_IO_ERROR, _git_out(df));
+        return str_data(er);
+    }
+    var diff = _git_out(df);
+    if (str_len(diff) == 0) { diff = str_from("no changes"); }
+    var r = result_ok(diff);
+    return str_data(r);
+}
+
+# "invalid ref: '<s>' — must not start with '-'"
+fn _git_ref_msg(s) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "invalid ref: '");
+    str_builder_add(sb, s);
+    str_builder_add_cstr(sb, "' — must not start with '-'");
+    return str_builder_build(sb);
+}
+
+# szal_git_branch: current branch + branch list. Mirrors GitBranch::call (git_tools.rs 239-269).
+fn _git_branch_handler(args, claims) {
+    var o = _git_parse_args(args);
+    var cwd = _git_cwd(o);
+    var all = 0;
+    var av = bayan_json_v_obj_get(o, "all");
+    if (bayan_json_v_is_bool(av) == 1) { all = bayan_json_v_bool(av); }
+
+    var ca = vec_new();
+    vec_push(ca, "git");
+    vec_push(ca, "rev-parse");
+    vec_push(ca, "--abbrev-ref");
+    vec_push(ca, "HEAD");
+    var cur = _git_cmd(ca, cwd);
+    var current = str_from("");
+    if (_git_ok(cur) == 1) { current = _git_out(cur); }
+
+    var ba = vec_new();
+    vec_push(ba, "git");
+    vec_push(ba, "branch");
+    if (all == 1) { vec_push(ba, "-a"); }
+    vec_push(ba, "--format=%(refname:short)");
+    var br = _git_cmd(ba, cwd);
+    var branches = str_from("");
+    if (_git_ok(br) == 1) { branches = _git_out(br); }
+
+    var arr = bayan_json_v_arr_new();
+    var listed = 0;
+    if (str_len(branches) > 0) {
+        var lines = str_split(branches, 10);
+        var n = vec_len(lines);
+        var i = 0;
+        while (i < n) {
+            var line = vec_get(lines, i);
+            i = i + 1;
+            if (str_len(line) > 0) {
+                bayan_json_v_arr_push(arr, bayan_json_v_str_new(line));
+                listed = listed + 1;
+            }
+        }
+    }
+
+    var info = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(info, str_from("current"), bayan_json_v_str_new(current));
+    bayan_json_v_obj_set(info, str_from("branches"), arr);
+    bayan_json_v_obj_set(info, str_from("count"), bayan_json_v_int_new(listed));
+    var r = result_ok_json(info);
+    return str_data(r);
+}
+
+# szal_git_blame: per-author line counts for a file. validate option-injection + `..`. Mirrors
+# GitBlame::call (git_tools.rs 288-343).
+fn _git_blame_handler(args, claims) {
+    var o = _git_parse_args(args);
+    var fv = bayan_json_v_obj_get(o, "file");
+    if (bayan_json_v_is_str(fv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: file"));
+        return str_data(e);
+    }
+    var file = bayan_json_v_str(fv);
+    if (_git_ref_bad(file) == 1) {
+        var ep = result_error_typed(MCP_PERMISSION_DENIED, str_from("file must not start with '-'"));
+        return str_data(ep);
+    }
+    if (str_contains(file, str_from("..")) == 1) {
+        var ed = result_error_typed(MCP_PERMISSION_DENIED, str_from("file must not contain '..'"));
+        return str_data(ed);
+    }
+    var cwd = _git_cwd(o);
+
+    var ba = vec_new();
+    vec_push(ba, "git");
+    vec_push(ba, "blame");
+    vec_push(ba, "--porcelain");
+    vec_push(ba, str_cstr(file));
+    var bl = _git_cmd(ba, cwd);
+    if (_git_ok(bl) == 0) {
+        var er = result_error_typed(MCP_IO_ERROR, _git_out(bl));
+        return str_data(er);
+    }
+
+    # Count "author <name>" lines per author into a Str-keyed map.
+    var authors = map_new_str();
+    var order = vec_new();
+    var lines = str_split(_git_out(bl), 10);
+    var n = vec_len(lines);
+    var prefix = str_from("author ");
+    var total = 0;
+    var i = 0;
+    while (i < n) {
+        var line = vec_get(lines, i);
+        i = i + 1;
+        if (str_starts_with(line, prefix) == 1) {
+            var name = str_substr(line, 7, str_len(line));
+            var cur = map_get(authors, name);
+            if (cur == 0) { vec_push(order, name); }
+            map_set(authors, name, cur + 1);
+            total = total + 1;
+        }
+    }
+
+    # Sort the distinct authors by descending line count (selection sort).
+    var na = vec_len(order);
+    var a = 0;
+    while (a < na) {
+        var best = a;
+        var b = a + 1;
+        while (b < na) {
+            if (map_get(authors, vec_get(order, b)) > map_get(authors, vec_get(order, best))) { best = b; }
+            b = b + 1;
+        }
+        if (best != a) {
+            var tmp = vec_get(order, a);
+            vec_set(order, a, vec_get(order, best));
+            vec_set(order, best, tmp);
+        }
+        a = a + 1;
+    }
+
+    var arr = bayan_json_v_arr_new();
+    var j = 0;
+    while (j < na) {
+        var name2 = vec_get(order, j);
+        j = j + 1;
+        var ao = bayan_json_v_obj_new();
+        bayan_json_v_obj_set(ao, str_from("name"), bayan_json_v_str_new(name2));
+        bayan_json_v_obj_set(ao, str_from("lines"), bayan_json_v_int_new(map_get(authors, name2)));
+        bayan_json_v_arr_push(arr, ao);
+    }
+
+    var info = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(info, str_from("file"), bayan_json_v_str_new(file));
+    bayan_json_v_obj_set(info, str_from("total_lines"), bayan_json_v_int_new(total));
+    bayan_json_v_obj_set(info, str_from("authors"), arr);
+    var r = result_ok_json(info);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _git_path_prop() {
+    return schema_prop_new("path",
+    "{ \"type\": \"string\", \"description\": \"Repository path (default: current dir)\" }");
+}
+
+fn _git_status_props() {
+    var v = vec_new();
+    vec_push(v, _git_path_prop());
+    return v;
+}
+
+fn _git_log_props() {
+    var v = vec_new();
+    vec_push(v, _git_path_prop());
+    vec_push(v, schema_prop_new("count",
+    "{ \"type\": \"integer\", \"description\": \"Number of commits (default: 10, max: 100)\" }"));
+    return v;
+}
+
+fn _git_diff_props() {
+    var v = vec_new();
+    vec_push(v, _git_path_prop());
+    vec_push(v, schema_prop_new("staged",
+    "{ \"type\": \"boolean\", \"description\": \"Show staged changes (default: false)\" }"));
+    vec_push(v, schema_prop_new("ref1", "{ \"type\": \"string\", \"description\": \"First ref for comparison\" }"));
+    vec_push(v, schema_prop_new("ref2", "{ \"type\": \"string\", \"description\": \"Second ref for comparison\" }"));
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{ \"type\": \"boolean\", \"description\": ");
+    str_builder_add_cstr(sb, "\"Show only file stats, not full diff (default: false)\" }");
+    var so_c = str_cstr(str_builder_build(sb));
+    vec_push(v, schema_prop_new("stat_only", so_c));
+    return v;
+}
+
+fn _git_branch_props() {
+    var v = vec_new();
+    vec_push(v, _git_path_prop());
+    vec_push(v, schema_prop_new("all",
+    "{ \"type\": \"boolean\", \"description\": \"Include remote branches (default: false)\" }"));
+    return v;
+}
+
+fn _git_blame_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("file", "{ \"type\": \"string\", \"description\": \"File path to blame\" }"));
+    vec_push(v, _git_path_prop());
+    return v;
+}
+
+# The git tool group: status, log, diff, branch, blame.
+fn git_tools() {
+    var tools = vec_new();
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_git_status", "Get git status (branch, modified/staged/untracked files)",
+    _git_status_props(), vec_new()), &_git_status_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_git_log", "Get recent git commits", _git_log_props(), vec_new()),
+    &_git_log_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_git_diff", "Get git diff (staged, unstaged, or between refs)",
+    _git_diff_props(), vec_new()), &_git_diff_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_git_branch", "List git branches and show current branch",
+    _git_branch_props(), vec_new()), &_git_branch_handler));
+
+    var bl_req = vec_new();
+    vec_push(bl_req, "file");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_git_blame", "Show git blame for a file (who last modified each line)",
+    _git_blame_props(), bl_req), &_git_blame_handler));
+    return tools;
+}
