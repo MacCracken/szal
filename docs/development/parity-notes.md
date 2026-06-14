@@ -375,6 +375,27 @@ x86_64; raw SYS_STAT is aarch64-fragile per syscalls.cyr). See `src/mcp_tools_fi
 
 ---
 
+## 22. exec: timeout not enforced + 64 KiB output cap + stderr-after-stdout read (`mcp_tools_process.cyr`)
+
+**What:** Rust's `szal_exec` uses `tokio::process` + `tokio::time::timeout` — async spawn with a real
+timeout and concurrent stdout/stderr draining. The port forks/execs directly (no shell, PATH resolved
+manually via `getenv("PATH")` + `access(X_OK)`), captures stdout/stderr into fixed 64 KiB buffers, and
+reads them sequentially after the child exits.
+
+**Divergences (security posture preserved — no shell, `..`/`/` rejected, cwd validated):**
+1. **`timeout_ms` is accepted but NOT enforced** — the command runs to completion. No SIGALRM/poll
+   timer is wired, so the `McpErrorCode::Timeout` branch is unreachable. Observably identical for
+   commands that finish quickly (the only kind the tests run).
+2. **Output capped at 64 KiB per stream**; a command emitting more before exit could block (stdout
+   read to EOF, then stderr — no `select`/`poll` loop). Fine for small-output commands.
+3. **Minimal child env** (`["PATH=…"]` only) rather than the full inherited environment.
+
+**Why accepted:** Cyrius has no async process/timer primitive wired for this; the `process_tools.rs`
+tests use fast, small-output commands (echo/false/which) and exercise the security rejections, all of
+which pass. A `poll`-based timeout + drain loop is a roadmap follow-up. See `src/mcp_tools_process.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/

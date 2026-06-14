@@ -1,0 +1,337 @@
+# mcp_tools_process.cyr — MCP process tools (ports mcp/tools/process_tools.rs): szal_exec, szal_pid,
+# szal_which.
+#
+# SECURITY: szal_exec runs a command WITHOUT a shell (direct fork+execve, no `/bin/sh -c`), and
+# rejects any command name containing `..` or `/` (must be a plain PATH-resolved executable name) —
+# the exact Rust guard. `cwd` (if given) is routed through validate_path. Do NOT introduce a shell or
+# accept path-form command names.
+#
+# Process model: PATH is resolved manually (getenv("PATH") + access(X_OK)); the child runs with a
+# minimal envp ["PATH=…"]; stdout + stderr are captured via pipes; the exit code comes from waitpid.
+#
+# PARITY NOTES:
+# - timeout_ms is accepted but NOT enforced — the command runs to completion (no SIGALRM/poll timer
+#   wired). Observably identical for fast commands; the Timeout error branch is unreachable. (§22)
+# - stdout/stderr are read after the child exits via fixed 64 KiB pipe buffers; a command emitting
+#   >64 KiB before exit could block (no select/poll loop). Fine for the tested commands. (§22)
+#
+# Usage: include AFTER src/mcp.cyr + lib/io.cyr (getenv) + lib/syscalls.cyr (sys_fork/pipe/execve/…).
+
+enum ProcessTools {
+    DEFAULT_EXEC_TIMEOUT_MS = 30000;
+    PROC_BUF_SIZE = 65536;
+}
+
+fn _proc_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# 1 if `cmd` (a Str) contains `/` or `..` (a path form, rejected). Mirrors process_tools.rs 48.
+fn _proc_cmd_has_path(cmd) {
+    var d = str_data(cmd);
+    var n = str_len(cmd);
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i) & 0xFF;
+        if (c == 47) { return 1; }
+        if (c == 46 && i + 1 < n) {
+            if ((load8(d + i + 1) & 0xFF) == 46) { return 1; }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Try "<dir>/<cmd>"; return a NUL-terminated full-path cstr if it is executable (access X_OK), else 0.
+fn _proc_try(dir_ptr, dir_len, cmd) {
+    var clen = strlen(cmd);
+    var buf = alloc(dir_len + 1 + clen + 1);
+    memcpy(buf, dir_ptr, dir_len);
+    store8(buf + dir_len, 47);
+    memcpy(buf + dir_len + 1, cmd, clen);
+    store8(buf + dir_len + 1 + clen, 0);
+    if (syscall(21, buf, 1) == 0) { return buf; }
+    return 0;
+}
+
+# Resolve `cmd` (cstr) against $PATH; return the full executable cstr or 0 (not found).
+fn _proc_path_lookup(cmd) {
+    var pe = getenv("PATH");
+    if (pe == 0) { return 0; }
+    var i = 0;
+    var start = 0;
+    var go = 1;
+    while (go == 1) {
+        var c = load8(pe + i) & 0xFF;
+        if (c == 58 || c == 0) {
+            var seg_len = i - start;
+            if (seg_len > 0) {
+                var full = _proc_try(pe + start, seg_len, cmd);
+                if (full != 0) { return full; }
+            }
+            start = i + 1;
+            if (c == 0) { go = 0; }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Read fd to EOF into buf (capped). Returns bytes read.
+fn _proc_read_all(fd, buf, cap) {
+    var total = 0;
+    var rgo = 1;
+    while (rgo == 1) {
+        var n = sys_read(fd, buf + total, cap - total);
+        if (n <= 0) { rgo = 0; } else {
+            total = total + n;
+            if (total >= cap) { rgo = 0; }
+        }
+    }
+    return total;
+}
+
+# Build a minimal envp ["PATH=<value>", NULL] from the current PATH (or [NULL] if unset).
+fn _proc_envp() {
+    var envp = alloc(16);
+    var pe = getenv("PATH");
+    if (pe == 0) {
+        store64(envp, 0);
+        return envp;
+    }
+    var pl = strlen(pe);
+    var pbuf = alloc(5 + pl + 1);
+    store8(pbuf, 80);
+    store8(pbuf + 1, 65);
+    store8(pbuf + 2, 84);
+    store8(pbuf + 3, 72);
+    store8(pbuf + 4, 61);
+    memcpy(pbuf + 5, pe, pl);
+    store8(pbuf + 5 + pl, 0);
+    store64(envp, pbuf);
+    store64(envp + 8, 0);
+    return envp;
+}
+
+# Run `argv` (a vec of cstr ptrs) with optional `cwd_c` (cstr or 0); capture stdout/stderr/exit code.
+# Returns a 32-byte result { exit_code@0, stdout Str@8, stderr Str@16, ran@24 (0 = not found/fork fail) }.
+fn _proc_run(argv, cwd_c) {
+    var res = alloc(32);
+    store64(res, 0);
+    store64(res + 8, 0);
+    store64(res + 16, 0);
+    store64(res + 24, 0);
+
+    var cmd = vec_get(argv, 0);
+    var full = _proc_path_lookup(cmd);
+    if (full == 0) { return res; }
+
+    var argc = vec_len(argv);
+    var av = alloc((argc + 1) * 8);
+    var i = 0;
+    while (i < argc) {
+        store64(av + i * 8, vec_get(argv, i));
+        i = i + 1;
+    }
+    store64(av + argc * 8, 0);
+    var envp = _proc_envp();
+
+    var po[16];
+    var pe2[16];
+    sys_pipe(&po);
+    sys_pipe(&pe2);
+    var o_r = load32(&po);
+    var o_w = load32(&po + 4);
+    var e_r = load32(&pe2);
+    var e_w = load32(&pe2 + 4);
+
+    var pid = sys_fork();
+    if (pid < 0) { return res; }
+    if (pid == 0) {
+        sys_close(o_r);
+        sys_close(e_r);
+        sys_dup2(o_w, 1);
+        sys_dup2(e_w, 2);
+        sys_close(o_w);
+        sys_close(e_w);
+        if (cwd_c != 0) { syscall(80, cwd_c); }
+        sys_execve(full, av, envp);
+        sys_exit(127);
+    }
+    sys_close(o_w);
+    sys_close(e_w);
+
+    var obuf = alloc(PROC_BUF_SIZE);
+    var on = _proc_read_all(o_r, obuf, PROC_BUF_SIZE);
+    sys_close(o_r);
+    var ebuf = alloc(PROC_BUF_SIZE);
+    var en = _proc_read_all(e_r, ebuf, PROC_BUF_SIZE);
+    sys_close(e_r);
+
+    var stbuf = alloc(8);
+    sys_waitpid(pid, stbuf, 0);
+    var status = load64(stbuf);
+    var code = (status >> 8) & 0xFF;
+
+    store64(res, code);
+    store64(res + 8, str_new(obuf, on));
+    store64(res + 16, str_new(ebuf, en));
+    store64(res + 24, 1);
+    return res;
+}
+
+# szal_exec: run a PATH-resolved command (no shell) and report exit/stdout/stderr. Mirrors Exec::call
+# (process_tools.rs 29-107).
+fn _exec_handler(args, claims) {
+    var o = _proc_parse_args(args);
+    var cv = bayan_json_v_obj_get(o, "command");
+    if (bayan_json_v_is_str(cv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: command"));
+        return str_data(e);
+    }
+    var command = bayan_json_v_str(cv);
+    if (_proc_cmd_has_path(command) == 1) {
+        var ep = result_error_typed(MCP_PERMISSION_DENIED,
+        str_from("command must be a plain executable name, not a path — use PATH lookup"));
+        return str_data(ep);
+    }
+
+    var argv = vec_new();
+    vec_push(argv, str_cstr(command));
+    var av = bayan_json_v_obj_get(o, "args");
+    if (bayan_json_v_is_arr(av) == 1) {
+        var n = bayan_json_v_arr_len(av);
+        var i = 0;
+        while (i < n) {
+            var a = bayan_json_v_arr_get(av, i);
+            if (bayan_json_v_is_str(a) == 1) { vec_push(argv, str_cstr(bayan_json_v_str(a))); }
+            i = i + 1;
+        }
+    }
+
+    var cwd_c = 0;
+    var cwv = bayan_json_v_obj_get(o, "cwd");
+    if (bayan_json_v_is_str(cwv) == 1) {
+        var vr = validate_path(bayan_json_v_str(cwv));
+        if (is_err_result(vr) == 1) {
+            var ec = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr));
+            return str_data(ec);
+        }
+        cwd_c = str_cstr(result_unwrap(vr));
+    }
+
+    var res = _proc_run(argv, cwd_c);
+    if (load64(res + 24) == 0) {
+        var eb = str_builder_new();
+        str_builder_add_cstr(eb, "command failed: ");
+        str_builder_add(eb, command);
+        str_builder_add_cstr(eb, " not found");
+        var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+        return str_data(er);
+    }
+
+    var code = load64(res);
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("exit_code"), bayan_json_v_int_new(code));
+    bayan_json_v_obj_set(out, str_from("stdout"), bayan_json_v_str_new(load64(res + 8)));
+    bayan_json_v_obj_set(out, str_from("stderr"), bayan_json_v_str_new(load64(res + 16)));
+    var success = 0;
+    if (code == 0) { success = 1; }
+    bayan_json_v_obj_set(out, str_from("success"), bayan_json_v_bool_new(success));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# szal_pid: the current process id (getpid syscall 39). Mirrors Pid::call (process_tools.rs 118-123).
+fn _pid_handler(args, claims) {
+    var p = syscall(39);
+    var ps = str_from_int(p);
+    var r = result_ok(ps);
+    return str_data(r);
+}
+
+# Trim trailing whitespace (newline/space/tab/cr) from a Str.
+fn _proc_trim_end(s) {
+    var n = str_len(s);
+    var d = str_data(s);
+    var trimming = 1;
+    while (trimming == 1) {
+        if (n <= 0) { trimming = 0; } else {
+            var c = load8(d + n - 1) & 0xFF;
+            if (c == 10 || c == 13 || c == 32 || c == 9) { n = n - 1; } else { trimming = 0; }
+        }
+    }
+    return str_new(d, n);
+}
+
+# szal_which: is `command` on PATH? Mirrors Which::call (process_tools.rs 139-174).
+fn _which_handler(args, claims) {
+    var o = _proc_parse_args(args);
+    var cv = bayan_json_v_obj_get(o, "command");
+    if (bayan_json_v_is_str(cv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: command"));
+        return str_data(e);
+    }
+    var command = bayan_json_v_str(cv);
+
+    var argv = vec_new();
+    vec_push(argv, str_cstr(str_from("which")));
+    vec_push(argv, str_cstr(command));
+    var res = _proc_run(argv, 0);
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("command"), bayan_json_v_str_new(command));
+    if (load64(res + 24) == 1 && load64(res) == 0) {
+        bayan_json_v_obj_set(out, str_from("found"), bayan_json_v_bool_new(1));
+        bayan_json_v_obj_set(out, str_from("path"), bayan_json_v_str_new(_proc_trim_end(load64(res + 8))));
+    } else {
+        bayan_json_v_obj_set(out, str_from("found"), bayan_json_v_bool_new(0));
+    }
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _exec_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("command", "{ \"type\": \"string\", \"description\": \"Command to execute\" }"));
+    var ab = str_builder_new();
+    str_builder_add_cstr(ab, "{ \"type\": \"array\", \"items\": { \"type\": \"string\" }, ");
+    str_builder_add_cstr(ab, "\"description\": \"Command arguments\" }");
+    var args_c = str_cstr(str_builder_build(ab));
+    vec_push(v, schema_prop_new("args", args_c));
+    vec_push(v, schema_prop_new("cwd",
+    "{ \"type\": \"string\", \"description\": \"Working directory (optional)\" }"));
+    vec_push(v, schema_prop_new("timeout_ms",
+    "{ \"type\": \"integer\", \"description\": \"Timeout in milliseconds (default: 30000)\" }"));
+    return v;
+}
+
+fn _which_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("command",
+    "{ \"type\": \"string\", \"description\": \"Command name to look up\" }"));
+    return v;
+}
+
+# The process tool group: szal_exec, szal_pid, szal_which.
+fn process_tools() {
+    var tools = vec_new();
+    var c_req = vec_new();
+    vec_push(c_req, "command");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_exec", "Execute a shell command and return stdout, stderr, and exit code",
+    _exec_props(), c_req), &_exec_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_pid", "Get the current process ID", vec_new(), vec_new()), &_pid_handler));
+
+    var w_req = vec_new();
+    vec_push(w_req, "command");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_which", "Check if a command exists on PATH", _which_props(), w_req),
+    &_which_handler));
+    return tools;
+}

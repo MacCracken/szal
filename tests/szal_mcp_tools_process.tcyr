@@ -1,0 +1,157 @@
+# szal_mcp_tools_process.tcyr — process MCP tools (mcp_tools_process.cyr): szal_exec, szal_pid, szal_which.
+#
+# Ports rust-old/src/mcp/tools/process_tools.rs tests (exec echo/false/nonexistent, pid, which
+# found/not-found, path-traversal + absolute-path rejection) + registration.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_process.tcyr build/test_mcp_tools_process
+#   ./build/test_mcp_tools_process
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_process.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_exec ---
+
+# echo hello succeeds and its output is captured. (process_tools.rs 181-190)
+fn t_exec_echo() {
+    var r = _call(&_exec_handler, "{\"command\": \"echo\", \"args\": [\"hello\"]}");
+    assert(str_contains(r, str_from("\"isError\":false")), "echo ok");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("\"success\": true")), "success true");
+    assert(str_contains(text, str_from("hello")), "captures stdout");
+    return 0;
+}
+
+# `false` runs but reports success:false. (process_tools.rs 192-198)
+fn t_exec_false() {
+    var r = _call(&_exec_handler, "{\"command\": \"false\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "false runs");
+    assert(str_contains(_result_text(r), str_from("\"success\": false")), "success false");
+    return 0;
+}
+
+# A nonexistent command is an error. (process_tools.rs 200-206)
+fn t_exec_nonexistent() {
+    var r = _call(&_exec_handler, "{\"command\": \"nonexistent_command_xyz_123\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "nonexistent -> error");
+    return 0;
+}
+
+# Path-traversal command name is rejected. (process_tools.rs 231-235)
+fn t_exec_traversal() {
+    var r = _call(&_exec_handler, "{\"command\": \"../bin/sh\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "traversal rejected");
+    assert(str_contains(r, str_from("plain executable name")), "path-form message");
+    return 0;
+}
+
+# Absolute-path command name is rejected. (process_tools.rs 237-241)
+fn t_exec_absolute() {
+    var r = _call(&_exec_handler, "{\"command\": \"/bin/sh\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "absolute path rejected");
+    return 0;
+}
+
+# Missing command is a validation error.
+fn t_exec_missing() {
+    var r = _call(&_exec_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no command -> error");
+    assert(str_contains(r, str_from("missing required field: command")), "validation message");
+    return 0;
+}
+
+# --- szal_pid ---
+
+# Pid returns a positive integer. (process_tools.rs 208-215)
+fn t_pid() {
+    var r = _call(&_pid_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "pid ok");
+    var text = _result_text(r);
+    assert(str_len(text) > 0, "pid is non-empty");
+    return 0;
+}
+
+# --- szal_which ---
+
+# A real command (sh) is found. (process_tools.rs 217-222)
+fn t_which_found() {
+    var r = _call(&_which_handler, "{\"command\": \"sh\"}");
+    assert(str_contains(_result_text(r), str_from("\"found\": true")), "sh found");
+    return 0;
+}
+
+# A nonexistent command is not found. (process_tools.rs 224-229)
+fn t_which_not_found() {
+    var r = _call(&_which_handler, "{\"command\": \"nonexistent_xyz_123\"}");
+    assert(str_contains(_result_text(r), str_from("\"found\": false")), "not found");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(process_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_exec"), 1, "exec registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_pid"), 1, "pid registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_which"), 1, "which registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 3, "three process tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_exec");
+    t_exec_echo();
+    t_exec_false();
+    t_exec_nonexistent();
+    t_exec_traversal();
+    t_exec_absolute();
+    t_exec_missing();
+
+    test_group("szal_pid");
+    t_pid();
+
+    test_group("szal_which");
+    t_which_found();
+    t_which_not_found();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
