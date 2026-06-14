@@ -343,6 +343,21 @@ and the `flow_tools.rs` tests don't exercise malformed inline steps. See `src/mc
 
 ---
 
+## 20. server_info version/description hardcoded (`mcp_tools_engine.cyr`, szal_server_info)
+
+**What:** Rust's `szal_server_info` reads `version`/`description` from `env!("CARGO_PKG_VERSION")` /
+`env!("CARGO_PKG_DESCRIPTION")` (cargo build-time env). Cyrius has no build-time env injection, so the
+port hardcodes `version = "2.0.0"` (the current VERSION) and a static description.
+
+**Divergence:** the version string is a literal that must be kept in sync with the `VERSION` file
+(it won't auto-update on a version bump). `name`/`mcp_backend`/`capabilities` are exact.
+
+**Why accepted:** no Cyrius equivalent to cargo's compile-time env; the `server_info` test only asserts
+`"szal"`/`"bote"` are present, not the version value. A `${file:VERSION}`-style build substitution is a
+roadmap follow-up. See `src/mcp_tools_engine.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/

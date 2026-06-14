@@ -1,0 +1,230 @@
+# mcp_tools_engine.cyr — MCP engine tools (ports mcp/tools/engine_tools.rs): szal_engine_create,
+# szal_result_inspect, szal_step_status_list, szal_error_list, szal_server_info.
+#
+# Mostly static/JSON-shaping tools (no szal core module needed). Handlers follow the bote ABI + the
+# porting pattern in docs/development/state.md.
+#
+# PARITY NOTE (server version): Rust's szal_server_info reads version/description from
+# env!("CARGO_PKG_*") at build time. Cyrius has no equivalent, so the port hardcodes the version
+# ("2.0.0") — KEEP IN SYNC with the VERSION file. The server_info test only asserts "szal"/"bote"
+# are present (not the version value). Recorded §20.
+#
+# Usage: include AFTER src/mcp.cyr (+ lib/bayan, lib/str, lib/vec).
+
+enum EngineTools {
+    DEFAULT_MAX_CONCURRENCY = 16;
+}
+
+fn _eng_parse_args(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# {k1:v1, k2:v2} where the values are cstrs wrapped as JSON strings (for the static list tools).
+fn _eng_kv2(k1, v1, k2, v2) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from(k1), bayan_json_v_str_new(str_from(v1)));
+    bayan_json_v_obj_set(o, str_from(k2), bayan_json_v_str_new(str_from(v2)));
+    return o;
+}
+
+# JSON array of `cstr` strings.
+fn _eng_str_arr(items) {
+    var arr = bayan_json_v_arr_new();
+    var n = vec_len(items);
+    var i = 0;
+    while (i < n) {
+        bayan_json_v_arr_push(arr, bayan_json_v_str_new(str_from(vec_get(items, i))));
+        i = i + 1;
+    }
+    return arr;
+}
+
+# szal_engine_create: echo a config with default/overridden concurrency + timeout. Mirrors
+# EngineCreate::call (engine_tools.rs 24-41). Default max_concurrency 16, global_timeout_ms None.
+fn _engine_create_handler(args, claims) {
+    var o = _eng_parse_args(args);
+    var mc = DEFAULT_MAX_CONCURRENCY;
+    var mcv = bayan_json_v_obj_get(o, "max_concurrency");
+    if (bayan_json_v_is_int(mcv) == 1) { mc = bayan_json_v_int(mcv); }
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("max_concurrency"), bayan_json_v_int_new(mc));
+    var gtv = bayan_json_v_obj_get(o, "global_timeout_ms");
+    if (bayan_json_v_is_int(gtv) == 1) {
+        bayan_json_v_obj_set(out, str_from("global_timeout_ms"), bayan_json_v_int_new(bayan_json_v_int(gtv)));
+    } else {
+        bayan_json_v_obj_set(out, str_from("global_timeout_ms"), bayan_json_v_null());
+    }
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# Count steps whose "status" string equals `want_c`.
+fn _eng_count_status(steps, want_c) {
+    var count = 0;
+    var n = bayan_json_v_arr_len(steps);
+    var i = 0;
+    while (i < n) {
+        var st = bayan_json_v_arr_get(steps, i);
+        var sv = bayan_json_v_obj_get(st, "status");
+        if (bayan_json_v_is_str(sv) == 1) {
+            if (str_eq_cstr(bayan_json_v_str(sv), want_c) == 1) { count = count + 1; }
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+# szal_result_inspect: summarize a FlowResult JSON. Mirrors ResultInspect::call (engine_tools.rs 56-116).
+fn _result_inspect_handler(args, claims) {
+    var o = _eng_parse_args(args);
+    var jv = bayan_json_v_obj_get(o, "result_json");
+    if (bayan_json_v_is_str(jv) == 0) {
+        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: result_json"));
+        return str_data(e);
+    }
+    var val = bayan_json_v_parse(bayan_json_v_str(jv));
+    if (val == 0) {
+        var ej = result_error_typed(MCP_VALIDATION, str_from("invalid JSON"));
+        return str_data(ej);
+    }
+
+    var flow_name = str_from("unknown");
+    var fnv = bayan_json_v_obj_get(val, "flow_name");
+    if (bayan_json_v_is_str(fnv) == 1) { flow_name = bayan_json_v_str(fnv); }
+
+    var success = 0;
+    var sv = bayan_json_v_obj_get(val, "success");
+    if (bayan_json_v_is_bool(sv) == 1) { success = bayan_json_v_bool(sv); }
+    var rolled_back = 0;
+    var rv = bayan_json_v_obj_get(val, "rolled_back");
+    if (bayan_json_v_is_bool(rv) == 1) { rolled_back = bayan_json_v_bool(rv); }
+    var total_ms = 0;
+    var tv = bayan_json_v_obj_get(val, "total_duration_ms");
+    if (bayan_json_v_is_int(tv) == 1) { total_ms = bayan_json_v_int(tv); }
+
+    var step_count = 0;
+    var completed = 0;
+    var failed = 0;
+    var steps = bayan_json_v_obj_get(val, "steps");
+    if (bayan_json_v_is_arr(steps) == 1) {
+        step_count = bayan_json_v_arr_len(steps);
+        completed = _eng_count_status(steps, "Completed");
+        failed = _eng_count_status(steps, "Failed");
+    }
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("flow_name"), bayan_json_v_str_new(flow_name));
+    bayan_json_v_obj_set(out, str_from("success"), bayan_json_v_bool_new(success));
+    bayan_json_v_obj_set(out, str_from("rolled_back"), bayan_json_v_bool_new(rolled_back));
+    bayan_json_v_obj_set(out, str_from("total_duration_ms"), bayan_json_v_int_new(total_ms));
+    bayan_json_v_obj_set(out, str_from("step_count"), bayan_json_v_int_new(step_count));
+    bayan_json_v_obj_set(out, str_from("completed"), bayan_json_v_int_new(completed));
+    bayan_json_v_obj_set(out, str_from("failed"), bayan_json_v_int_new(failed));
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# szal_step_status_list: the six step statuses. Mirrors StepStatusList::call (engine_tools.rs 131-145).
+fn _step_status_list_handler(args, claims) {
+    var arr = bayan_json_v_arr_new();
+    bayan_json_v_arr_push(arr, _eng_kv2("status", "pending", "description", "Step has not started"));
+    bayan_json_v_arr_push(arr, _eng_kv2("status", "running", "description", "Step is currently executing"));
+    bayan_json_v_arr_push(arr, _eng_kv2("status", "completed", "description", "Step finished successfully"));
+    bayan_json_v_arr_push(arr, _eng_kv2("status", "failed", "description", "Step execution failed"));
+    bayan_json_v_arr_push(arr, _eng_kv2("status", "skipped", "description", "Step was skipped"));
+    bayan_json_v_arr_push(arr, _eng_kv2("status", "rolled_back", "description",
+    "Step was rolled back after failure"));
+    var r = result_ok_json(arr);
+    return str_data(r);
+}
+
+# szal_error_list: the six workflow error types. Mirrors ErrorList::call (engine_tools.rs 160-174).
+fn _error_list_handler(args, claims) {
+    var arr = bayan_json_v_arr_new();
+    bayan_json_v_arr_push(arr, _eng_kv2("error", "StepFailed", "description",
+    "A step failed with a specific reason"));
+    bayan_json_v_arr_push(arr, _eng_kv2("error", "StepTimeout", "description",
+    "A step exceeded its timeout"));
+    bayan_json_v_arr_push(arr, _eng_kv2("error", "InvalidFlow", "description",
+    "Flow configuration is invalid"));
+    bayan_json_v_arr_push(arr, _eng_kv2("error", "RetryExhausted", "description",
+    "All retry attempts failed"));
+    bayan_json_v_arr_push(arr, _eng_kv2("error", "RollbackFailed", "description",
+    "Rollback operation failed"));
+    bayan_json_v_arr_push(arr, _eng_kv2("error", "CycleDetected", "description", "DAG contains a cycle"));
+    var r = result_ok_json(arr);
+    return str_data(r);
+}
+
+# szal_server_info: server identity + capabilities. Mirrors ServerInfo::call (engine_tools.rs 189-205).
+fn _server_info_handler(args, claims) {
+    var modes = vec_new();
+    vec_push(modes, "sequential");
+    vec_push(modes, "parallel");
+    vec_push(modes, "dag");
+    vec_push(modes, "hierarchical");
+    var feats = vec_new();
+    vec_push(feats, "retry");
+    vec_push(feats, "rollback");
+    vec_push(feats, "timeout");
+    vec_push(feats, "dag_cycle_detection");
+    vec_push(feats, "state_machine");
+
+    var caps = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(caps, str_from("execution_modes"), _eng_str_arr(modes));
+    bayan_json_v_obj_set(caps, str_from("features"), _eng_str_arr(feats));
+
+    var out = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(out, str_from("name"), bayan_json_v_str_new(str_from("szal")));
+    bayan_json_v_obj_set(out, str_from("version"), bayan_json_v_str_new(str_from("2.0.0")));
+    bayan_json_v_obj_set(out, str_from("description"),
+    bayan_json_v_str_new(str_from("Workflow orchestration engine")));
+    bayan_json_v_obj_set(out, str_from("mcp_backend"), bayan_json_v_str_new(str_from("bote")));
+    bayan_json_v_obj_set(out, str_from("capabilities"), caps);
+    var r = result_ok_json(out);
+    return str_data(r);
+}
+
+# --- schema property builders ---
+
+fn _engine_create_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("max_concurrency", "{ \"type\": \"integer\" }"));
+    vec_push(v, schema_prop_new("global_timeout_ms", "{ \"type\": \"integer\" }"));
+    return v;
+}
+
+fn _result_json_props() {
+    var v = vec_new();
+    vec_push(v, schema_prop_new("result_json", "{ \"type\": \"string\" }"));
+    return v;
+}
+
+# The engine tool group: engine_create, result_inspect, step_status_list, error_list, server_info.
+fn engine_tools() {
+    var tools = vec_new();
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_engine_create", "Create an engine configuration with concurrency and timeout settings",
+    _engine_create_props(), vec_new()), &_engine_create_handler));
+
+    var ri_req = vec_new();
+    vec_push(ri_req, "result_json");
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_result_inspect", "Inspect a flow execution result — step counts, duration, success/failure",
+    _result_json_props(), ri_req), &_result_inspect_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_step_status_list", "List all possible step execution statuses",
+    vec_new(), vec_new()), &_step_status_list_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_error_list", "List all workflow error types with descriptions",
+    vec_new(), vec_new()), &_error_list_handler));
+
+    vec_push(tools, mcp_tool_new(
+    mcp_tool_def("szal_server_info", "Show szal server info — version, capabilities",
+    vec_new(), vec_new()), &_server_info_handler));
+    return tools;
+}

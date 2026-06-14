@@ -91,6 +91,7 @@ include "src/mcp_tools_math.cyr"
 include "src/mcp_tools_state.cyr"
 include "src/mcp_tools_step.cyr"
 include "src/mcp_tools_flow.cyr"
+include "src/mcp_tools_engine.cyr"
 
 fn main() {
     alloc_init();

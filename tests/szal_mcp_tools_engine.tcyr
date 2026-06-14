@@ -1,0 +1,160 @@
+# szal_mcp_tools_engine.tcyr — engine MCP tools (mcp_tools_engine.cyr): szal_engine_create,
+# szal_result_inspect, szal_step_status_list, szal_error_list, szal_server_info.
+#
+# Ports rust-old/src/mcp/tools/engine_tools.rs tests + result-inspect counting + registration.
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_engine.tcyr build/test_mcp_tools_engine
+#   ./build/test_mcp_tools_engine
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_engine.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# --- szal_engine_create ---
+
+# Default config reports max_concurrency 16. (engine_tools.rs 212-218)
+fn t_engine_default() {
+    var r = _call(&_engine_create_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "engine default ok");
+    assert(str_contains(_result_text(r), str_from("\"max_concurrency\": 16")), "default concurrency 16");
+    return 0;
+}
+
+# Custom config applies overrides. (engine_tools.rs 220-228)
+fn t_engine_custom() {
+    var r = _call(&_engine_create_handler, "{\"max_concurrency\": 4, \"global_timeout_ms\": 60000}");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("\"max_concurrency\": 4")), "concurrency 4");
+    assert(str_contains(text, str_from("\"global_timeout_ms\": 60000")), "timeout 60000");
+    return 0;
+}
+
+# --- szal_result_inspect ---
+
+# Inspect counts completed/failed steps from a result JSON.
+fn t_result_inspect() {
+    var r = _call(&_result_inspect_handler,
+    "{\"result_json\": \"{\\\"flow_name\\\":\\\"deploy\\\",\\\"success\\\":true,\\\"total_duration_ms\\\":1500,\\\"steps\\\":[{\\\"status\\\":\\\"Completed\\\"},{\\\"status\\\":\\\"Completed\\\"},{\\\"status\\\":\\\"Failed\\\"}]}\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "inspect ok");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("\"flow_name\": \"deploy\"")), "flow_name deploy");
+    assert(str_contains(text, str_from("\"step_count\": 3")), "step_count 3");
+    assert(str_contains(text, str_from("\"completed\": 2")), "completed 2");
+    assert(str_contains(text, str_from("\"failed\": 1")), "failed 1");
+    return 0;
+}
+
+# Missing result_json is a validation error.
+fn t_result_missing() {
+    var r = _call(&_result_inspect_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no result_json -> error");
+    assert(str_contains(r, str_from("missing required field: result_json")), "validation message");
+    return 0;
+}
+
+# Bad JSON is a validation error.
+fn t_result_bad_json() {
+    var r = _call(&_result_inspect_handler, "{\"result_json\": \"not json\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "bad json -> error");
+    assert(str_contains(r, str_from("invalid JSON")), "invalid-JSON message");
+    return 0;
+}
+
+# --- static lists ---
+
+# Step statuses include pending. (engine_tools.rs 230-236)
+fn t_step_statuses() {
+    var r = _call(&_step_status_list_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "statuses ok");
+    assert(str_contains(_result_text(r), str_from("pending")), "lists pending");
+    return 0;
+}
+
+# Error list includes CycleDetected. (engine_tools.rs 238-244)
+fn t_error_list() {
+    var r = _call(&_error_list_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "errors ok");
+    assert(str_contains(_result_text(r), str_from("CycleDetected")), "lists CycleDetected");
+    return 0;
+}
+
+# Server info mentions szal + bote. (engine_tools.rs 246-253)
+fn t_server_info() {
+    var r = _call(&_server_info_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "server info ok");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("szal")), "mentions szal");
+    assert(str_contains(text, str_from("bote")), "mentions bote");
+    assert(str_contains(text, str_from("dag_cycle_detection")), "lists features");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(engine_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_engine_create"), 1, "engine_create registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_result_inspect"), 1, "result_inspect registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_step_status_list"), 1, "step_status_list registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_error_list"), 1, "error_list registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_server_info"), 1, "server_info registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 5, "five engine tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_engine_create");
+    t_engine_default();
+    t_engine_custom();
+
+    test_group("szal_result_inspect");
+    t_result_inspect();
+    t_result_missing();
+    t_result_bad_json();
+
+    test_group("static lists");
+    t_step_statuses();
+    t_error_list();
+    t_server_info();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
