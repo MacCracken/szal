@@ -326,6 +326,23 @@ integer results (5, 53), which are exact. See `src/mcp_tools_math.cyr`.
 
 ---
 
+## 19. flow_create inline steps use lenient deserialization (`mcp_tools_flow.cyr`, szal_flow_create)
+
+**What:** Rust's `szal_flow_create` deserializes each element of the `steps` array via
+`serde_json::from_value::<StepDef>` and returns `McpErrorCode::Validation` ("invalid step: …") on a
+malformed element. The port uses step.cyr's `_step_from_v`, which is serde-default lenient (missing
+fields default rather than erroring — parity-notes §3).
+
+**Divergence:** the "invalid step" error branch is effectively unreachable in the port; a structurally
+unexpected step object yields a defaulted StepDef instead of a typed error. Every other path
+(name/mode validation, rollback/timeout, serialization) is exact, and `flow_validate` (DAG cycle
+detection) is inherited from flow.cyr unchanged.
+
+**Why accepted:** the szal step deserializer is intentionally lenient (§3 — a codebase-wide idiom),
+and the `flow_tools.rs` tests don't exercise malformed inline steps. See `src/mcp_tools_flow.cyr`.
+
+---
+
 ### Disposition log
 
 - **2026-06-11 — M1 foundation parity audit** (7 modules vs `rust-old`: error/state/migration/bus/

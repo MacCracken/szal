@@ -1,0 +1,226 @@
+# szal_mcp_tools_flow.tcyr — flow MCP tools (mcp_tools_flow.cyr): szal_flow_create, szal_flow_validate,
+# szal_flow_from_json, szal_flow_list_modes, szal_flow_add_step.
+#
+# Ports rust-old/src/mcp/tools/flow_tools.rs tests + validation + registration. Flow/step JSON for the
+# json-input tools is built via flow.cyr/step.cyr + bayan (so escaping is handled correctly).
+#
+#   cyrius build --strict --no-deps tests/szal_mcp_tools_flow.tcyr build/test_mcp_tools_flow
+#   ./build/test_mcp_tools_flow
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "src/error.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+include "src/flow.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/mcp.cyr"
+include "src/mcp_tools_flow.cyr"
+
+fn _call(fp, args) {
+    var c = fncall2(fp, args, 0);
+    return str_from(c);
+}
+
+fn _result_text(r) {
+    var o = bayan_json_v_parse(r);
+    var content = bayan_json_v_obj_get(o, "content");
+    var item = bayan_json_v_arr_get(content, 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+# Build args {field: value} (a JSON string) via bayan and call the handler (handles escaping).
+fn _call_field(fp, field, value_str) {
+    var args_obj = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(args_obj, str_from(field), bayan_json_v_str_new(value_str));
+    var args_cstr = str_cstr(bayan_json_v_build(args_obj));
+    return _call(fp, args_cstr);
+}
+
+# Build args {f1:v1, f2:v2} via bayan and call.
+fn _call_field2(fp, f1, v1, f2, v2) {
+    var o = bayan_json_v_obj_new();
+    bayan_json_v_obj_set(o, str_from(f1), bayan_json_v_str_new(v1));
+    bayan_json_v_obj_set(o, str_from(f2), bayan_json_v_str_new(v2));
+    var args_cstr = str_cstr(bayan_json_v_build(o));
+    return _call(fp, args_cstr);
+}
+
+# --- szal_flow_create ---
+
+# Basic create echoes the flow with name + mode. (flow_tools.rs 289-299)
+fn t_create_basic() {
+    var r = _call(&_flow_create_handler, "{\"name\": \"ci-cd\", \"mode\": \"dag\"}");
+    assert(str_contains(r, str_from("\"isError\":false")), "create ok");
+    var flow = bayan_json_v_parse(_result_text(r));
+    assert(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(flow, "name")), "ci-cd"), "name ci-cd");
+    return 0;
+}
+
+# Create with options sets rollback + timeout. (flow_tools.rs 301-309)
+fn t_create_options() {
+    var r = _call(&_flow_create_handler,
+    "{\"name\": \"deploy\", \"mode\": \"sequential\", \"rollback_on_failure\": true, \"timeout_ms\": 300000}");
+    assert(str_contains(r, str_from("\"isError\":false")), "create options ok");
+    var flow = bayan_json_v_parse(_result_text(r));
+    assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(flow, "rollback_on_failure")), 1, "rollback true");
+    assert_eq(bayan_json_v_int(bayan_json_v_obj_get(flow, "timeout_ms")), 300000, "timeout 300000");
+    return 0;
+}
+
+# An invalid mode is a validation error. (flow_tools.rs 311-315)
+fn t_create_bad_mode() {
+    var r = _call(&_flow_create_handler, "{\"name\": \"x\", \"mode\": \"nope\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "bad mode -> error");
+    assert(str_contains(r, str_from("missing or invalid mode")), "mode message");
+    return 0;
+}
+
+# Missing name is a validation error.
+fn t_create_missing_name() {
+    var r = _call(&_flow_create_handler, "{\"mode\": \"dag\"}");
+    assert(str_contains(r, str_from("\"isError\":true")), "no name -> error");
+    assert(str_contains(r, str_from("missing required field: name")), "validation message");
+    return 0;
+}
+
+# --- szal_flow_validate ---
+
+# A valid DAG flow validates. (flow_tools.rs 317-327)
+fn t_validate_valid() {
+    var build = step_new(str_from("build"));
+    var test = step_depends_on_add(step_new(str_from("test")), step_id_hi(build), step_id_lo(build));
+    var flow = flow_new(str_from("pipeline"), FLOW_DAG);
+    flow_add_step(flow, build);
+    flow_add_step(flow, test);
+    var fj = flow_to_json(flow);
+    var r = _call_field(&_flow_validate_handler, "flow_json", fj);
+    assert(str_contains(r, str_from("\"isError\":false")), "valid dag ok");
+    assert(str_contains(r, str_from("valid: flow 'pipeline'")), "reports valid");
+    return 0;
+}
+
+# A cyclic DAG fails validation. (flow_tools.rs 329-342)
+fn t_validate_cycle() {
+    var a = step_new(str_from("a"));
+    var b = step_new(str_from("b"));
+    a = step_depends_on_add(a, step_id_hi(b), step_id_lo(b));
+    b = step_depends_on_add(b, step_id_hi(a), step_id_lo(a));
+    var flow = flow_new(str_from("broken"), FLOW_DAG);
+    flow_add_step(flow, a);
+    flow_add_step(flow, b);
+    var fj = flow_to_json(flow);
+    var r = _call_field(&_flow_validate_handler, "flow_json", fj);
+    assert(str_contains(r, str_from("\"isError\":true")), "cycle -> error");
+    assert(str_contains(r, str_from("validation failed")), "validation-failed message");
+    return 0;
+}
+
+# Bad JSON is a validation error.
+fn t_validate_bad_json() {
+    var r = _call_field(&_flow_validate_handler, "flow_json", str_from("not json"));
+    assert(str_contains(r, str_from("\"isError\":true")), "bad json -> error");
+    assert(str_contains(r, str_from("invalid JSON")), "invalid-JSON message");
+    return 0;
+}
+
+# --- szal_flow_list_modes ---
+
+# Lists all four modes. (flow_tools.rs 344-351)
+fn t_list_modes() {
+    var r = _call(&_flow_list_modes_handler, "{}");
+    assert(str_contains(r, str_from("\"isError\":false")), "list modes ok");
+    var text = _result_text(r);
+    assert(str_contains(text, str_from("sequential")), "lists sequential");
+    assert(str_contains(text, str_from("dag")), "lists dag");
+    assert(str_contains(text, str_from("hierarchical")), "lists hierarchical");
+    return 0;
+}
+
+# --- szal_flow_add_step ---
+
+# Adds a step, returning a flow with one step. (flow_tools.rs 353-367)
+fn t_add_step() {
+    var flow = flow_new(str_from("test"), FLOW_SEQUENTIAL);
+    var step = step_new(str_from("build"));
+    var r = _call_field2(&_flow_add_step_handler, "flow_json", flow_to_json(flow), "step_json", step_to_json(step));
+    assert(str_contains(r, str_from("\"isError\":false")), "add step ok");
+    var updated = bayan_json_v_parse(_result_text(r));
+    assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(updated, "steps")), 1, "one step");
+    return 0;
+}
+
+# --- szal_flow_from_json ---
+
+# Reports step_count. (flow_tools.rs 369-380)
+fn t_from_json() {
+    var flow = flow_new(str_from("pipeline"), FLOW_DAG);
+    flow_add_step(flow, step_new(str_from("build")));
+    flow_add_step(flow, step_new(str_from("test")));
+    var fj = flow_to_json(flow);
+    var r = _call_field(&_flow_from_json_handler, "flow_json", fj);
+    assert(str_contains(_result_text(r), str_from("\"step_count\": 2")), "step_count 2");
+    return 0;
+}
+
+# --- registration ---
+
+fn t_group_registers() {
+    var d = register_tools(flow_tools());
+    assert(d != 0, "dispatcher built");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_flow_create"), 1, "flow_create registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_flow_validate"), 1, "flow_validate registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_flow_from_json"), 1, "flow_from_json registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_flow_list_modes"), 1, "flow_list_modes registered");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_flow_add_step"), 1, "flow_add_step registered");
+    assert_eq(registry_len(dispatcher_registry(d)), 5, "five flow tools");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("szal_flow_create");
+    t_create_basic();
+    t_create_options();
+    t_create_bad_mode();
+    t_create_missing_name();
+
+    test_group("szal_flow_validate");
+    t_validate_valid();
+    t_validate_cycle();
+    t_validate_bad_json();
+
+    test_group("szal_flow_list_modes");
+    t_list_modes();
+
+    test_group("szal_flow_add_step");
+    t_add_step();
+
+    test_group("szal_flow_from_json");
+    t_from_json();
+
+    test_group("registration");
+    t_group_registers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
