@@ -7,7 +7,7 @@
 # (`thread_create`); concurrency is capped by a counting semaphore built from a bounded channel
 # (`chan_new(N)` pre-filled with N tokens; acquire = `chan_recv`, release = `chan_send`). Cancel
 # tokens map 1:1 to Rust's `CancellationToken`. Two unavoidable thread deltas vs tokio (§8):
-#   - `thread_join` returns no value, so each worker writes its StepResult into a per-worker SLOT
+#   - a join returns no value, so each worker writes its StepResult into a per-worker SLOT
 #     that the joiner reads — equivalent observable result.
 #   - at join, a cancelled/timed-out step is Skipped and its worker ORPHANED (OS threads can't be
 #     `handle.abort()`-ed). Safe: cancellation/timeout is monotonic, so once we start skipping every
@@ -19,9 +19,14 @@
 # the process, so Rust's "task panicked" recovery path is only reached here on a thread_create
 # failure (a real panic isn't observable). See parity-notes §8.
 #
+# Joins go through `szal_thread_join` (engine_step_exec.cyr), NEVER lib/thread.cyr's `thread_join`:
+# the latter deadlocks its joiner whenever a worker exits inside its check-then-wait window, which
+# is exactly the interleaving this module produces at scale. See that fn's header + parity-notes §8.
+#
 # Usage: include "src/engine_parallel.cyr" (after engine_core + engine_step_exec).
-# Requires: src/engine_core.cyr, src/engine_step_exec.cyr, src/step.cyr, src/bus.cyr, src/uuid.cyr,
-#   lib/thread.cyr (thread_create/join, chan_*), lib/async.cyr (cancel_token_check),
+# Requires: src/engine_core.cyr, src/engine_step_exec.cyr (szal_thread_join), src/step.cyr,
+#   src/bus.cyr, src/uuid.cyr,
+#   lib/thread.cyr (thread_create, chan_*), lib/async.cyr (cancel_token_check),
 #   lib/chrono.cyr (clock_now_ms), lib/vec.cyr.
 # Naming: public symbol is run_parallel; the worker + its arg/record layouts are internal.
 
@@ -134,7 +139,7 @@ fn run_parallel(steps, max_concurrency, timeout_ms, start_ms, token, ctx) {
         } elif (timed_out == 1) {
             _par_skip(results, event_sink, step, "flow timeout exceeded");
         } else {
-            thread_join(load64(rec + PRR_T));
+            szal_thread_join(load64(rec + PRR_T));
             var res = load64(load64(rec + PRR_SLOT));
             if (res == 0) {
                 # No result published (thread_create failed) -> the "task panicked" path.

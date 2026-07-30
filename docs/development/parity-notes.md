@@ -129,6 +129,19 @@ prescribes exactly the worker-thread + deadline-poll approach used here. Token-b
 cooperative/poll-based and maps 1:1 to `cancel_token_new/signal/check`. Only the *timeout abort*
 differs, and only for misbehaving handlers. See `src/engine_step_exec.cyr`.
 
+> **Not a divergence, but it lives with §8's machinery — `szal_thread_join`.** `lib/thread.cyr`'s
+> `thread_join` loads the tid word twice (loop condition + `FUTEX_WAIT` expected-value); a worker
+> exiting between the two loads makes the joiner park on a wake that already fired, deadlocking it
+> permanently. This is a **toolchain bug, not a Rust↔Cyrius difference** — Rust's `handle.await`
+> has no such hazard, so a hang here is a szal defect, never accepted parity. It surfaced as an
+> intermittent `run_parallel` hang (~1 per 2,000 parallel `engine_run` calls). `lib/` is
+> re-provisioned by `cyrius lib sync`, so the fix is szal-side: `szal_thread_join`
+> (`src/engine_step_exec.cyr`) loads the tid once per iteration, and **all four** szal join sites
+> use it (`engine_step_exec` / `engine_parallel` / `engine_dag` / `engine_distributed`). Never call
+> `thread_join` directly. Full analysis, evidence and the suggested upstream patch:
+> [`issues/2026-07-29-thread-join-lost-wakeup-deadlock.md`](issues/2026-07-29-thread-join-lost-wakeup-deadlock.md);
+> regression guard: `tests/szal_engine_parallel_stress.tcyr`.
+
 > Concurrency scope: in sequential execution the main thread only polls while a worker runs.
 > **For parallel execution (rows 14/15) both prerequisites are already satisfied:** (a) `alloc()`
 > is thread-safe — `lib/alloc.cyr` has a global allocation lock (v6.0.64) precisely because real

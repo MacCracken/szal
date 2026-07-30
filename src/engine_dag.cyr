@@ -15,6 +15,8 @@
 # Usage: include "src/engine_dag.cyr" (after engine_core, engine_step_exec, engine_parallel).
 # Requires: those + src/step.cyr (depends_on/trigger_mode accessors), src/bus.cyr, src/uuid.cyr,
 #   lib/thread.cyr, lib/async.cyr, lib/chrono.cyr, lib/hashmap.cyr, lib/vec.cyr.
+# Wave joins use `szal_thread_join` (engine_step_exec.cyr), never lib/thread.cyr's `thread_join`,
+# which deadlocks its joiner when a worker exits inside its check-then-wait window.
 # Naming: public symbols are run_dag + unlock_dependents-equivalent (_dag_unlock); helpers use _.
 
 # Per-spawned-step join record: {thread handle, step ordinal, result-slot}.
@@ -205,7 +207,7 @@ fn run_dag(steps, max_concurrency, timeout_ms, start_ms, token, ctx) {
                 var rec = vec_get(handles, hj);
                 var ord = load64(rec + DGR_ORD);
                 var step = vec_get(steps, ord);
-                thread_join(load64(rec + DGR_T));
+                szal_thread_join(load64(rec + DGR_T));
                 var res = load64(load64(rec + DGR_SLOT));
                 if (res == 0) {
                     res = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,

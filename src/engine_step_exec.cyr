@@ -17,7 +17,60 @@
 #
 # Usage: include "src/engine_step_exec.cyr" (after engine_core, bus, step, metrics; + lib/thread,
 #   lib/chrono, lib/async or lib/thread for the primitives).
-# Naming: public symbol is execute_step_with_handler; internal helpers use _.
+# Naming: public symbols are execute_step_with_handler + szal_thread_join; internal helpers use _.
+
+# ===========================================================================
+# szal_thread_join — race-free replacement for lib/thread.cyr's thread_join
+# ===========================================================================
+#
+# EVERY szal join goes through this, never `thread_join` directly (step_exec, engine_parallel,
+# engine_dag, engine_distributed). `lib/thread.cyr:293` has a check-then-wait race that
+# permanently deadlocks the joiner:
+#
+#     while (load64(t) != 0) {
+#         syscall(SYS_FUTEX, t, FUTEX_WAIT, load64(t), 0, 0, 0);
+#     }                        # ^^^^^^^^^^ SECOND, INDEPENDENT load of the tid word
+#
+# The loop condition and the FUTEX_WAIT expected-value are two separate loads of `*t`. A worker
+# that exits BETWEEN them loses its wakeup for good:
+#
+#   1. joiner: `load64(t) != 0` reads the live tid -> enters the body
+#   2. worker exits; the kernel's CLONE_CHILD_CLEARTID action stores 0 to *t and issues
+#      futex_wake(t, 1) -- nobody is parked yet, so that wake is DISCARDED
+#   3. joiner: the argument `load64(t)` now reads 0
+#   4. joiner: FUTEX_WAIT(t, 0) -- the kernel's compare `*t == val` is 0 == 0, so it PARKS.
+#      The only wake this word will ever get already fired at step 2. Hang forever.
+#
+# Observed as an intermittent hang in `run_parallel` (~1 per 2000 parallel engine_run calls,
+# ~1 per 150k joins). Confirmed by /proc/<pid>/syscall on a hung process:
+# `202 <addr> 0x0 0x0` -- SYS_FUTEX, op FUTEX_WAIT with NO FUTEX_PRIVATE_FLAG, expected value 0.
+# thread_join is the only non-private futex waiter reachable from szal (mutex_lock, chan_send and
+# chan_recv all pass FUTEX_WAIT|FUTEX_PRIVATE_FLAG = 0x80), and 0 is the impossible expected tid.
+#
+# The fix is to load the tid ONCE per iteration and use that same value for both the loop test and
+# the expected-value: we can then only ever park on a tid we have positively observed to be live.
+# If the worker exits in the window before the syscall, *t is 0 != tid, the kernel returns EAGAIN
+# instead of parking, and we re-load. `lib/` is re-provisioned by `cyrius lib sync` (and CLAUDE.md
+# forbids editing it), so the shim lives here. Evidence, minimal repro and the suggested upstream
+# patch: docs/development/issues/2026-07-29-thread-join-lost-wakeup-deadlock.md (cross-referenced
+# from parity-notes.md §8). Regression guard: tests/szal_engine_parallel_stress.tcyr.
+#
+# Everything else matches lib/thread.cyr's contract exactly: FUTEX_WAIT must stay NON-private
+# (CLONE_CHILD_CLEARTID's wake is a SHARED futex wake -- a private waiter sits on the wrong hash
+# bucket and never sees it), the stack is munmapped after the worker is confirmed dead, and a 0
+# handle returns -1.
+fn szal_thread_join(t) {
+    if (t == 0) { return 0 - 1; }
+    var tid = load64(t);
+    while (tid != 0) {
+        syscall(SYS_FUTEX, t, FUTEX_WAIT, tid, 0, 0, 0);
+        tid = load64(t);
+    }
+    var sbase = load64(t + 8);
+    var ssize = load64(t + 16);
+    munmap_stack(sbase, ssize);
+    return 0;
+}
 
 # Worker-thread argument: {handler callback, step, result channel}.
 enum StepWorkerL {
@@ -53,7 +106,7 @@ fn _run_attempt(handler, step, timeout_ms) {
     while (1 == 1) {
         var r = chan_try_recv(chan);
         if (r != 0) {
-            thread_join(t);
+            szal_thread_join(t);
             return r;
         }
         if (clock_now_ms() >= deadline) {

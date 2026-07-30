@@ -1,0 +1,274 @@
+# szal_engine_parallel_stress.tcyr — liveness stress for the parallel executor's worker joins.
+#
+# WHY THIS EXISTS: run_parallel deadlocked intermittently — roughly 1 hang per 2000 parallel
+# `engine_run` calls — because lib/thread.cyr's `thread_join` loads the tid word TWICE (once for
+# the loop test, once for the FUTEX_WAIT expected-value). A worker exiting between the two loads
+# makes the joiner park on a wake that already fired. `szal_thread_join` (src/engine_step_exec.cyr)
+# is the fix; its header carries the full analysis.
+#
+# The bug survived because tests/szal_engine_parallel.tcyr and tests/szal_engine_runner.tcyr run a
+# HANDFUL of parallel flows each — three orders of magnitude below the frequency needed to hit it.
+# So DO NOT shrink the iteration counts to save CI seconds: under-exercising this path is exactly
+# why the deadlock shipped. Healthy runtime is ~10s / ~650 MB peak RSS; built against the pre-fix
+# tree this suite deadlocked on 12 of 12 runs, and post-fix it passed 12 of 12.
+#
+# THREE PHASES, because the two things that can regress need different probes:
+#   A/B (end-to-end) run the real call sites — engine_run -> run_parallel -> szal_thread_join, both
+#       uncontended and with a contended permit semaphore. This is the ONLY phase that would catch
+#       a call site reverted to bare `thread_join`. It is also the insensitive one, at ~5 of 8
+#       pre-fix runs on its own: the race needs the joiner and the exiting worker to interleave
+#       within a couple of instructions, and _run_attempt's `sleep_ms(1)` poll means the worker has
+#       usually been dead for a while by the time its joiner looks. Sensitivity here is bought with
+#       iteration count and nothing else.
+#   C (primitive hammer) drives szal_thread_join directly in _run_attempt's exact shape — spawn,
+#       child chan_sends and exits, parent busy-polls chan_try_recv, parent joins — from 24 driver
+#       threads at once. No sleep between the child's send and the parent's join, and ~3x thread
+#       oversubscription (so the joiner is far likelier to be preempted mid-race): measured MTBF is
+#       ~10k joins here versus ~200k in phase A. This is what makes detection near-certain.
+# Neither phase subsumes the other. Keep both.
+#
+# A deadlock is a HANG, not a failed assertion, and the CI test loop runs each suite without its
+# own timeout — so this harness carries a watchdog thread that hard-fails the process (exit 1 via
+# SYS_EXIT_GROUP) once STRESS_BUDGET_MS elapses. A regression fails CI in ~2 minutes with a
+# diagnostic instead of stalling the job until the 6-hour GitHub ceiling.
+#
+#   cyrius build --strict --no-deps tests/szal_engine_parallel_stress.tcyr build/test_engine_parallel_stress
+#   ./build/test_engine_parallel_stress
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "lib/fs.cyr"
+include "lib/process.cyr"
+include "src/vendor/ai-hwaccel.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/engine_result.cyr"
+include "src/storage.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_sequential.cyr"
+include "src/engine_hierarchical.cyr"
+include "src/engine_parallel.cyr"
+include "src/engine_dag.cyr"
+include "src/engine_queue_runner.cyr"
+include "src/engine_distributed.cyr"
+include "src/engine_hardware.cyr"
+include "src/engine_runner.cyr"
+
+# Stress shape. Phases A/B spawn TWO threads per step (the run_parallel worker, plus the
+# per-attempt timeout worker _run_attempt spawns because step_new defaults timeout_ms to 30000,
+# which is < STEP_I64_MAX). Thread stacks are munmapped at join, but the bump allocator never
+# frees, so each spawned thread also retains ~4KB (thread struct + TLS block) for the life of the
+# process — that, not time, is what caps these counts. ~130k threads => ~600MB peak RSS.
+enum StressShape {
+    STRESS_FLOWS = 3000;        # phase A: engine_run calls on a FLOW_PARALLEL flow
+    STRESS_STEPS = 10;          # steps per flow — the shape the deadlock was reported in
+    STRESS_TIGHT_FLOWS = 500;   # phase B: run_parallel calls with a CONTENDED semaphore
+    STRESS_TIGHT_STEPS = 12;    # steps per contended flow (> STRESS_TIGHT_PERMITS)
+    STRESS_TIGHT_PERMITS = 2;   # max_concurrency — forces workers to block in chan_recv
+    STRESS_HAM_DRIVERS = 24;    # phase C: concurrent join drivers (16-core host => ~3x oversub)
+    STRESS_HAM_ITERS = 4000;    # spawn/signal/join rounds per driver
+    STRESS_BUDGET_MS = 120000;  # watchdog budget: ~12x the observed healthy runtime
+}
+
+# Watchdog thread argument: {deadline_ms, done_flag}.
+enum StressWatchL {
+    SWD_SIZE = 16;
+    SWD_DEADLINE = 0;
+    SWD_DONE = 8;
+}
+
+# Phase-C driver thread argument: {result channel, iterations, done_flag}.
+enum StressHamL {
+    SHM_SIZE = 24;
+    SHM_CHAN = 0;
+    SHM_ITERS = 8;
+    SHM_DONE = 16;
+}
+
+fn _stress_eprint(msg) {
+    var n = strlen(msg);
+    syscall(1, 2, msg, n);
+    syscall(1, 2, "\n", 1);
+    return 0;
+}
+
+# Watchdog body: poll the done flag until the deadline, then kill the WHOLE process with status 1.
+# SYS_EXIT_GROUP, not SYS_EXIT — this runs on a spawned thread, and SYS_EXIT would retire only that
+# thread and leave the deadlocked joiner hanging exactly as before.
+fn _stress_watchdog(arg) {
+    while (1 == 1) {
+        if (load64(arg + SWD_DONE) == 1) { return 0; }
+        if (clock_now_ms() > load64(arg + SWD_DEADLINE)) {
+            _stress_eprint("");
+            _stress_eprint("  FAIL: parallel stress DEADLOCKED (watchdog budget exhausted)");
+            _stress_eprint("    A worker join is parked forever on an already-exited thread.");
+            _stress_eprint("    Root cause + fix: szal_thread_join in src/engine_step_exec.cyr.");
+            _stress_eprint("    Every szal join must go through it, never lib/thread.cyr thread_join.");
+            syscall(SYS_EXIT_GROUP, 1);
+        }
+        sleep_ms(20);
+    }
+    return 0;
+}
+
+fn _s_handler(step, ctx) { return Ok(bayan_json_v_int_new(1)); }
+
+fn _s_exec_ctx() {
+    var handler = cb_new(&_s_handler, 0);
+    var flow = flow_ctx_new(str_from("stress"), 0, 0);
+    return exec_ctx_new(handler, 0, flow, 0, 0, 0, cache_new());
+}
+
+# Phase-C child: publish a token and exit immediately — `_step_worker` stripped to the two
+# operations that matter for the race (chan_send, then thread exit). `arg` IS the channel.
+fn _s_ham_child(arg) {
+    chan_send(arg, 1);
+    return 0;
+}
+
+# Phase-C driver: _run_attempt's spawn/poll/join loop with the sleep removed, so the parent reaches
+# the join in the same microsecond the child is retiring — the interleaving the deadlock needs.
+fn _s_ham_driver(arg) {
+    var ch = load64(arg + SHM_CHAN);
+    var iters = load64(arg + SHM_ITERS);
+    var i = 0;
+    while (i < iters) {
+        var t = thread_create(&_s_ham_child, ch);
+        var got = 0;
+        while (got == 0) { got = chan_try_recv(ch); }
+        szal_thread_join(t);
+        i = i + 1;
+    }
+    store64(arg + SHM_DONE, 1);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    sakshi_output_buffer();
+
+    var wd = alloc(SWD_SIZE);
+    var budget_end = clock_now_ms() + STRESS_BUDGET_MS;
+    store64(wd + SWD_DEADLINE, budget_end);
+    store64(wd + SWD_DONE, 0);
+    var wdt = thread_create(&_stress_watchdog, wd);
+
+    # --- Phase A: the reported repro shape — engine_run over a FLOW_PARALLEL flow, uncontended
+    #     semaphore (engine_config_default max_concurrency 16 > STRESS_STEPS). ---
+    test_group("parallel liveness: engine_run x STRESS_FLOWS");
+    var eng = engine_new(engine_config_default(), cb_new(&_s_handler, 0));
+    var bad_a = 0;
+    var i = 0;
+    while (i < STRESS_FLOWS) {
+        var f = flow_new(str_from("stress-par"), FLOW_PARALLEL);
+        var s = 0;
+        while (s < STRESS_STEPS) {
+            flow_add_step(f, step_new(str_from("s")));
+            s = s + 1;
+        }
+        var r = engine_run(eng, f);
+        if (is_ok(r) == 0) {
+            bad_a = bad_a + 1;
+        } else {
+            var fr = result_unwrap(r);
+            if (flow_result_completed_count(fr) != STRESS_STEPS) { bad_a = bad_a + 1; }
+        }
+        i = i + 1;
+    }
+    assert_eq(bad_a, 0, "every parallel flow completed all its steps");
+
+    # --- Phase B: contended semaphore — more steps than permits, so workers actually BLOCK in
+    #     chan_recv and are handed permits by completing siblings. A different join interleaving
+    #     than phase A's free-for-all: exits are staggered by the permit hand-off. ---
+    test_group("parallel liveness: contended semaphore (permits < steps)");
+    var bad_b = 0;
+    var j = 0;
+    while (j < STRESS_TIGHT_FLOWS) {
+        var steps = vec_new();
+        var k = 0;
+        while (k < STRESS_TIGHT_STEPS) {
+            vec_push(steps, step_new(str_from("t")));
+            k = k + 1;
+        }
+        var res = run_parallel(steps, STRESS_TIGHT_PERMITS, 60000, clock_now_ms(), 0, _s_exec_ctx());
+        if (vec_len(res) != STRESS_TIGHT_STEPS) { bad_b = bad_b + 1; }
+        var m = 0;
+        while (m < STRESS_TIGHT_STEPS) {
+            if (step_result_status(vec_get(res, m)) != STATUS_COMPLETED) { bad_b = bad_b + 1; }
+            m = m + 1;
+        }
+        j = j + 1;
+    }
+    assert_eq(bad_b, 0, "every contended-semaphore flow completed all its steps");
+
+    # --- Phase C: hammer szal_thread_join itself under thread oversubscription. See the header:
+    #     ~20x the per-join sensitivity of phase A, so this is what makes a regression in the join
+    #     primitive near-certain to be caught on any single CI run. ---
+    test_group("parallel liveness: join primitive under oversubscription");
+    var drivers = vec_new();
+    var d = 0;
+    while (d < STRESS_HAM_DRIVERS) {
+        var da = alloc(SHM_SIZE);
+        store64(da + SHM_CHAN, chan_new(1));
+        store64(da + SHM_ITERS, STRESS_HAM_ITERS);
+        store64(da + SHM_DONE, 0);
+        vec_push(drivers, da);
+        d = d + 1;
+    }
+    var dthreads = vec_new();
+    d = 0;
+    while (d < STRESS_HAM_DRIVERS) {
+        vec_push(dthreads, thread_create(&_s_ham_driver, vec_get(drivers, d)));
+        d = d + 1;
+    }
+    d = 0;
+    while (d < STRESS_HAM_DRIVERS) {
+        szal_thread_join(vec_get(dthreads, d));
+        d = d + 1;
+    }
+    var bad_c = 0;
+    d = 0;
+    while (d < STRESS_HAM_DRIVERS) {
+        if (load64(vec_get(drivers, d) + SHM_DONE) != 1) { bad_c = bad_c + 1; }
+        d = d + 1;
+    }
+    assert_eq(bad_c, 0, "every join driver ran all its spawn/join rounds to completion");
+
+    # Retire the watchdog before returning: the test epilogue calls SYS_EXIT, which retires only
+    # the calling thread, so a live watchdog would keep the process alive until its budget expires.
+    store64(wd + SWD_DONE, 1);
+    szal_thread_join(wdt);
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

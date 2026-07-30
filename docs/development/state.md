@@ -13,7 +13,7 @@ Cargo.toml/Cargo.lock steps were dead — there is no root Cargo manifest — an
 ## Toolchain
 
 - **Cyrius pin**: `6.5.2` (in `cyrius.cyml [package].cyrius`) — bumped 6.2.2 → 6.5.2 at 2.1.0
-  (2026-07-29). The full suite (**1,434 assertions across 45 test files**) + main are green under
+  (2026-07-29). The full suite (**1,437 assertions across 46 test files**) + main are green under
   **6.5.2**, verified against the *released* `6.5.2-x86_64-linux` asset (the same artifact CI's
   installer fetches), so CI's "Verify toolchain matches pin" step passes.
   (Silence the lib-shadow note per-invocation with `CYRIUS_NO_WARN_SHADOW_LIB=1`.)
@@ -399,6 +399,22 @@ ported, tested (per-group + full-stack), security-audited (validate_path / no-sh
 
 ## Toolchain gotchas found during the port (for docs/cyrius-feedback.md)
 
+- **🔴 `thread_join` lost-wakeup DEADLOCK (`lib/thread.cyr:293`, all 5.4.10+ incl. 6.5.2; Linux
+  only):** `thread_join` loads the tid word TWICE — once for the `while` condition, once for the
+  `FUTEX_WAIT` expected-value. A worker that exits between the two loads has its
+  `CLONE_CHILD_CLEARTID` wake discarded (no waiter parked yet), and the joiner then parks with
+  expected value `0` against a word that is already `0` — **forever**. No error, no timeout, no
+  diagnostic. Hit szal as an intermittent `run_parallel` hang, ~1 per 2,000 parallel `engine_run`
+  calls. **szal never calls `thread_join`** — all four join sites go through `szal_thread_join`
+  (`src/engine_step_exec.cyr`), which loads the tid once per iteration. Guarded by
+  `tests/szal_engine_parallel_stress.tcyr`; drop the shim only when the pin carries the upstream fix,
+  and re-verify with that suite. Full write-up + suggested patch:
+  [`issues/2026-07-29-thread-join-lost-wakeup-deadlock.md`](issues/2026-07-29-thread-join-lost-wakeup-deadlock.md).
+  *Diagnosing a hang without a debugger:* `ptrace_scope=1` blocks `cat /proc/<pid>/syscall`, but the
+  tracee's **parent shell** may read it — `read -r line < /proc/$pid/task/$tid/syscall` in the shell
+  that launched it (not a subshell, not `cat`). Field 3 is the futex op: `0x0` is `FUTEX_WAIT`
+  *without* `FUTEX_PRIVATE_FLAG`, which in szal can only be `thread_join` (`mutex_lock`/`chan_send`/
+  `chan_recv` all pass `|FUTEX_PRIVATE_FLAG` = `0x80`). Field 4 is the expected value.
 - **🔴 full-deps `cyrius build` breaks `var buf[ENUM_CONST]` on x86_64 (6.2.2; ≥6.2.1):** building the
   normal way (`cyrius build src/main.cyr …`, with dependency resolution) fails at `src/error.cyr:36`
   with `array size identifier must be an enum constant (compile-time literal)` — the enum constant
@@ -515,7 +531,18 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 **Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 ✅ MCP COMPLETE (stream + sql_store + mcp core +
 pool/tenant + ALL 15 tool groups / 54 tools) + bote vendoring, all parity-verified 0-findings): 44
-modules, 1,434 assertions across 45 test files, 0 failures, oracle pristine. Pin 6.5.2.**
+modules, 1,437 assertions across 46 test files, 0 failures, oracle pristine. Pin 6.5.2.**
+
+**⚠️ Parallel-executor deadlock FIXED (2026-07-29, post-2.1.0, `[Unreleased]`)** — `run_parallel`
+hung forever ~1 per 2,000 parallel `engine_run` calls (`run_dag`/`run_distributed` shared the
+exposure). Root cause is upstream: `lib/thread.cyr`'s `thread_join` check-then-wait race (see the
+toolchain-gotchas section above). Fix is szal-side — **`szal_thread_join`** in
+`src/engine_step_exec.cyr`, used by all four join sites; **no szal code may call `thread_join`
+directly**, so check that first if a join is ever added. New 46th suite
+`tests/szal_engine_parallel_stress.tcyr` (~10s, ~650 MB peak RSS — the bump allocator retains ~4 KB
+per spawned thread) is the regression guard: it deadlocked on 12/12 pre-fix runs and passed 12/12
+post-fix. CI's test step now wraps each suite in `timeout 300` so a future hang fails the job in
+minutes rather than at GitHub's 6-hour ceiling.
 
 **2.1.0 maintenance pass (2026-07-29)** — version + toolchain + all three vendored libs refreshed;
 no functional/port changes. Cyrius 6.2.2→6.5.2, majra 2.4.6→2.5.3, bote-core 2.7.5→3.1.4 (major),

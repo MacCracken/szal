@@ -15,7 +15,9 @@
 # become poll loops. A worker polls its `done` cancel token, else `mq_dequeue`s its node queue, else
 # `sleep_ms(2)`. The coordinator `chan_try_recv`s the result channel, else checks the flow token /
 # timeout, else briefly sleeps. After the loop the coordinator signals `done`, joins the workers, and
-# Skips every still-unseen step with the post-loop reason. `thread_join` returns no value, so workers
+# Skips every still-unseen step with the post-loop reason. Joins go through `szal_thread_join`
+# (engine_step_exec.cyr), never lib/thread.cyr's `thread_join`, which deadlocks its joiner when a
+# worker exits inside its check-then-wait window. A join returns no value, so workers
 # publish each StepResult over the result channel (cap = total+1, so `chan_send` never blocks — at
 # most `total` steps are ever submitted). `alloc()` and majra fleet/mq + `chan_*` are all
 # thread-safe, so concurrent coordinator-submits-while-workers-execute is safe.
@@ -290,7 +292,7 @@ workers) {
     var wn = vec_len(workers);
     var j = 0;
     while (j < wn) {
-        thread_join(vec_get(workers, j));
+        szal_thread_join(vec_get(workers, j));
         j = j + 1;
     }
     return results;

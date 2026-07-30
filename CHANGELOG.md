@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Intermittent deadlock in parallel execution** — `run_parallel` hung forever roughly once per
+  2,000 parallel `engine_run` calls (~1 per 150,000 worker joins), taking `run_dag` and
+  `run_distributed` with it. Root cause is upstream, in `lib/thread.cyr`'s `thread_join`: it loads
+  the thread's tid word **twice** — once for the loop condition, once for the `FUTEX_WAIT`
+  expected-value — and a worker exiting between the two loads makes the joiner park on a wake that
+  already fired. Confirmed from `/proc/<pid>/syscall` on a hung process: `SYS_FUTEX`, op
+  `FUTEX_WAIT` with no `FUTEX_PRIVATE_FLAG` (the only non-private waiter szal can reach is
+  `thread_join`), expected value `0` (an impossible live tid). `lib/` is re-provisioned by
+  `cyrius lib sync`, so the fix is szal-side: the new **`szal_thread_join`**
+  (`src/engine_step_exec.cyr`) loads the tid once per iteration, and all four szal join sites —
+  `engine_step_exec` / `engine_parallel` / `engine_dag` / `engine_distributed` — now use it. No szal
+  code calls `thread_join` directly. Full analysis + suggested upstream patch:
+  [`docs/development/issues/2026-07-29-thread-join-lost-wakeup-deadlock.md`](docs/development/issues/2026-07-29-thread-join-lost-wakeup-deadlock.md)
+
+### Added
+- **`tests/szal_engine_parallel_stress.tcyr`** — parallel-executor liveness stress (46th suite,
+  ~10s, 3 assertions). The deadlock above went unnoticed because the existing parallel suites run a
+  handful of flows each, three orders of magnitude below the frequency needed to hit it. Three
+  phases: 3,000 `engine_run` calls on a 10-step `FLOW_PARALLEL` flow, 500 `run_parallel` calls with
+  a contended permit semaphore (2 permits / 12 steps), and 96,000 spawn-signal-join rounds against
+  the join primitive from 24 concurrent drivers. Built against the pre-fix tree it deadlocks on
+  **12 of 12** runs; post-fix it passed **12 of 12**. Carries its own watchdog thread that fails the
+  process (`SYS_EXIT_GROUP`, exit 1) with a diagnostic after 120s, since a deadlock is a hang rather
+  than a failed assertion
+
+### Changed
+- CI's test-suite step wraps each suite in `timeout 300` — backstop so a threading regression in any
+  other suite fails the job in minutes instead of stalling it until GitHub's 6-hour ceiling
+
 ## [2.1.0] — 2026-07-29
 
 Maintenance release: toolchain and vendored-dependency refresh for the Cyrius port. No functional

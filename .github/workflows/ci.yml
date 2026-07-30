@@ -99,13 +99,20 @@ jobs:
       - name: Test suite
         # Each tests/szal_*.tcyr is a self-contained --no-deps suite (the project
         # recipe). Build + run each; any compile or assertion failure fails CI.
+        #
+        # `timeout 300` because a threading regression is a HANG, not an assertion
+        # failure: without it a deadlocked suite stalls the job until GitHub's
+        # 6-hour ceiling. szal_engine_parallel_stress carries its own 120s watchdog
+        # (so it self-reports with a diagnostic); this is the backstop for every
+        # other suite that touches the parallel/dag/distributed executors.
+        # See docs/development/issues/2026-07-29-thread-join-lost-wakeup-deadlock.md.
         run: |
           pass=0; fail=0
           for t in tests/szal_*.tcyr tests/szal.tcyr; do
             [ -f "$t" ] || continue
             name=$(basename "$t" .tcyr)
             if cyrius build --strict --no-deps "$t" "build/$name" >/dev/null 2>&1 \
-               && "build/$name" >/dev/null 2>&1; then
+               && timeout 300 "build/$name" >/dev/null 2>&1; then
               pass=$((pass+1))
             else
               echo "FAIL: $name"; fail=$((fail+1))
