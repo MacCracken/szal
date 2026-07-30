@@ -533,7 +533,7 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 pool/tenant + ALL 15 tool groups / 54 tools) + bote vendoring, all parity-verified 0-findings): 44
 modules, 1,437 assertions across 46 test files, 0 failures, oracle pristine. Pin 6.5.2.**
 
-**⚠️ Parallel-executor deadlock FIXED (2026-07-29, post-2.1.0, `[Unreleased]`)** — `run_parallel`
+**⚠️ Parallel-executor deadlock FIXED (2026-07-29, shipping in 2.1.0)** — `run_parallel`
 hung forever ~1 per 2,000 parallel `engine_run` calls (`run_dag`/`run_distributed` shared the
 exposure). Root cause is upstream: `lib/thread.cyr`'s `thread_join` check-then-wait race (see the
 toolchain-gotchas section above). Fix is szal-side — **`szal_thread_join`** in
@@ -544,8 +544,9 @@ per spawned thread) is the regression guard: it deadlocked on 12/12 pre-fix runs
 post-fix. CI's test step now wraps each suite in `timeout 300` so a future hang fails the job in
 minutes rather than at GitHub's 6-hour ceiling.
 
-**2.1.0 maintenance pass (2026-07-29)** — version + toolchain + all three vendored libs refreshed;
-no functional/port changes. Cyrius 6.2.2→6.5.2, majra 2.4.6→2.5.3, bote-core 2.7.5→3.1.4 (major),
+**2.1.0 maintenance pass (2026-07-29)** — version + toolchain + all three vendored libs refreshed.
+No port/parity changes in *this* pass (the one behavioural change in 2.1.0 is the deadlock fix
+above). Cyrius 6.2.2→6.5.2, majra 2.4.6→2.5.3, bote-core 2.7.5→3.1.4 (major),
 ai-hwaccel 2.3.9→2.3.15. Four code fixes were required, all mechanical:
 1. `src/mcp_tools_system.cyr` — bayan renamed its cstr+len JSON entry `json_v_parse_str` →
    `json_v_parse_buf` (bayan 1.3.0; the `_str` suffix is reserved for the Str-taking overload that
@@ -557,11 +558,37 @@ ai-hwaccel 2.3.9→2.3.15. Four code fixes were required, all mechanical:
    and fixed a genuine latent hazard: szal's `BYTES_PER_GB` (2^30) vs ai-hwaccel's
    `var BYTES_PER_GB` (10^9) — **different values**, silently resolved by include order.
 4. `src/engine_distributed.cyr` — reformatted for the 6.5.2 formatter (continuation-line indent).
+
+**Fuzz + benchmark harnesses now real (2026-07-29, shipping in 2.1.0)** — `tests/szal.fcyr` and
+`tests/szal.bcyr` were scaffolding stubs with **no `include` lines**: neither had ever compiled, and
+the `.bcyr` called a `bench()` that does not exist in `lib/bench.cyr`. Nothing in CI globbed either
+one (the test step matches `*.tcyr`; the fuzz step globbed `fuzz/*.fcyr` while `fuzz/` was empty and
+"skipped cleanly"), so **zero fuzz and zero benchmark coverage looked exactly like green CI.** Both
+replaced:
+- **`fuzz/`** — 5 property harnesses, ~356k properties/run, ~1.6s total, sharing a seeded
+  deterministic PRNG prelude (`fuzz/fuzz_util.cyr`) so a failure replays from the printed seed:
+  `condition_expr`, `flow_validate` (cycle detection differentially checked against an independent
+  Kahn peel-off), `step_json`, `state_json`, `hash_uuid`. Mutation-tested: 15 injected bugs, 15 caught.
+- **`benches/bench_all.bcyr`** — 15 benchmarks covering the 14 names `benchmarks/history.csv` has
+  tracked since v1.0.1. Lives in `benches/`, not `tests/`, per port-plan §1.9 (wrong dir = silently
+  ignored). `scripts/bench-history.sh` now builds/runs the Cyrius harness instead of `cargo bench`,
+  parsing machine-readable `BENCHDATA` lines rather than `bench_report` text — `_fmt_time` prints
+  bare integer microseconds at this pin ("1us" for 1481ns, 48% error) and has flat-lined this
+  history once already. `--dry-run` added for CI.
+- **CI can no longer silently skip a harness:** each is named explicitly in a `Verify harness
+  manifest` step (a glob proves what it found passes, never that something is missing), the suite and
+  fuzz steps carry count floors (≥ 40 / ≥ 5), the fuzz step builds `--strict`, and a `Benchmarks`
+  step runs `bench-history.sh --dry-run`.
+- **Open perf finding, not fixed:** `engine_sequential_10` costs **11.5 ms** vs **116 µs** for the
+  same flow with `timeout_ms = STEP_I64_MAX` — the `sleep_ms(1)` poll loop in `_run_attempt`
+  (`engine_step_exec.cyr`) is ~99% of per-step engine cost. Recorded in `roadmap.md`.
+
 All engine modules ported (six modes + core + step_exec + Engine + sub_flow + **hardware/row 17**).
 M3: streaming (`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` —
 result/errcode/**validate_path security**/registration) + **MCP pool + tenant** done; **bote-core
-2.7.5 vendored (re-synced 2026-06-13; Q9 dissolved)**. Full majra 2.4.6 + ai-hwaccel 2.3.9 (overlaid)
-in the build. Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence lib-shadow).
+vendored (Q9 dissolved by the 2.7.5 re-sync, 2026-06-13)**. Current vendored pins are bote-core
+3.1.4 + full majra 2.5.3 + ai-hwaccel 2.3.15 (all at `src/vendor/`, zero git deps — see
+Dependencies). Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence lib-shadow).
 
 **▶ M3 MCP IS COMPLETE — all 15 tool groups / 54 tools ported, tested, aggregated, and wired into
 `main()` (`./build/szal` registers all 54 → `szal ready`).** No engine rows remain. Per-group tests +

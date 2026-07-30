@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-07-29
+
+Toolchain and vendored-dependency refresh for the Cyrius port, plus the first real fuzz and
+benchmark coverage the port has had — which immediately paid for itself by surfacing a latent
+deadlock in parallel execution. The engine's observable behaviour is unchanged **except** for that
+deadlock fix. Full suite: 1,437 assertions across 46 test files, 5 fuzz harnesses, 15 benchmarks.
+`rust-old/` parity oracle untouched.
+
 ### Fixed
 - **Intermittent deadlock in parallel execution** — `run_parallel` hung forever roughly once per
   2,000 parallel `engine_run` calls (~1 per 150,000 worker joins), taking `run_dag` and
@@ -22,7 +30,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code calls `thread_join` directly. Full analysis + suggested upstream patch:
   [`docs/development/issues/2026-07-29-thread-join-lost-wakeup-deadlock.md`](docs/development/issues/2026-07-29-thread-join-lost-wakeup-deadlock.md)
 
+- **`BYTES_PER_GB` value divergence** — szal defined it as `1073741824` (2^30) while vendored
+  ai-hwaccel defines `var BYTES_PER_GB = 1000000000` (10^9). Under last-definition-wins these
+  resolved correctly only because of `main.cyr`'s include order. Now `SZAL_BYTES_PER_GB`, so the
+  byte-formatting tools can't be silently repointed at the decimal value by an include reshuffle
+- **`json_v_parse_str` → `json_v_parse_buf`** in `src/mcp_tools_system.cyr` (`_sys_uptime_json`).
+  bayan 1.3.0 renamed its cstr+len JSON entry point because the `_str` suffix is reserved for the
+  Str-taking overload that Cyrius auto-dispatches to — while the cstr+len form held that name, every
+  `bayan_json_v_parse(someStr)` in the ecosystem was silently rewritten into a 1-arg call to the
+  2-arg function and returned 0 for valid JSON
+- **Enum-constant array sizes replaced with literals** in `src/md5.cyr` and `src/error.cyr`. cycc
+  resolves a `var buf[ENUM_CONST]` size through `FINDVAR`, which only honours var-table indices
+  < 1024, so whether it compiles depends on how many globals the preceding includes declared. The
+  larger 6.5.2 stdlib (sigil 19k → 26k lines, bayan 3.5k → 5.3k) pushed `md5.cyr:36` past the cap and
+  broke three test builds. This is also the real mechanism behind the long-standing "full-deps
+  `cyrius build` breaks `var buf[ENUM_CONST]`" gotcha
+- **Zero duplicate-symbol warnings** from `cyrius build --strict --no-deps src/main.cyr`, down from
+  four. The only remaining cross-library symbol anywhere is `REQ_NONE` (szal × ai-hwaccel), which is
+  the intentionally shared hardware-requirement API
+- Stale files left in `lib/` shadow the version-pinned stdlib snapshot, so a toolchain bump needs
+  `rm -rf lib && cyrius lib sync` rather than a bare re-sync (documented in `state.md`)
+
 ### Added
+- **Real fuzz coverage — 5 property harnesses under `fuzz/`** (~356k properties/run, ~1.6s), sharing
+  a seeded deterministic PRNG prelude (`fuzz/fuzz_util.cyr`) so any failure replays exactly from the
+  printed seed: `condition_expr` (tokenizer/parser/evaluator/cache/templates, checked against
+  algebraic laws — De Morgan, precedence, double negation, idempotence), `flow_validate` (cycle
+  detection **differentially checked against an independent Kahn peel-off**, plus mode/trigger/
+  hierarchical rules and flow JSON round-trip), `step_json` (StepDef/StepResult round-trip incl.
+  recursive `sub_steps`, enum wire forms, saturating backoff math), `state_json` (transitions and the
+  Display-vs-serde split, exhaustive), `hash_uuid` (RFC 1321 / RFC 4122 vectors and round-trips).
+  Validated by mutation testing: 15 deliberately-injected bugs, 15 caught. Replaces
+  `tests/szal.fcyr`, a stub with no `include` lines that had never compiled
+- **Real benchmark coverage — `benches/bench_all.bcyr`**, 15 benchmarks covering the 14 names
+  `benchmarks/history.csv` has tracked since v1.0.1. Replaces `tests/szal.bcyr`, a stub that had
+  never compiled and called a `bench()` that does not exist in `lib/bench.cyr`; it also sat in the
+  wrong directory, which `port-plan.md` §1.9 marks as silently ignored. `scripts/bench-history.sh`
+  now builds and runs the Cyrius harness instead of `cargo bench`/criterion, and parses
+  machine-readable `BENCHDATA <name> <avg> <min> <max> <iters>` lines rather than `lib/bench.cyr`'s
+  `bench_report` text, whose `_fmt_time` renders bare integer microseconds at the pinned toolchain
+  ("1us" for 1481ns — a 48% error that has flat-lined this history once before). Adds `--dry-run`
 - **`tests/szal_engine_parallel_stress.tcyr`** — parallel-executor liveness stress (46th suite,
   ~10s, 3 assertions). The deadlock above went unnoticed because the existing parallel suites run a
   handful of flows each, three orders of magnitude below the frequency needed to hit it. Three
@@ -32,16 +79,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **12 of 12** runs; post-fix it passed **12 of 12**. Carries its own watchdog thread that fails the
   process (`SYS_EXIT_GROUP`, exit 1) with a diagnostic after 120s, since a deadlock is a hang rather
   than a failed assertion
-
-### Changed
-- CI's test-suite step wraps each suite in `timeout 300` — backstop so a threading regression in any
-  other suite fails the job in minutes instead of stalling it until GitHub's 6-hour ceiling
-
-## [2.1.0] — 2026-07-29
-
-Maintenance release: toolchain and vendored-dependency refresh for the Cyrius port. No functional
-or behavioural changes to the workflow engine — the full suite (1,434 assertions across 45 test
-files) is green, `rust-old/` parity oracle untouched.
 
 ### Changed
 - **Cyrius toolchain 6.2.2 → 6.5.2** (`cyrius.cyml [package].cyrius`). Verified against the released
@@ -68,28 +105,13 @@ files) is green, `rust-old/` parity oracle untouched.
   `rust-old/` is never touched). It now writes only `VERSION`, validates the semver triple, and
   cross-checks that `cyrius.cyml` still resolves to it
 - `src/engine_distributed.cyr` reformatted for the 6.5.2 formatter (continuation-line indent only)
-
-### Fixed
-- **`BYTES_PER_GB` value divergence** — szal defined it as `1073741824` (2^30) while vendored
-  ai-hwaccel defines `var BYTES_PER_GB = 1000000000` (10^9). Under last-definition-wins these
-  resolved correctly only because of `main.cyr`'s include order. Now `SZAL_BYTES_PER_GB`, so the
-  byte-formatting tools can't be silently repointed at the decimal value by an include reshuffle
-- **`json_v_parse_str` → `json_v_parse_buf`** in `src/mcp_tools_system.cyr` (`_sys_uptime_json`).
-  bayan 1.3.0 renamed its cstr+len JSON entry point because the `_str` suffix is reserved for the
-  Str-taking overload that Cyrius auto-dispatches to — while the cstr+len form held that name, every
-  `bayan_json_v_parse(someStr)` in the ecosystem was silently rewritten into a 1-arg call to the
-  2-arg function and returned 0 for valid JSON
-- **Enum-constant array sizes replaced with literals** in `src/md5.cyr` and `src/error.cyr`. cycc
-  resolves a `var buf[ENUM_CONST]` size through `FINDVAR`, which only honours var-table indices
-  < 1024, so whether it compiles depends on how many globals the preceding includes declared. The
-  larger 6.5.2 stdlib (sigil 19k → 26k lines, bayan 3.5k → 5.3k) pushed `md5.cyr:36` past the cap and
-  broke three test builds. This is also the real mechanism behind the long-standing "full-deps
-  `cyrius build` breaks `var buf[ENUM_CONST]`" gotcha
-- **Zero duplicate-symbol warnings** from `cyrius build --strict --no-deps src/main.cyr`, down from
-  four. The only remaining cross-library symbol anywhere is `REQ_NONE` (szal × ai-hwaccel), which is
-  the intentionally shared hardware-requirement API
-- Stale files left in `lib/` shadow the version-pinned stdlib snapshot, so a toolchain bump needs
-  `rm -rf lib && cyrius lib sync` rather than a bare re-sync (documented in `state.md`)
+- **CI gates the new harnesses, and can no longer silently skip them.** Every harness is named
+  explicitly in a `Verify harness manifest` step rather than only globbed — a glob can prove that
+  what it found passes, but never that something is missing, which is exactly how the two stubs hid.
+  The suite and fuzz steps get count floors (≥ 40 suites, ≥ 5 harnesses), the fuzz step builds
+  `--strict`, its skip-cleanly branch is gone, and a `Benchmarks` step runs `bench-history.sh
+  --dry-run`. Each suite is wrapped in `timeout 300` so a threading regression fails the job in
+  minutes instead of stalling it until GitHub's 6-hour ceiling
 
 ## [1.2.0] — 2026-06-10
 
