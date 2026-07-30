@@ -18,6 +18,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify harness manifest
+        # Anti-silent-skip gate, and the reason it exists: tests/szal.fcyr and tests/szal.bcyr
+        # sat in this repo as non-building stubs for months because NO glob in this workflow
+        # matched them — the Test suite step globs *.tcyr, and the Fuzz step globbed fuzz/*.fcyr
+        # while fuzz/ was empty, so it "skipped cleanly" and reported success. Zero fuzz and zero
+        # benchmark coverage looked exactly like passing CI.
+        #
+        # A glob can only prove that what it found passes; it can never prove that something is
+        # missing. So every harness is ALSO named explicitly here. Deleting or renaming one now
+        # fails CI in seconds, before the toolchain is even installed. If you intentionally
+        # retire a harness, remove its line from this list in the same commit.
+        run: |
+          missing=0
+          for f in \
+            tests/szal.tcyr \
+            benches/bench_all.bcyr \
+            fuzz/fuzz_util.cyr \
+            fuzz/condition_expr.fcyr \
+            fuzz/flow_validate.fcyr \
+            fuzz/hash_uuid.fcyr \
+            fuzz/state_json.fcyr \
+            fuzz/step_json.fcyr \
+            scripts/bench-history.sh \
+            benchmarks/history.csv ; do
+            if [ -f "$f" ]; then echo "OK: $f"; else echo "MISSING: $f"; missing=1; fi
+          done
+          [ $missing -eq 0 ] || { echo "ERROR: required harness file(s) missing"; exit 1; }
+
       - name: Install Cyrius toolchain
         run: |
           set -e
@@ -86,21 +114,71 @@ jobs:
           rm -f szal_hash_test.bin; rm -rf szal_fdir   # transient file/hash-tool artifacts
           echo "$pass passed, $fail failed"
           test $fail -eq 0
+          # The loop above `continue`s past a missing file, so a glob that matched nothing (a
+          # moved tests/ directory, a renamed suite) would report "0 passed, 0 failed" and exit 0.
+          # Floor the count so an empty or gutted suite set is a failure, not a silent pass.
+          [ "$pass" -ge 40 ] || { echo "ERROR: only $pass suites ran; expected >= 40"; exit 1; }
 
       - name: Fuzz
-        # Property harnesses exit 0 on success, non-zero on a violated invariant.
-        # Skips cleanly until fuzz/*.fcyr land.
+        # Property harnesses exit 0 on success, non-zero on a violated invariant (the count is
+        # clamped to 100 in fuzz/fuzz_util.cyr so a run with >= 256 violations cannot wrap an
+        # 8-bit exit status back to 0).
+        #
+        # NO skip-cleanly branch: an absent fuzz/ directory is a FAILURE. This step used to fall
+        # through to "no fuzz harnesses yet" whenever the glob matched nothing, which is how szal
+        # ran with zero fuzz coverage under a green tick. `Verify harness manifest` above already
+        # names each expected file; the floor here catches a harness that stops building.
         run: |
-          if ls fuzz/*.fcyr >/dev/null 2>&1; then
-            for f in fuzz/*.fcyr; do
-              name=$(basename "$f" .fcyr)
-              cyrius build --no-deps "$f" "build/$name"
-              timeout 30 "build/$name" || { echo "FUZZ CRASH: $name"; exit 1; }
-              echo "  $name: ok"
-            done
-          else
-            echo "no fuzz harnesses yet"
+          ls fuzz/*.fcyr >/dev/null 2>&1 || { echo "ERROR: no fuzz harnesses at fuzz/*.fcyr"; exit 1; }
+          count=0
+          for f in fuzz/*.fcyr; do
+            name=$(basename "$f" .fcyr)
+            # --strict matches the project build recipe; the previous plain --no-deps let a
+            # harness with undefined symbols through.
+            cyrius build --strict --no-deps "$f" "build/fuzz_$name" \
+              || { echo "FUZZ BUILD FAIL: $name"; exit 1; }
+            # Locally the slowest harness takes ~0.6s; 120s is headroom for a loaded runner, so a
+            # timeout here means a genuine hang rather than a slow machine.
+            timeout 120 "build/fuzz_$name" || { echo "FUZZ FAIL: $name"; exit 1; }
+            count=$((count+1))
+          done
+          echo "$count fuzz harnesses passed"
+          [ "$count" -ge 5 ] || { echo "ERROR: only $count fuzz harnesses ran; expected >= 5"; exit 1; }
+
+      - name: Benchmarks
+        # Builds and runs benches/bench_all.bcyr through the recording script in --dry-run mode: CI
+        # verifies the harness builds, that every fixture passes its precheck (a benchmark that
+        # measures an early-error path reports a fast, meaningless number), and that the script
+        # can still parse the harness's BENCHDATA lines — without writing to history.csv,
+        # which is updated deliberately, not by CI.
+        #
+        # This is the gate the .bcyr never had: nothing in this workflow globbed *.bcyr, so the
+        # stub's `bench("noop", ...)` call to a function that does not exist in lib/bench.cyr
+        # went unnoticed indefinitely. (The harness also moved out of tests/ to benches/, the
+        # location port-plan.md §1.9 marks as ENFORCED — "wrong dir = silently ignored".)
+        #
+        # KNOWN FLAKE, and it is a real bug, not a harness problem: run_parallel
+        # (src/engine_parallel.cyr) deadlocks roughly once per ~2000 parallel engine_run calls.
+        # This step makes ~130 of them, so it fails on the order of 5% of runs. The timeout below
+        # turns that from a job that hangs until the 6-hour limit into a fast, clearly-labelled
+        # failure. If this step times out, re-run it and open/attach to the run_parallel deadlock
+        # issue — do NOT "fix" it by deleting the parallel benchmarks, which is what hid it.
+        # Repro: loop engine_run over a 10-step FLOW_PARALLEL flow ~400 times.
+        run: |
+          test -x scripts/bench-history.sh || chmod +x scripts/bench-history.sh
+          # `set +e` around the call, not `if ! cmd`: after `! cmd` bash reports the INVERTED
+          # status, so $? would read 0 and the 124 timeout case could never be distinguished.
+          set +e
+          timeout 600 ./scripts/bench-history.sh --dry-run
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ]; then
+            echo "ERROR: benchmarks timed out after 600s."
+            echo "       Most likely the known intermittent run_parallel deadlock"
+            echo "       (src/engine_parallel.cyr), not a benchmark regression."
+            exit 1
           fi
+          [ "$rc" -eq 0 ] || { echo "ERROR: benchmark harness failed (exit $rc)."; exit 1; }
 
   docs:
     name: Documentation

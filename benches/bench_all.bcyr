@@ -1,0 +1,468 @@
+# szal.bcyr — benchmark harness for the szal engine hot paths.
+#
+#   cyrius build --strict --no-deps benches/bench_all.bcyr build/szal_bench && ./build/szal_bench
+#
+# Records timings for the fourteen benchmarks that benchmarks/history.csv has tracked since
+# v1.0.1. The NAMES ARE LOAD-BEARING: scripts/bench-history.sh parses them out of this program's
+# output and appends them to that CSV, so a rename silently forks the series into a new one with
+# no history. If you add a benchmark, the CSV simply gains a new series; if you must rename one,
+# say so in the commit — the old series ends there.
+#
+# Measurement strategy follows lib/bench.cyr's guidance, which is not optional here: one
+# clock_gettime pair costs ~240ns, so per-iteration timing would swamp the sub-microsecond
+# benchmarks. Hence two regimes:
+#
+#   bench_run(b, fp, n)                   ops >= ~1us  — engine runs, validation, JSON
+#   bench_run_batch(b, fp, batch, rounds) ops <  ~1us  — state transitions, step builder
+#
+# NOTE on the API: lib/bench.cyr exposes bench_new / bench_run / bench_run_batch /
+# bench_batch_start+stop / bench_report. There is no `bench(name, fp, iters)` function — the
+# stub this file replaced called one, which is part of why it never compiled.
+#
+# Every fixture is PRE-CHECKED before it is timed (see bench_precheck): a benchmark that measures
+# an early-error path is worse than no benchmark, because it reports a fast, stable, meaningless
+# number. If a precheck fails, this harness exits non-zero and records nothing.
+#
+# ── KNOWN INTERMITTENT HANG (an engine bug, not a harness bug) ──────────────────────────────
+# run_parallel (src/engine_parallel.cyr) deadlocks roughly once per ~2000 parallel engine_run
+# calls. engine_parallel_10 + engine_parallel_100 make ~130 per run of this harness, so about one
+# run in twenty stops dead inside engine_parallel_10 and never returns.
+#
+# It is entirely pre-existing: tests/szal_engine_runner.tcyr executes a handful of parallel flows
+# and so never reaches the frequency where it shows up. Repro without any benchmarking involved:
+# loop engine_run over a 10-step FLOW_PARALLEL flow ~400 times and watch it stop.
+#
+# Do NOT make this harness "reliable" by dropping or shrinking the parallel benchmarks. Under-
+# exercising that path is exactly why the deadlock went unnoticed. The CI Benchmarks step wraps
+# this program in `timeout 600` so the failure is fast and labelled instead of hanging the job.
+#
+# Single-pass dependency order — the stdlib prefix + engine module list proven by
+# tests/szal_engine_runner.tcyr, with lib/bench.cyr inserted after lib/assert.cyr (it needs
+# string/fmt/alloc/vec/syscalls/fnptr, all of which precede it, and nothing later).
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/bench.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/sakshi.cyr"
+include "lib/log.cyr"
+include "lib/thread.cyr"
+include "lib/async.cyr"
+include "lib/fs.cyr"
+include "lib/process.cyr"
+include "src/vendor/ai-hwaccel.cyr"
+include "src/vendor/majra.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "src/bus.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "src/engine_result.cyr"
+include "src/storage.cyr"
+include "src/metrics.cyr"
+include "src/engine_core.cyr"
+include "src/engine_step_exec.cyr"
+include "src/engine_sequential.cyr"
+include "src/engine_hierarchical.cyr"
+include "src/engine_parallel.cyr"
+include "src/engine_dag.cyr"
+include "src/engine_queue_runner.cyr"
+include "src/engine_distributed.cyr"
+include "src/engine_hardware.cyr"
+include "src/engine_runner.cyr"
+
+# Iteration counts. Chosen so each benchmark spends roughly 10-100ms of wall clock: enough
+# samples for the min/avg/max spread to mean something, few enough that the whole harness stays
+# well inside CI's budget. The engine benchmarks allocate per run and the allocator never frees,
+# so these also bound peak RSS.
+enum BenchIters {
+    IT_SEQ_10 = 60;
+    IT_SEQ_100 = 10;
+    IT_SEQ_10_NT = 300;
+    IT_PAR_10 = 100;
+    IT_PAR_100 = 30;
+    IT_DAG_DIAMOND = 100;
+    IT_DAG_LINEAR = 8;
+    IT_FLOW_SER = 100;
+    # flow_50_deserialize allocates ~4.5 MiB per parse (the bayan json_v tree for 50 steps) and
+    # the allocator never frees, so this count is bounded by PEAK RSS, not by wall clock.
+    IT_FLOW_DESER = 30;
+    IT_VALIDATE = 200;
+    # Batched (sub-microsecond) regime: batch_size x rounds total operations.
+    IT_FAST_BATCH = 2000;
+    IT_FAST_ROUNDS = 10;
+    # step_serialize / step_deserialize allocate per call; smaller batches keep peak RSS down.
+    IT_JSON_BATCH = 1000;
+    IT_JSON_ROUNDS = 10;
+    IT_TRANS_BATCH = 10000;
+    IT_TRANS_ROUNDS = 20;
+    # Fixture sizes.
+    SZ_FLOW_JSON = 50;
+    SZ_WIDE = 100;
+    SZ_CHAIN = 100;
+    # The number of legal edges in the WorkflowState transition table — the precheck's guard
+    # against benchmarking an all-zeros table.
+    N_STATE_EDGES = 11;
+}
+
+# --- handler: the cheapest possible successful step, so the timings measure ENGINE overhead ---
+# A handler that did real work would dominate the numbers and hide the thing being tracked.
+fn _b_h_ok(step, ctx) { return Ok(bayan_json_v_int_new(1)); }
+
+fn _b_engine() {
+    return engine_new(engine_config_default(), cb_new(&_b_h_ok, 0));
+}
+
+# --- fixtures (built once, timed many times) ------------------------------------------------
+# Held in globals because lib/bench.cyr dispatches through fncall0 — the timed functions take no
+# arguments, so the fixture has to reach them this way.
+var _bf_seq10 = 0;
+var _bf_seq10_nt = 0;
+var _bf_seq100 = 0;
+var _bf_par10 = 0;
+var _bf_par100 = 0;
+var _bf_diamond = 0;
+var _bf_dag_linear = 0;
+var _bf_flow50 = 0;
+var _bf_flow50_json = 0;
+var _bf_wide100 = 0;
+var _bf_chain100 = 0;
+var _bf_step = 0;
+var _bf_step_json = 0;
+var _b_eng = 0;
+
+# "<prefix><i>" as a cstr — distinct step names for the fixtures.
+fn _b_name(prefix, i) {
+    var out = alloc(24);
+    if (out == 0) { return prefix; }
+    var pl = strlen(prefix);
+    memcpy(out, prefix, pl);
+    var wrote = fmt_int_buf(i, out + pl);
+    store8(out + pl + wrote, 0);
+    return out;
+}
+
+# A flow of `n` independent steps in `mode` (no dependencies).
+fn _b_flat_flow(name, mode, n) {
+    var f = flow_new(str_from(name), mode);
+    var i = 0;
+    while (i < n) {
+        flow_add_step(f, step_new(str_from(_b_name("s", i))));
+        i = i + 1;
+    }
+    return f;
+}
+
+# The same flat flow, but every step opts OUT of its per-attempt timeout by setting timeout_ms to
+# STEP_I64_MAX (Rust's u64::MAX "no timeout"). This is not a cosmetic variant — it selects a
+# COMPLETELY DIFFERENT execution path in _run_attempt (engine_step_exec.cyr): with a finite
+# timeout the handler runs on a spawned thread that the caller polls with `sleep_ms(1)`, so every
+# step costs at least one millisecond of sleep; with no timeout the handler runs synchronously on
+# the calling thread. Measured side by side, that is 116us vs 11.5ms for the same ten steps — the
+# poll floor is ~99% of the engine's reported per-step cost. Benchmarking only the default path
+# would attribute all of it to "engine overhead"; this fixture separates the two so the poll floor
+# is visible and any future fix to _run_attempt has a baseline to beat.
+fn _b_flat_flow_no_timeout(name, mode, n) {
+    var f = flow_new(str_from(name), mode);
+    var i = 0;
+    while (i < n) {
+        var s = step_new(str_from(_b_name("s", i)));
+        step_with_timeout(s, STEP_I64_MAX);
+        flow_add_step(f, s);
+        i = i + 1;
+    }
+    return f;
+}
+
+# A DAG chain of `n` steps: step i depends on step i-1. The deepest shape the DFS cycle check
+# and the DAG scheduler have to walk.
+fn _b_chain_flow(name, n) {
+    var f = flow_new(str_from(name), FLOW_DAG);
+    var prev = 0;
+    var i = 0;
+    while (i < n) {
+        var s = step_new(str_from(_b_name("c", i)));
+        if (prev != 0) { step_depends_on_add(s, step_id_hi(prev), step_id_lo(prev)); }
+        flow_add_step(f, s);
+        prev = s;
+        i = i + 1;
+    }
+    return f;
+}
+
+# A wide DAG: one root plus `n - 1` steps that all depend on it. The opposite extreme from the
+# chain — maximum fan-out, minimum depth.
+fn _b_wide_flow(name, n) {
+    var f = flow_new(str_from(name), FLOW_DAG);
+    var root = step_new(str_from("root"));
+    flow_add_step(f, root);
+    var i = 1;
+    while (i < n) {
+        var s = step_new(str_from(_b_name("w", i)));
+        step_depends_on_add(s, step_id_hi(root), step_id_lo(root));
+        flow_add_step(f, s);
+        i = i + 1;
+    }
+    return f;
+}
+
+# The canonical CI diamond: build -> (unit, integ) -> deploy. Two steps genuinely run
+# concurrently, which is what distinguishes this from the chain.
+fn _b_diamond_flow() {
+    var f = flow_new(str_from("ci"), FLOW_DAG);
+    var build = step_new(str_from("build"));
+    var unit = step_new(str_from("unit"));
+    var integ = step_new(str_from("integ"));
+    var deploy = step_new(str_from("deploy"));
+    step_depends_on_add(unit, step_id_hi(build), step_id_lo(build));
+    step_depends_on_add(integ, step_id_hi(build), step_id_lo(build));
+    step_depends_on_add(deploy, step_id_hi(unit), step_id_lo(unit));
+    step_depends_on_add(deploy, step_id_hi(integ), step_id_lo(integ));
+    flow_add_step(f, build);
+    flow_add_step(f, unit);
+    flow_add_step(f, integ);
+    flow_add_step(f, deploy);
+    return f;
+}
+
+# A fully-populated StepDef — every builder method the Rust bench exercised, so step_builder_full
+# measures the whole chain rather than just the constructor.
+fn _b_full_step() {
+    var s = step_new(str_from("deploy"));
+    step_with_timeout(s, 30000);
+    step_with_retries(s, 3, 100);
+    step_with_backoff(s, BACKOFF_EXPONENTIAL);
+    step_with_rollback(s);
+    step_with_step_type(s, str_from("shell"));
+    step_with_condition(s, str_from("steps.build.status == 'completed'"));
+    return s;
+}
+
+# --- helpers routed through one-line fns ----------------------------------------------------
+# flow_from_json / step_from_json reach bayan_json_v_parse, which must not be called inline from
+# a larger fn on this toolchain (the documented stale-parser-globals hazard).
+fn _b_parse_flow(js) { return flow_from_json(js); }
+fn _b_parse_step(js) { return step_from_json(js); }
+
+# --- the timed functions (zero-arg, fncall0-dispatched) --------------------------------------
+fn b_seq10() { engine_run(_b_eng, _bf_seq10); return 0; }
+fn b_seq10_nt() { engine_run(_b_eng, _bf_seq10_nt); return 0; }
+fn b_seq100() { engine_run(_b_eng, _bf_seq100); return 0; }
+fn b_par10() { engine_run(_b_eng, _bf_par10); return 0; }
+fn b_par100() { engine_run(_b_eng, _bf_par100); return 0; }
+fn b_dag_diamond() { engine_run(_b_eng, _bf_diamond); return 0; }
+fn b_dag_linear100() { engine_run(_b_eng, _bf_dag_linear); return 0; }
+fn b_flow_serialize() { flow_to_json(_bf_flow50); return 0; }
+fn b_flow_deserialize() { _b_parse_flow(_bf_flow50_json); return 0; }
+fn b_validate_wide() { flow_validate(_bf_wide100); return 0; }
+fn b_validate_chain() { flow_validate(_bf_chain100); return 0; }
+fn b_step_serialize() { step_to_json(_bf_step); return 0; }
+fn b_step_deserialize() { _b_parse_step(_bf_step_json); return 0; }
+fn b_step_builder() { _b_full_step(); return 0; }
+
+# All 64 (from, to) state pairs. state_valid_transition is a handful of compares, so a single
+# call is unmeasurable; the benchmark is the whole table, matching what the Rust
+# state_all_transitions bench did.
+fn b_state_transitions() {
+    var from = 0;
+    var acc = 0;
+    while (from < 8) {
+        var to = 0;
+        while (to < 8) {
+            acc = acc + state_valid_transition(from, to);
+            to = to + 1;
+        }
+        from = from + 1;
+    }
+    return acc;
+}
+
+# --- fixture construction + prechecks --------------------------------------------------------
+
+fn bench_build_fixtures() {
+    _b_eng = _b_engine();
+    _bf_seq10 = _b_flat_flow("seq10", FLOW_SEQUENTIAL, 10);
+    _bf_seq10_nt = _b_flat_flow_no_timeout("seq10nt", FLOW_SEQUENTIAL, 10);
+    _bf_seq100 = _b_flat_flow("seq100", FLOW_SEQUENTIAL, 100);
+    _bf_par10 = _b_flat_flow("par10", FLOW_PARALLEL, 10);
+    _bf_par100 = _b_flat_flow("par100", FLOW_PARALLEL, 100);
+    _bf_diamond = _b_diamond_flow();
+    _bf_dag_linear = _b_chain_flow("dag100", SZ_CHAIN);
+    _bf_flow50 = _b_flat_flow("flow50", FLOW_SEQUENTIAL, SZ_FLOW_JSON);
+    _bf_flow50_json = flow_to_json(_bf_flow50);
+    _bf_wide100 = _b_wide_flow("wide100", SZ_WIDE);
+    _bf_chain100 = _b_chain_flow("chain100", SZ_CHAIN);
+    _bf_step = _b_full_step();
+    _bf_step_json = step_to_json(_bf_step);
+    return 0;
+}
+
+# Prove each hot path actually does its work before timing it. Without this, a benchmark whose
+# fixture stopped validating would keep reporting a number — a much faster one — and the CSV
+# would record it as an improvement.
+fn bench_precheck() {
+    test_group("precheck: every benchmarked path does real work");
+    # Engine paths: the run must succeed AND complete every step.
+    var r10 = engine_run(_b_eng, _bf_seq10);
+    assert(is_ok(r10), "sequential 10 runs Ok");
+    assert_eq(flow_result_completed_count(result_unwrap(r10)), 10, "sequential 10 completes 10");
+    var rnt = engine_run(_b_eng, _bf_seq10_nt);
+    assert_eq(flow_result_completed_count(result_unwrap(rnt)), 10,
+        "sequential 10 (no timeout) completes 10");
+    assert_eq(step_timeout_ms(flow_step_at(_bf_seq10_nt, 0)), STEP_I64_MAX,
+        "the no-timeout fixture really has no timeout");
+    assert(step_timeout_ms(flow_step_at(_bf_seq10, 0)) < STEP_I64_MAX,
+        "the default fixture really has a timeout");
+    var r100 = engine_run(_b_eng, _bf_seq100);
+    assert_eq(flow_result_completed_count(result_unwrap(r100)), 100, "sequential 100 completes 100");
+    var p10 = engine_run(_b_eng, _bf_par10);
+    assert_eq(flow_result_completed_count(result_unwrap(p10)), 10, "parallel 10 completes 10");
+    var p100 = engine_run(_b_eng, _bf_par100);
+    assert_eq(flow_result_completed_count(result_unwrap(p100)), 100, "parallel 100 completes 100");
+    var dd = engine_run(_b_eng, _bf_diamond);
+    assert_eq(flow_result_completed_count(result_unwrap(dd)), 4, "diamond completes 4");
+    var dl = engine_run(_b_eng, _bf_dag_linear);
+    assert_eq(flow_result_completed_count(result_unwrap(dl)), SZ_CHAIN, "dag chain completes 100");
+    # A flow that fails validation would return early and be timed as a no-op.
+    assert(is_ok(flow_validate(_bf_wide100)), "wide 100 validates");
+    assert(is_ok(flow_validate(_bf_chain100)), "chain 100 validates");
+    # JSON paths: serialization must be non-empty and deserialization must reconstruct the steps.
+    assert(str_len(_bf_flow50_json) > 0, "flow 50 serializes to non-empty JSON");
+    var back = _b_parse_flow(_bf_flow50_json);
+    assert(back != 0, "flow 50 JSON parses back");
+    assert_eq(flow_steps_len(back), SZ_FLOW_JSON, "flow 50 round-trips 50 steps");
+    assert(str_len(_bf_step_json) > 0, "step serializes to non-empty JSON");
+    var sback = _b_parse_step(_bf_step_json);
+    assert(sback != 0, "step JSON parses back");
+    assert_eq(step_max_retries(sback), 3, "step round-trips its retry count");
+    # The builder must actually apply every setter.
+    var fs = _b_full_step();
+    assert_eq(step_timeout_ms(fs), 30000, "builder sets timeout");
+    assert_eq(step_backoff(fs), BACKOFF_EXPONENTIAL, "builder sets backoff");
+    assert_eq(step_rollbackable(fs), 1, "builder sets rollbackable");
+    # The transition table must be non-trivial (a table of all-zeros would benchmark fine).
+    assert_eq(b_state_transitions(), N_STATE_EDGES, "the transition table has 11 legal edges");
+    return assert_summary();
+}
+
+# --- the benchmark run ----------------------------------------------------------------------
+
+# Emit one benchmark's numbers TWICE: bench_report's human-readable line, then an exact
+# machine-readable line that scripts/bench-history.sh parses.
+#
+# The exact line exists because bench_report's format is LOSSY and version-dependent.
+# lib/bench.cyr's _fmt_time renders "1.481us" only from cyrius 6.2.15 on; at the version this
+# project pins it prints bare integer microseconds -- "1us" for 1481ns, a 48% error, and
+# bench.cyr's own comment records that this "flat-lined the micro-bench history" once before.
+# Recording a human display string was the mistake; the CSV wants integers, so this prints the
+# integers straight from bench_avg_ns/min/max and lets bench_report stay purely cosmetic.
+#
+# Format (single space separated, one per line):
+#   BENCHDATA <name> <avg_ns> <min_ns> <max_ns> <iterations>
+fn _b_emit(b) {
+    bench_report(b);
+    var name = bench_name(b);
+    syscall(1, 1, "BENCHDATA ", 10);
+    syscall(1, 1, name, strlen(name));
+    syscall(1, 1, " ", 1);
+    fmt_int(bench_avg_ns(b));
+    syscall(1, 1, " ", 1);
+    fmt_int(bench_min_ns(b));
+    syscall(1, 1, " ", 1);
+    fmt_int(bench_max_ns(b));
+    syscall(1, 1, " ", 1);
+    fmt_int(bench_iterations(b));
+    syscall(1, 1, "\n", 1);
+    return 0;
+}
+
+fn bench_all() {
+    println("=== szal engine benchmarks ===");
+    # Engine dispatch, one benchmark per mode and size. bench_run's per-iteration clock costs
+    # ~240ns, which is under 0.1% of even the fastest of these.
+    var b1 = bench_new("engine_sequential_10");
+    bench_run(b1, &b_seq10, IT_SEQ_10);
+    _b_emit(b1);
+    var b2 = bench_new("engine_sequential_100");
+    bench_run(b2, &b_seq100, IT_SEQ_100);
+    _b_emit(b2);
+    # Same ten steps with the per-attempt timeout disabled. The gap between this and
+    # engine_sequential_10 IS the sleep_ms(1) poll floor in _run_attempt (see the fixture note).
+    var b2b = bench_new("engine_sequential_10_no_timeout");
+    bench_run(b2b, &b_seq10_nt, IT_SEQ_10_NT);
+    _b_emit(b2b);
+    var b3 = bench_new("engine_parallel_10");
+    bench_run(b3, &b_par10, IT_PAR_10);
+    _b_emit(b3);
+    var b4 = bench_new("engine_parallel_100");
+    bench_run(b4, &b_par100, IT_PAR_100);
+    _b_emit(b4);
+    var b5 = bench_new("engine_dag_diamond");
+    bench_run(b5, &b_dag_diamond, IT_DAG_DIAMOND);
+    _b_emit(b5);
+    var b6 = bench_new("engine_dag_linear_100");
+    bench_run(b6, &b_dag_linear100, IT_DAG_LINEAR);
+    _b_emit(b6);
+    # Serialization boundaries — what persistence and the MCP tools pay per flow.
+    var b7 = bench_new("flow_50_serialize");
+    bench_run(b7, &b_flow_serialize, IT_FLOW_SER);
+    _b_emit(b7);
+    var b8 = bench_new("flow_50_deserialize");
+    bench_run(b8, &b_flow_deserialize, IT_FLOW_DESER);
+    _b_emit(b8);
+    # Validation: the two extreme DAG shapes (max fan-out vs max depth).
+    var b9 = bench_new("dag_validate_wide_100");
+    bench_run(b9, &b_validate_wide, IT_VALIDATE);
+    _b_emit(b9);
+    var b10 = bench_new("dag_validate_100_steps");
+    bench_run(b10, &b_validate_chain, IT_VALIDATE);
+    _b_emit(b10);
+    # Sub-microsecond paths — batched, per lib/bench.cyr's guidance.
+    var b11 = bench_new("state_all_transitions");
+    bench_run_batch(b11, &b_state_transitions, IT_TRANS_BATCH, IT_TRANS_ROUNDS);
+    _b_emit(b11);
+    var b12 = bench_new("step_builder_full");
+    bench_run_batch(b12, &b_step_builder, IT_FAST_BATCH, IT_FAST_ROUNDS);
+    _b_emit(b12);
+    var b13 = bench_new("step_serialize");
+    bench_run_batch(b13, &b_step_serialize, IT_JSON_BATCH, IT_JSON_ROUNDS);
+    _b_emit(b13);
+    var b14 = bench_new("step_deserialize");
+    bench_run_batch(b14, &b_step_deserialize, IT_JSON_BATCH, IT_JSON_ROUNDS);
+    _b_emit(b14);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    # Route sakshi to its ring buffer so engine log/otel output never lands in the timings or in
+    # the output scripts/bench-history.sh parses.
+    sakshi_output_buffer();
+    bench_build_fixtures();
+    var bad = bench_precheck();
+    if (bad != 0) {
+        println("bench: PRECHECK FAILED - refusing to record meaningless timings");
+        return 1;
+    }
+    bench_all();
+    println("bench: ok");
+    return 0;
+}
+
+var rc = main();
+syscall(SYS_EXIT, rc);

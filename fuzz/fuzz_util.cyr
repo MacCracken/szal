@@ -1,0 +1,240 @@
+# fuzz_util.cyr — shared prelude for szal property/fuzz harnesses (fuzz/*.fcyr).
+#
+# NOT a harness itself — the CI Fuzz step globs `fuzz/*.fcyr`, so this `.cyr` is only ever
+# pulled in by an `include`. Each harness owns its own single-pass include order (stdlib, then
+# szal modules, then this file) exactly like tests/szal_*.tcyr does.
+#
+# Usage: include "fuzz/fuzz_util.cyr"
+# Requires (must precede this include): lib/string.cyr (strlen), lib/fmt.cyr (fmt_int),
+#   lib/alloc.cyr (alloc + alloc_used), lib/syscalls.cyr, and lib/str.cyr (str_cstr — only for
+#   fz_check_str). No szal-module deps — stdlib only.
+# Naming: every symbol is fz_-prefixed (public) or _fz_-prefixed (internal) so a harness that
+#   also includes the full szal surface cannot collide.
+#
+# ---------------------------------------------------------------------------
+# Why a seeded PRNG and not a real coverage-guided fuzzer
+# ---------------------------------------------------------------------------
+# There is no libFuzzer/AFL equivalent for Cyrius, so these harnesses are *property tests
+# driven by a deterministic generator*: a fixed-seed PRNG produces thousands of inputs per run
+# and each input is checked against invariants that must hold for every input. Determinism is a
+# feature, not a compromise — a CI failure is exactly reproducible from the seed printed in the
+# banner, and a green run never flakes. To widen the search, raise the iteration counts or pass
+# a different seed via fz_seed().
+#
+# Exit contract (what the CI Fuzz step relies on): a harness returns the number of violated
+# invariants, so 0 = success and non-zero = a real property violation.
+
+# --- deterministic PRNG (64-bit LCG; the classic Knuth/MMIX multiplier) --------------------
+# Output is taken from the HIGH bits (>> 33) because an LCG's low bits have short periods.
+# Masking to 31 bits after the shift keeps every output non-negative regardless of how the
+# i64 state wrapped. Verified deterministic and well-spread on x86_64 before use.
+var _fz_state = 0;
+
+# Seed the generator. Any i64 works; the same seed always replays the same input sequence.
+fn fz_seed(s) {
+    _fz_state = s;
+    return 0;
+}
+
+# Next pseudo-random value in [0, 2^31). Advances the state.
+fn fz_rand() {
+    _fz_state = _fz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fz_state >> 33) & 0x7FFFFFFF;
+}
+
+# Next pseudo-random value in [0, n). Returns 0 when n <= 0 (so callers need no guard).
+fn fz_rand_below(n) {
+    if (n <= 0) { return 0; }
+    return fz_rand() % n;
+}
+
+# Next pseudo-random value in [lo, hi] inclusive. Returns lo when hi <= lo.
+fn fz_rand_range(lo, hi) {
+    if (hi <= lo) { return lo; }
+    return lo + fz_rand_below(hi - lo + 1);
+}
+
+# A full-width pseudo-random i64, stitched from three 31-bit draws (a single draw would leave
+# the top 33 bits always zero — useless for fuzzing 128-bit UUID halves).
+fn fz_rand64() {
+    var a = fz_rand();
+    var b = fz_rand();
+    var c = fz_rand();
+    return (a << 33) ^ (b << 2) ^ (c & 3);
+}
+
+# --- input buffers -------------------------------------------------------------------------
+
+# Allocate a NUL-terminated buffer of `len` uniformly random bytes in [lo, hi]. Returns the
+# cstr. Bytes are drawn from the closed range so callers can ask for "any byte" (0..255, though
+# 0 is excluded below so the result stays a usable cstr) or a narrow alphabet.
+fn fz_rand_bytes(len, lo, hi) {
+    var buf = alloc(len + 1);
+    if (buf == 0) { return 0; }
+    var i = 0;
+    while (i < len) {
+        var b = fz_rand_range(lo, hi);
+        # Never emit an interior NUL: these buffers are consumed as cstrs, and an embedded 0
+        # would silently truncate the input (shrinking coverage without any signal).
+        if (b == 0) { b = 1; }
+        store8(buf + i, b);
+        i = i + 1;
+    }
+    store8(buf + len, 0);
+    return buf;
+}
+
+# Allocate a NUL-terminated buffer of `len` bytes drawn from the cstr `alphabet`. Lets a
+# harness bias the generator toward the alphabet its parser actually cares about (digits,
+# operators, quotes) instead of uniform noise that almost always dies at the first byte.
+fn fz_rand_from(len, alphabet) {
+    var n = strlen(alphabet);
+    if (n == 0) { return fz_rand_bytes(len, 97, 122); }
+    var buf = alloc(len + 1);
+    if (buf == 0) { return 0; }
+    var i = 0;
+    while (i < len) {
+        store8(buf + i, load8(alphabet + fz_rand_below(n)));
+        i = i + 1;
+    }
+    store8(buf + len, 0);
+    return buf;
+}
+
+# Copy a cstr into a fresh buffer (so a harness can mutate it without touching the original).
+fn fz_dup(s) {
+    var n = strlen(s);
+    var buf = alloc(n + 1);
+    if (buf == 0) { return 0; }
+    var i = 0;
+    while (i < n) {
+        store8(buf + i, load8(s + i));
+        i = i + 1;
+    }
+    store8(buf + n, 0);
+    return buf;
+}
+
+# --- reporting -----------------------------------------------------------------------------
+# A fuzz harness runs tens of thousands of checks, so unlike lib/assert.cyr this counts
+# violations and prints only the first FZ_MAX_REPORTS with their offending input. Flooding
+# stderr with 40k identical failures buries the one line that matters.
+enum FzLimits { FZ_MAX_REPORTS = 8; }
+
+var _fz_checks = 0;
+var _fz_fails = 0;
+var _fz_reported = 0;
+var _fz_group = 0;
+
+# Start a named property group. Purely cosmetic (stdout structure), but it makes a CI log
+# readable: the group name localizes a failure to one property without a stack trace.
+fn fz_group(name) {
+    _fz_group = name;
+    syscall(1, 1, "  -- ", 5);
+    syscall(1, 1, name, strlen(name));
+    syscall(1, 1, "\n", 1);
+    return 0;
+}
+
+# Print a byte range readably: printable ASCII verbatim, everything else as \xHH. Fuzz inputs
+# are frequently non-printable, and a raw write would corrupt the CI log (or hide the bytes
+# that actually broke the parser).
+fn _fz_print_escaped(data, len) {
+    var hex = "0123456789abcdef";
+    var one[4];
+    var i = 0;
+    while (i < len) {
+        var b = load8(data + i);
+        if ((b >= 32) && (b < 127)) {
+            store8(&one, b);
+            syscall(1, 2, &one, 1);
+        } else {
+            store8(&one, 92);
+            store8(&one + 1, 120);
+            store8(&one + 2, load8(hex + ((b >> 4) & 15)));
+            store8(&one + 3, load8(hex + (b & 15)));
+            syscall(1, 2, &one, 4);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Record the outcome of one property check. `cond` must be 1 for a hold. `input` is the cstr
+# that produced it, or 0 when the property has no single input worth printing.
+# Returns cond so a caller can chain (`if (fz_check(...) == 0) { skip dependent checks }`).
+fn fz_check(cond, name, input) {
+    _fz_checks = _fz_checks + 1;
+    if (cond == 1) { return 1; }
+    _fz_fails = _fz_fails + 1;
+    if (_fz_reported < FZ_MAX_REPORTS) {
+        _fz_reported = _fz_reported + 1;
+        syscall(1, 2, "  VIOLATION: ", 13);
+        if (_fz_group != 0) {
+            syscall(1, 2, _fz_group, strlen(_fz_group));
+            syscall(1, 2, " / ", 3);
+        }
+        syscall(1, 2, name, strlen(name));
+        if (input != 0) {
+            syscall(1, 2, "\n    input: \"", 13);
+            var ilen = strlen(input);
+            _fz_print_escaped(input, ilen);
+            syscall(1, 2, "\"", 1);
+        }
+        syscall(1, 2, "\n", 1);
+    } elif (_fz_reported == FZ_MAX_REPORTS) {
+        _fz_reported = _fz_reported + 1;
+        syscall(1, 2, "  (further violations suppressed)\n", 34);
+    }
+    return 0;
+}
+
+# fz_check for a property whose input is a Str rather than a cstr.
+fn fz_check_str(cond, name, s) {
+    if (cond == 1) {
+        _fz_checks = _fz_checks + 1;
+        return 1;
+    }
+    var c = 0;
+    if (s != 0) { c = str_cstr(s); }
+    return fz_check(cond, name, c);
+}
+
+# Print the banner. Call once at the top of a harness, after fz_seed.
+fn fz_begin(harness, seed) {
+    syscall(1, 1, "fuzz ", 5);
+    syscall(1, 1, harness, strlen(harness));
+    syscall(1, 1, " (seed ", 7);
+    fmt_int(seed);
+    syscall(1, 1, ")\n", 2);
+    return 0;
+}
+
+# Print the summary and return the harness's exit code — 0 on success, non-zero on any violated
+# invariant, which is the whole contract the CI Fuzz step relies on.
+#
+# The count is CLAMPED to FZ_MAX_EXIT rather than returned raw. A process exit status is only 8
+# bits: a harness reporting exactly 256 violations would exit 0 and read as a PASS. Mutation
+# testing routinely produces violation counts in the hundreds, so this is a live hazard, not a
+# theoretical one. The true count is printed on the line above; only the status is clamped.
+#
+# Also prints the heap high-water mark: a harness that suddenly allocates an order of magnitude
+# more is a leak signal worth seeing even on a green run.
+enum FzExit { FZ_MAX_EXIT = 100; }
+
+fn fz_summary() {
+    syscall(1, 1, "  ", 2);
+    fmt_int(_fz_checks);
+    syscall(1, 1, " properties checked, ", 21);
+    fmt_int(_fz_fails);
+    syscall(1, 1, " violated (heap ", 16);
+    fmt_int(alloc_used() / 1024);
+    syscall(1, 1, " KiB)\n", 6);
+    if (_fz_fails == 0) {
+        syscall(1, 1, "  ok\n", 5);
+        return 0;
+    }
+    syscall(1, 2, "  FAILED\n", 9);
+    if (_fz_fails > FZ_MAX_EXIT) { return FZ_MAX_EXIT; }
+    return _fz_fails;
+}

@@ -1,0 +1,408 @@
+# hash_uuid.fcyr — property harness for src/md5.cyr (RFC 1321) and src/uuid.cyr (RFC 4122 v4).
+#
+#   cyrius build --strict --no-deps fuzz/hash_uuid.fcyr build/fuzz_hash_uuid && ./build/fuzz_hash_uuid
+#
+# Both modules are hand-ports of a byte-exact spec with a fixed oracle, which makes them the
+# best possible fuzz targets: the RFC test vectors pin absolute correctness, and the two-API
+# shape (md5 raw / md5_hex, uuid_to_cstr / uuid_parse) gives a differential check that holds for
+# every input, not just the vectors.
+#
+# md5 properties:
+#   1. RFC 1321 vectors     the seven §A.5 vectors hash exactly            (absolute oracle)
+#   2. API agreement        md5_hex(d,n) == hex(md5(d,n,out16))            (differential)
+#   3. output shape         always 32 bytes, all in [0-9a-f]
+#   4. determinism          the same bytes hash the same, every time
+#   5. length honesty       md5(d,n) ignores bytes at or past index n      (over-read detector)
+#   6. bit sensitivity      flipping any single bit changes the digest
+#   7. injectivity (sample) distinct inputs give distinct digests
+#   8. block boundaries     lengths 0..200 all hash without a shape break  (padding/§3.1 edges)
+#
+# uuid properties:
+#   9. round-trip           uuid_parse(uuid_to_cstr(hi,lo)) == (hi,lo)     (differential)
+#  10. text shape           36 chars, hyphens at 8/13/18/23, rest lc hex
+#  11. v4 stamping          uuid_generate sets version 4 and variant 10xx
+#  12. generator distinct   two generates never collide
+#  13. mutation rejection   a byte that cannot appear at its index -> sentinel
+#  14. length rejection     any length != 36 -> sentinel
+#  15. sentinel discipline  uuid_parse_ok agrees with the sentinel exactly
+#
+# Single-pass dependency order (mirrors tests/szal_core.tcyr).
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "src/error.cyr"
+include "src/uuid.cyr"
+include "src/md5.cyr"
+include "fuzz/fuzz_util.cyr"
+
+enum FzHash { FZ_SEED = 0x4D443521; FZ_MAX_INPUT = 260; }
+
+# Hex-encode `n` raw bytes at `raw` into a fresh NUL-terminated cstr. This is the harness's OWN
+# encoder — deliberately independent of md5.cyr's _md5_hex_digit, so property 2 compares two
+# implementations rather than one implementation against itself.
+fn fz_hex(raw, n) {
+    var out = alloc(n * 2 + 1);
+    if (out == 0) { return 0; }
+    var digits = "0123456789abcdef";
+    var i = 0;
+    while (i < n) {
+        var b = load8(raw + i);
+        store8(out + i * 2, load8(digits + ((b >> 4) & 15)));
+        store8(out + i * 2 + 1, load8(digits + (b & 15)));
+        i = i + 1;
+    }
+    store8(out + n * 2, 0);
+    return out;
+}
+
+# Is `c` a lowercase hex digit byte?
+fn fz_is_lc_hex(c) {
+    if ((c >= 48) && (c <= 57)) { return 1; }
+    if ((c >= 97) && (c <= 102)) { return 1; }
+    return 0;
+}
+
+# Check the universal shape of an md5_hex result: non-null, exactly 32 bytes, lowercase hex.
+# Every property below funnels through this, so a shape break is caught wherever it appears.
+fn fz_check_digest_shape(hex, input) {
+    if (fz_check(hex != 0, "md5_hex returned non-null", input) == 0) { return 0; }
+    if (fz_check(strlen(hex) == 32, "md5_hex is 32 chars", input) == 0) { return 0; }
+    var i = 0;
+    var ok = 1;
+    while (i < 32) {
+        if (fz_is_lc_hex(load8(hex + i)) == 0) { ok = 0; }
+        i = i + 1;
+    }
+    fz_check(ok, "md5_hex is all lowercase hex", input);
+    return 0;
+}
+
+# --- 1: RFC 1321 §A.5 test vectors ----------------------------------------------------------
+# The absolute oracle. Without these, every other md5 property could pass on a hash function
+# that is self-consistent but simply wrong.
+fn fz_md5_vectors() {
+    fz_group("md5: RFC 1321 A.5 vectors");
+    fz_check(streq(md5_hex("", 0), "d41d8cd98f00b204e9800998ecf8427e") == 1,
+        "md5(\"\")", "");
+    fz_check(streq(md5_hex("a", 1), "0cc175b9c0f1b6a831c399e269772661") == 1,
+        "md5(\"a\")", "a");
+    fz_check(streq(md5_hex("abc", 3), "900150983cd24fb0d6963f7d28e17f72") == 1,
+        "md5(\"abc\")", "abc");
+    fz_check(streq(md5_hex("message digest", 14), "f96b697d7cb7938d525a2f31aaf161d0") == 1,
+        "md5(\"message digest\")", "message digest");
+    fz_check(streq(md5_hex("abcdefghijklmnopqrstuvwxyz", 26),
+        "c3fcd3d76192e4007dfb496cca67e13b") == 1, "md5(a..z)", 0);
+    fz_check(streq(md5_hex("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 62),
+        "d174ab98d277d9f5a5611c2c9f419d9f") == 1, "md5(alnum)", 0);
+    fz_check(streq(md5_hex("12345678901234567890123456789012345678901234567890123456789012345678901234567890", 80),
+        "57edf4a22be3c955ac49da2e2107b67a") == 1, "md5(8x\"1234567890\")", 0);
+    return 0;
+}
+
+# --- 2/3/4/6/7: random inputs -----------------------------------------------------------------
+fn fz_md5_random() {
+    fz_group("md5: API agreement, determinism, bit sensitivity, injectivity");
+    # digest -> 1: detects a repeat digest from a DISTINCT input. A real MD5 collision needs
+    # crafted inputs, so a repeat inside a random sample means the port is losing input bytes
+    # (a length or padding bug that maps many messages onto one digest).
+    var seen = map_new();
+    # input content -> its digest. The generator draws length from 0..FZ_MAX_INPUT, so it repeats
+    # inputs (every zero-length draw is the same message) and those MUST collide. Keying the
+    # sample by content keeps "distinct inputs give distinct digests" a true statement, and turns
+    # the repeats into a free run-wide determinism check.
+    var inputs = map_new();
+    var i = 0;
+    while (i < 3000) {
+        var len = fz_rand_below(FZ_MAX_INPUT);
+        var data = fz_rand_bytes(len, 1, 255);
+        if (data != 0) {
+            var hex = md5_hex(data, len);
+            fz_check_digest_shape(hex, data);
+            if (hex != 0) {
+                # (2) The raw-bytes API and the hex API must agree, hex-encoded independently.
+                var raw = alloc(16);
+                fz_check(md5(data, len, raw) == 0, "md5 raw returns 0", data);
+                var mine = fz_hex(raw, 16);
+                fz_check(streq(hex, mine) == 1, "md5_hex == hex(md5 raw)", data);
+                # (4) Determinism — a second call on the same bytes.
+                fz_check(streq(md5_hex(data, len), hex) == 1, "md5 is deterministic", data);
+                # (7) Injectivity within the sample — but only across DISTINCT inputs. A repeat
+                # of the same content must reproduce its earlier digest instead.
+                var prior = map_get(inputs, data);
+                if (prior != 0) {
+                    fz_check(streq(prior, hex) == 1, "a repeated input reproduces its digest", data);
+                } elif (map_has(seen, hex) == 1) {
+                    fz_check(0, "distinct random inputs collided", data);
+                } else {
+                    map_set(seen, hex, 1);
+                    map_set(inputs, data, hex);
+                }
+                # (6) Flip one random bit; the digest must change. This is the single strongest
+                # cheap check on the compression function: a dropped round or a mis-indexed K
+                # constant leaves whole input bits with no influence on the output.
+                if (len > 0) {
+                    var mut = fz_dup(data);
+                    if (mut != 0) {
+                        var p = fz_rand_below(len);
+                        var bit = 1 << fz_rand_below(8);
+                        var nb = load8(mut + p) ^ bit;
+                        # Keep it a usable cstr (fz_rand_bytes never emits 0, so only the flip
+                        # could introduce one); flip a different bit if this one lands on NUL.
+                        if (nb == 0) { nb = load8(mut + p) ^ 1; }
+                        store8(mut + p, nb);
+                        if (nb != load8(data + p)) {
+                            fz_check(streq(md5_hex(mut, len), hex) == 0,
+                                "one-bit flip changes the digest", mut);
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 5: length honesty ----------------------------------------------------------------------
+# md5(d, n) must depend on exactly the first n bytes. Rewriting the bytes AFTER index n must not
+# move the digest — that is precisely the check that catches a buffer over-read past `len`
+# (reading into the padding block, or an off-by-one in the §3.1 length append).
+fn fz_md5_length_honesty() {
+    fz_group("md5: the digest depends on exactly len bytes");
+    var i = 0;
+    while (i < 1500) {
+        var total = fz_rand_range(1, FZ_MAX_INPUT);
+        var n = fz_rand_below(total);
+        var data = fz_rand_bytes(total, 1, 255);
+        if (data != 0) {
+            var before = md5_hex(data, n);
+            if (before != 0) {
+                var pinned = fz_dup(before);
+                # Scribble over every byte at or past n.
+                var j = n;
+                while (j < total) {
+                    var nb = fz_rand_range(1, 255);
+                    store8(data + j, nb);
+                    j = j + 1;
+                }
+                fz_check(streq(md5_hex(data, n), pinned) == 1,
+                    "bytes past len do not affect the digest", pinned);
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 8: every length across the block boundaries --------------------------------------------
+# MD5 processes 64-byte blocks and appends an 8-byte length, so lengths 55/56/57 and 119/120/121
+# are where padding logic breaks. Sweep 0..200 exhaustively rather than hoping the random
+# generator lands there.
+fn fz_md5_block_edges() {
+    fz_group("md5: exhaustive length sweep across block/padding boundaries");
+    var buf = fz_rand_bytes(201, 1, 255);
+    if (buf == 0) { return 0; }
+    var seen = map_new();
+    var n = 0;
+    while (n <= 200) {
+        var hex = md5_hex(buf, n);
+        fz_check_digest_shape(hex, 0);
+        if (hex != 0) {
+            # Each prefix length is a distinct message, so each must give a distinct digest.
+            # A padding bug typically makes two adjacent lengths agree.
+            if (map_has(seen, hex) == 1) {
+                fz_check(0, "two prefix lengths produced the same digest", hex);
+            } else {
+                map_set(seen, hex, 1);
+            }
+        }
+        n = n + 1;
+    }
+    return 0;
+}
+
+# --- 9/10/15: uuid text round-trip ----------------------------------------------------------
+fn fz_uuid_roundtrip() {
+    fz_group("uuid: to_cstr/parse round-trip and text shape");
+    var i = 0;
+    while (i < 4000) {
+        var hi = 0;
+        var lo = 0;
+        var pick = fz_rand_below(8);
+        if (pick == 0) {
+            # Edge: the all-zero (nil) UUID.
+            hi = 0; lo = 0;
+        } elif (pick == 1) {
+            # Edge: hi/lo full of 0xFF. NOTE this is exactly the parse-failure sentinel, so it
+            # is the one value where round-trip and uuid_parse_ok disagree by design — see below.
+            hi = 0 - 1; lo = 0 - 1;
+        } elif (pick == 2) {
+            # Edge: only one half populated (catches a hi/lo swap).
+            hi = fz_rand64(); lo = 0;
+        } elif (pick == 3) {
+            hi = 0; lo = fz_rand64();
+        } else {
+            hi = fz_rand64(); lo = fz_rand64();
+        }
+        var s = uuid_to_cstr(hi, lo);
+        if (fz_check(s != 0, "uuid_to_cstr returned non-null", 0) == 1) {
+            # (10) Shape: exactly 36 chars, hyphens at 8/13/18/23, lowercase hex elsewhere.
+            fz_check(strlen(s) == 36, "uuid text is 36 chars", s);
+            var j = 0;
+            var shape_ok = 1;
+            while (j < 36) {
+                var c = load8(s + j);
+                if ((j == 8) || (j == 13) || (j == 18) || (j == 23)) {
+                    if (c != 45) { shape_ok = 0; }
+                } elif (fz_is_lc_hex(c) == 0) { shape_ok = 0; }
+                j = j + 1;
+            }
+            fz_check(shape_ok, "uuid text is hyphenated lowercase hex", s);
+            # (9) Round-trip. uuid_parse returns two values.
+            var phi, plo = uuid_parse(s);
+            fz_check((phi == hi) && (plo == lo), "uuid_parse(uuid_to_cstr(hi,lo)) == (hi,lo)", s);
+            # (15) uuid_parse_ok must agree with the sentinel exactly. The all-ones UUID IS the
+            # sentinel, so it round-trips its bits but reports "not ok" — a documented collision
+            # between the value space and the error channel, asserted here so the port's
+            # sentinel choice stays visible instead of drifting into a silent wrong answer.
+            if ((hi == (0 - 1)) && (lo == (0 - 1))) {
+                fz_check(uuid_parse_ok(phi, plo) == 0,
+                    "the all-ones UUID reads as the parse sentinel", s);
+            } else {
+                fz_check(uuid_parse_ok(phi, plo) == 1, "a real UUID parses ok", s);
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 13/14: malformed uuid text -------------------------------------------------------------
+fn fz_uuid_malformed() {
+    fz_group("uuid: malformed text is rejected with the sentinel");
+    var i = 0;
+    while (i < 4000) {
+        var s = uuid_to_cstr(fz_rand64(), fz_rand64());
+        if (s != 0) {
+            var m = fz_dup(s);
+            if (m != 0) {
+                var op = fz_rand_below(4);
+                if (op == 0) {
+                    # (13) Substitute a byte that CANNOT be legal at its index: a non-hex byte
+                    # at a hex slot, or a non-hyphen at a hyphen slot. Substituting one hex
+                    # digit for another would still be a valid UUID, so the generator must not
+                    # do that -- the property would be false, not the code.
+                    var p = fz_rand_below(36);
+                    if ((p == 8) || (p == 13) || (p == 18) || (p == 23)) {
+                        store8(m + p, 102);            # 'f' where a '-' belongs
+                    } else {
+                        # A byte that is printable but never a lowercase hex digit.
+                        var nonhex = "ghijklmnopqrstuvwxyzGHIJKLMNOPQRSTUVWXYZ!@#$%*+/:;<=>?|~ ";
+                        store8(m + p, load8(nonhex + fz_rand_below(strlen(nonhex))));
+                    }
+                } elif (op == 1) {
+                    # (14) Too short.
+                    store8(m + fz_rand_below(36), 0);
+                } elif (op == 2) {
+                    # (14) Too long — rebuild with extra trailing bytes.
+                    var extra = fz_rand_range(1, 8);
+                    var longer = alloc(36 + extra + 1);
+                    if (longer != 0) {
+                        memcpy(longer, m, 36);
+                        var k = 0;
+                        while (k < extra) {
+                            var hexd = "0123456789abcdef";
+                            store8(longer + 36 + k, load8(hexd + fz_rand_below(16)));
+                            k = k + 1;
+                        }
+                        store8(longer + 36 + extra, 0);
+                        m = longer;
+                    }
+                } else {
+                    # (13) Delete a hyphen by shifting the tail left: right length class broken,
+                    # right character classes intact -- the mistake a hand-written formatter makes.
+                    var hp = 8;
+                    var w = fz_rand_below(4);
+                    if (w == 1) { hp = 13; } elif (w == 2) { hp = 18; } elif (w == 3) { hp = 23; }
+                    var q = hp;
+                    while (q < 36) {
+                        store8(m + q, load8(m + q + 1));
+                        q = q + 1;
+                    }
+                    store8(m + 35, 0);
+                }
+                var mhi, mlo = uuid_parse(m);
+                fz_check(uuid_parse_ok(mhi, mlo) == 0, "malformed uuid text is rejected", m);
+            }
+        }
+        i = i + 1;
+    }
+    # Fixed malformed cases worth pinning by name.
+    var e1, e2 = uuid_parse("");
+    fz_check(uuid_parse_ok(e1, e2) == 0, "empty string rejected", "");
+    var g1, g2 = uuid_parse("not-a-uuid");
+    fz_check(uuid_parse_ok(g1, g2) == 0, "short garbage rejected", "not-a-uuid");
+    var n1, n2 = uuid_parse("00000000000000000000000000000000");
+    fz_check(uuid_parse_ok(n1, n2) == 0, "32 hex chars without hyphens rejected", 0);
+    var t1, t2 = uuid_parse("00000000-0000-0000-0000-00000000000g");
+    fz_check(uuid_parse_ok(t1, t2) == 0, "trailing non-hex rejected", 0);
+    # The nil UUID in canonical form IS valid and must parse to (0, 0).
+    var nhi, nlo = uuid_parse("00000000-0000-0000-0000-000000000000");
+    fz_check((nhi == 0) && (nlo == 0), "canonical nil UUID parses to (0,0)", 0);
+    return 0;
+}
+
+# --- 11/12: uuid_generate -------------------------------------------------------------------
+fn fz_uuid_generate() {
+    fz_group("uuid: generate stamps RFC 4122 v4 and never repeats");
+    var seen = map_new();
+    var i = 0;
+    while (i < 2000) {
+        var hi, lo = uuid_generate();
+        var s = uuid_to_cstr(hi, lo);
+        if (s != 0) {
+            # (11) Byte 6 high nibble == 4 (version), byte 8 top two bits == 10 (variant). In
+            # the canonical text these are the chars at index 14 and 19.
+            fz_check(load8(s + 14) == 52, "version nibble is '4'", s);
+            var vc = load8(s + 19);
+            fz_check((vc == 56) || (vc == 57) || (vc == 97) || (vc == 98),
+                "variant nibble is 8/9/a/b", s);
+            # The round-trip must hold for generated values too.
+            var phi, plo = uuid_parse(s);
+            fz_check((phi == hi) && (plo == lo), "generated uuid round-trips", s);
+            # (12) 122 random bits — a repeat inside 2000 draws means the CSPRNG fill failed
+            # (uuid_generate falls back to zeroed bytes on a getrandom error, which this catches).
+            if (map_has(seen, s) == 1) {
+                fz_check(0, "uuid_generate produced a duplicate", s);
+            } else {
+                map_set(seen, s, 1);
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    fz_seed(FZ_SEED);
+    fz_begin("hash_uuid", FZ_SEED);
+    fz_md5_vectors();
+    fz_md5_random();
+    fz_md5_length_honesty();
+    fz_md5_block_edges();
+    fz_uuid_roundtrip();
+    fz_uuid_malformed();
+    fz_uuid_generate();
+    return fz_summary();
+}
+
+var rc = main();
+syscall(60, rc);

@@ -1,0 +1,535 @@
+# flow_validate.fcyr — property harness for src/flow.cyr: flow_validate (DAG cycle detection,
+# mode rules, trigger rules) and the FlowDef JSON round-trip.
+#
+#   cyrius build --strict --no-deps fuzz/flow_validate.fcyr build/fuzz_flow_validate && ./build/fuzz_flow_validate
+#
+# flow_validate is the gate every workflow passes through before it executes, and its core is a
+# hand-ported three-colour DFS over depends_on edges keyed by 36-char UUID strings. A DFS cycle
+# check is exactly the kind of code that works on the shapes someone thought to write a test for
+# (a<->b, a diamond) and fails on the shapes nobody did — a self-loop, a back edge into the
+# middle of a chain, two disjoint components where only the second one cycles.
+#
+# So the central property here is DIFFERENTIAL: this harness contains its own cycle detector,
+# a Kahn peel-off written from a different algorithm (iterative removal of nodes with no
+# unresolved dependencies, no recursion, no hashing, indices instead of UUID keys). For any
+# random graph, flow_validate must agree with it. Two independent implementations disagreeing
+# is a real bug in one of them; both being wrong the same way is far less likely than one being
+# wrong alone.
+#
+# Properties:
+#   1. differential cycles   is_ok(flow_validate) == acyclic(Kahn)     on random graphs
+#   2. cycle error shape     a cycle is Err(SZAL_ERR_CYCLE) with the FLOW NAME as the detail
+#   3. determinism           validating the same flow twice agrees
+#   4. acyclic construction  a graph with only descending edges always validates
+#   5. back-edge injection   closing a chain into a ring always yields SZAL_ERR_CYCLE
+#   6. self-loop             a step depending on itself is a cycle
+#   7. mode rule             deps in a non-DAG mode are Err(SZAL_ERR_FLOW_INVALID)
+#   8. unknown dep           depending on an id not in the flow is Err(SZAL_ERR_FLOW_INVALID)
+#   9. trigger rule          TriggerMode::Any with no deps is Err; with deps it is fine
+#  10. empty flow            zero steps validates in every mode
+#  11. null guard            flow_validate(0) is Err, not a crash
+#  12. hierarchical rule     depends_on at ANY sub_steps depth is Err
+#  13. json round-trip       to_json -> from_json -> to_json is byte-identical
+#  14. json preserves        name/mode/version/step count/edges survive the round-trip
+#  15. validate agrees       a round-tripped flow validates the same as the original
+#
+# Single-pass dependency order (mirrors tests/szal_core.tcyr through src/flow.cyr).
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "src/flow.cyr"
+include "fuzz/fuzz_util.cyr"
+
+enum FzFlow { FZ_SEED = 0x0F10DA65; FZ_MAX_STEPS = 12; }
+
+# ---------------------------------------------------------------------------
+# The reference cycle detector — deliberately NOT the algorithm under test
+# ---------------------------------------------------------------------------
+# flow.cyr uses a recursive three-colour DFS over hashmap-keyed UUID strings. This is an
+# iterative Kahn peel-off over integer indices: repeatedly delete any node all of whose
+# dependencies have already been deleted. If every node is eventually deleted the graph is
+# acyclic; whatever remains is inside (or reachable into) a cycle. Different traversal order,
+# different data structures, no recursion, no hashing — so the two can only agree by both being
+# right about the graph.
+#
+# The graph is passed as a flat edge list: `edges` is a vec holding 2*m entries
+# [from0, to0, from1, to1, ...] where "from depends on to". Same list is fed to the FlowDef, so
+# the two implementations see identical input.
+
+# Returns 1 if the graph on `n` nodes with edge list `edges` is acyclic, else 0.
+fn fz_kahn_acyclic(n, edges) {
+    var m = vec_len(edges) / 2;
+    var removed = alloc(n * 8);
+    var i = 0;
+    while (i < n) {
+        store64(removed + i * 8, 0);
+        i = i + 1;
+    }
+    var remaining = n;
+    var progress = 1;
+    while (progress == 1) {
+        progress = 0;
+        var node = 0;
+        while (node < n) {
+            if (load64(removed + node * 8) == 0) {
+                # Count this node's dependencies that are still present. A self-loop counts
+                # itself, so a self-looping node can never reach zero — which is the answer.
+                var pending = 0;
+                var e = 0;
+                while (e < m) {
+                    if (vec_get(edges, e * 2) == node) {
+                        var to = vec_get(edges, e * 2 + 1);
+                        if (load64(removed + to * 8) == 0) { pending = pending + 1; }
+                    }
+                    e = e + 1;
+                }
+                if (pending == 0) {
+                    store64(removed + node * 8, 1);
+                    remaining = remaining - 1;
+                    progress = 1;
+                }
+            }
+            node = node + 1;
+        }
+    }
+    if (remaining == 0) { return 1; }
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# Flow construction
+# ---------------------------------------------------------------------------
+
+# "s" + i as a cstr (no str_from_int dependency in the hot path; keeps names ASCII-simple).
+fn fz_cat_int(prefix, i) {
+    var out = alloc(24);
+    if (out == 0) { return prefix; }
+    var pl = strlen(prefix);
+    memcpy(out, prefix, pl);
+    var wrote = fmt_int_buf(i, out + pl);
+    store8(out + pl + wrote, 0);
+    return out;
+}
+
+# Build a FlowDef named `name` in `mode` with `n` fresh steps and the given edge list. Returns
+# the flow; the caller keeps `edges` to hand to the reference detector.
+fn fz_build_flow(name, mode, n, edges) {
+    var f = flow_new(str_from(name), mode);
+    var made = vec_new();
+    var i = 0;
+    while (i < n) {
+        # Names are s0..s11 — distinct, and irrelevant to validation (identity is the UUID).
+        var st = step_new(str_from(fz_cat_int("s", i)));
+        vec_push(made, st);
+        i = i + 1;
+    }
+    var m = vec_len(edges) / 2;
+    var e = 0;
+    while (e < m) {
+        var from = vec_get(made, vec_get(edges, e * 2));
+        var to = vec_get(made, vec_get(edges, e * 2 + 1));
+        step_depends_on_add(from, step_id_hi(to), step_id_lo(to));
+        e = e + 1;
+    }
+    i = 0;
+    while (i < n) {
+        flow_add_step(f, vec_get(made, i));
+        i = i + 1;
+    }
+    return f;
+}
+
+# A random edge list over `n` nodes. `allow_self` permits i -> i; when `descending_only` is 1
+# every edge points from a higher index to a lower one, which makes the graph acyclic BY
+# CONSTRUCTION (a strict order can have no cycle) — that is property 4's generator.
+fn fz_rand_edges(n, density, allow_self, descending_only) {
+    var edges = vec_new();
+    var from = 0;
+    while (from < n) {
+        var to = 0;
+        while (to < n) {
+            var permitted = 1;
+            if ((from == to) && (allow_self == 0)) { permitted = 0; }
+            if ((descending_only == 1) && (to >= from)) { permitted = 0; }
+            if ((permitted == 1) && (fz_rand_below(100) < density)) {
+                vec_push(edges, from);
+                vec_push(edges, to);
+            }
+            to = to + 1;
+        }
+        from = from + 1;
+    }
+    return edges;
+}
+
+# Validate `f` and encode the verdict as a single integer so properties can compare it:
+#   0  = Ok
+#   1  = Err(SZAL_ERR_CYCLE)
+#   2  = Err(SZAL_ERR_FLOW_INVALID)
+#   3  = Err(some other code)
+# Wrapped in a helper rather than called inline: flow_validate reaches str_builder and the szal
+# error buffer, and this toolchain miscompiles some inline cross-module call shapes (CO-01).
+fn fz_verdict(f) {
+    var r = flow_validate(f);
+    if (is_ok(r) == 1) { return 0; }
+    var c = err_code_of(r);
+    if (c == SZAL_ERR_CYCLE) { return 1; }
+    if (c == SZAL_ERR_FLOW_INVALID) { return 2; }
+    return 3;
+}
+
+# Serialize a flow (helper — flow_to_json walks bayan builders).
+fn fz_to_json(f) {
+    return flow_to_json(f);
+}
+
+# Deserialize a flow from a JSON Str (helper — flow_from_json calls bayan_json_v_parse, which
+# MUST NOT be reached inline from a large fn on this toolchain).
+fn fz_from_json(js) {
+    return flow_from_json(js);
+}
+
+# --- 1/2/3/6: random graphs vs the reference detector ----------------------------------------
+fn fz_differential() {
+    fz_group("cycles: flow_validate agrees with an independent Kahn peel-off");
+    var i = 0;
+    while (i < 2500) {
+        var n = fz_rand_range(1, FZ_MAX_STEPS);
+        # Sweep density: sparse graphs are almost always acyclic, dense ones almost never, and
+        # the interesting disagreements live in the middle. Self-loops are allowed a third of
+        # the time (property 6 — the shape a hand-written DFS most often gets wrong).
+        var density = fz_rand_range(2, 40);
+        var allow_self = 0;
+        if (fz_rand_below(3) == 0) { allow_self = 1; }
+        var edges = fz_rand_edges(n, density, allow_self, 0);
+        var name = fz_cat_int("flow", i);
+        var f = fz_build_flow(name, FLOW_DAG, n, edges);
+        var acyclic = fz_kahn_acyclic(n, edges);
+        var v = fz_verdict(f);
+        # (1) The differential property. All edges reference real steps and no trigger mode is
+        # set, so for FLOW_DAG the ONLY thing validate can object to is a cycle.
+        if (acyclic == 1) {
+            fz_check(v == 0, "an acyclic graph validates Ok", name);
+        } else {
+            fz_check(v == 1, "a cyclic graph is Err(SZAL_ERR_CYCLE)", name);
+            # (2) Rust returns CycleDetected(self.name); the port puts the flow NAME in the
+            # last-error buffer. Operators grep for that name, so it is part of the contract.
+            if (v == 1) {
+                fz_check(str_eq_cstr(szal_get_err_msg(), name) == 1,
+                    "the cycle detail is the flow name", name);
+            }
+        }
+        # (3) No hidden state between calls: the hashmaps are rebuilt per call, so a second
+        # validate must reach the same verdict.
+        fz_check(fz_verdict(f) == v, "validation is deterministic", name);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 4: acyclic by construction --------------------------------------------------------------
+# A graph whose every edge decreases the index cannot contain a cycle, whatever its density.
+# This generator produces the densest possible acyclic graphs (a full lower triangle), which is
+# where a DFS that fails to memoize `visited` blows up or falsely reports a cycle on a re-visit.
+fn fz_acyclic_by_construction() {
+    fz_group("cycles: strictly descending edges always validate");
+    var i = 0;
+    while (i < 800) {
+        var n = fz_rand_range(1, FZ_MAX_STEPS);
+        var edges = fz_rand_edges(n, fz_rand_range(30, 100), 0, 1);
+        var name = fz_cat_int("desc", i);
+        var f = fz_build_flow(name, FLOW_DAG, n, edges);
+        fz_check(fz_kahn_acyclic(n, edges) == 1, "the reference agrees it is acyclic", name);
+        fz_check(fz_verdict(f) == 0, "a descending-edge DAG validates", name);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 5: back-edge injection ------------------------------------------------------------------
+# Build a chain 0 <- 1 <- 2 <- ... <- k (step i depends on step i-1), confirm it validates, then
+# add the one edge that closes it into a ring. A cycle detector that only looks one hop deep, or
+# that resets in_stack too eagerly, passes the chain and then still passes the ring.
+fn fz_back_edge() {
+    fz_group("cycles: closing a chain into a ring is always detected");
+    var i = 0;
+    while (i < 800) {
+        var n = fz_rand_range(2, FZ_MAX_STEPS);
+        var edges = vec_new();
+        var k = 1;
+        while (k < n) {
+            vec_push(edges, k);
+            vec_push(edges, k - 1);
+            k = k + 1;
+        }
+        var name = fz_cat_int("chain", i);
+        var chain = fz_build_flow(name, FLOW_DAG, n, edges);
+        fz_check(fz_verdict(chain) == 0, "a linear chain validates", name);
+        # Close the ring: node 0 depends on the tail. Rebuild rather than mutate so the "before"
+        # verdict above is unambiguously about the open chain.
+        vec_push(edges, 0);
+        vec_push(edges, n - 1);
+        var rname = fz_cat_int("ring", i);
+        var ring = fz_build_flow(rname, FLOW_DAG, n, edges);
+        fz_check(fz_kahn_acyclic(n, edges) == 0, "the reference agrees the ring is cyclic", rname);
+        fz_check(fz_verdict(ring) == 1, "the closed ring is Err(SZAL_ERR_CYCLE)", rname);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 7/9/10/11: the non-cycle validation rules -----------------------------------------------
+fn fz_mode_and_trigger_rules() {
+    fz_group("rules: mode, trigger mode, empty flows, null guard");
+    # (11) A null flow must be a clean Err, not a segfault — engine_runner calls validate on
+    # whatever it was handed.
+    fz_check(fz_verdict(0) == 2, "flow_validate(0) is Err(SZAL_ERR_FLOW_INVALID)", 0);
+    var i = 0;
+    while (i < 800) {
+        var n = fz_rand_range(2, 8);
+        var mode = fz_rand_below(4);
+        var no_edges = vec_new();
+        # (10) An empty flow is legal in every mode.
+        var empty = fz_build_flow("empty", mode, 0, no_edges);
+        fz_check(fz_verdict(empty) == 0, "a zero-step flow validates in every mode", 0);
+        # A step set with no dependencies is legal in every mode.
+        var plain = fz_build_flow("plain", mode, n, no_edges);
+        fz_check(fz_verdict(plain) == 0, "steps without deps validate in every mode", 0);
+        # (7) The same steps with a single (acyclic) dependency: legal ONLY in dag mode.
+        var edges = vec_new();
+        vec_push(edges, 1);
+        vec_push(edges, 0);
+        var withdep = fz_build_flow("withdep", mode, n, edges);
+        if (mode == FLOW_DAG) {
+            fz_check(fz_verdict(withdep) == 0, "a dependency is legal in dag mode", 0);
+        } else {
+            fz_check(fz_verdict(withdep) == 2,
+                "a dependency outside dag mode is Err(SZAL_ERR_FLOW_INVALID)", 0);
+        }
+        # (9) TriggerMode::Any needs something to wait on. Set it on a step with NO deps: an
+        # error in every mode. Then on a step WITH deps in dag mode: fine.
+        var anyflow = flow_new(str_from("anyflow"), FLOW_DAG);
+        var a1 = step_new(str_from("a1"));
+        var a2 = step_new(str_from("a2"));
+        step_with_trigger_mode(a2, TRIGGER_ANY);
+        flow_add_step(anyflow, a1);
+        flow_add_step(anyflow, a2);
+        fz_check(fz_verdict(anyflow) == 2, "TriggerMode::Any with no deps is Err", 0);
+        var okflow = flow_new(str_from("okflow"), FLOW_DAG);
+        var b1 = step_new(str_from("b1"));
+        var b2 = step_new(str_from("b2"));
+        step_depends_on_add(b2, step_id_hi(b1), step_id_lo(b1));
+        step_with_trigger_mode(b2, TRIGGER_ANY);
+        flow_add_step(okflow, b1);
+        flow_add_step(okflow, b2);
+        fz_check(fz_verdict(okflow) == 0, "TriggerMode::Any with a dep validates", 0);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 8: dependencies on steps that are not in the flow ---------------------------------------
+# A dangling dependency is what a hand-edited or partially-migrated flow definition looks like.
+# The dangling id has no outgoing edges, so it cannot create a cycle — the cycle pass must let
+# it through and the existence pass must catch it.
+fn fz_unknown_dep() {
+    fz_group("rules: a dependency on an absent step is rejected");
+    var i = 0;
+    while (i < 800) {
+        var n = fz_rand_range(1, 8);
+        var edges = fz_rand_edges(n, 15, 0, 1);
+        var name = fz_cat_int("dangle", i);
+        var f = fz_build_flow(name, FLOW_DAG, n, edges);
+        # Sanity: the base graph is acyclic, so any Err below is attributable to the dangling id.
+        fz_check(fz_verdict(f) == 0, "the base flow validates", name);
+        # Point a random step at a UUID that is not in the flow.
+        var victim = flow_step_at(f, fz_rand_below(n));
+        var ghi, glo = uuid_generate();
+        step_depends_on_add(victim, ghi, glo);
+        var v = fz_verdict(f);
+        fz_check(v == 2, "an unknown dependency is Err(SZAL_ERR_FLOW_INVALID)", name);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 12: hierarchical nesting ----------------------------------------------------------------
+# Hierarchical mode expresses structure through sub_steps and forbids depends_on at EVERY depth.
+# The recursion is the interesting part: a check that only inspects top-level steps passes a
+# flow whose violation is two levels down.
+fn fz_hierarchical() {
+    fz_group("rules: depends_on is rejected at any sub_steps depth");
+    var i = 0;
+    while (i < 600) {
+        # Build a chain of nesting: root -> child -> grandchild, `depth` levels deep.
+        var depth = fz_rand_range(1, 4);
+        var root = step_new(str_from("root"));
+        var leaves = vec_new();
+        vec_push(leaves, root);
+        var cur = root;
+        var d = 1;
+        while (d < depth) {
+            var child = step_new(str_from(fz_cat_int("lvl", d)));
+            step_with_sub_step(cur, child);
+            vec_push(leaves, child);
+            cur = child;
+            d = d + 1;
+        }
+        var f = flow_new(str_from("nest"), FLOW_HIERARCHICAL);
+        flow_add_step(f, root);
+        # Clean nesting validates.
+        fz_check(fz_verdict(f) == 0, "pure sub_steps nesting validates", 0);
+        # Now put a depends_on on ONE randomly chosen node in the chain — including the deepest.
+        # Whichever level it lands on, validation must reject it.
+        var target = vec_get(leaves, fz_rand_below(vec_len(leaves)));
+        var other = step_new(str_from("other"));
+        step_depends_on_add(target, step_id_hi(other), step_id_lo(other));
+        var v = fz_verdict(f);
+        fz_check(v == 2, "depends_on inside a hierarchical flow is Err", 0);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 13/14/15: the JSON round-trip -----------------------------------------------------------
+# ExecutionRecords and flow definitions live on disk as JSON, so to_json/from_json is a
+# durability boundary: anything it drops is data loss on reload. Byte-identical re-serialization
+# is the strongest cheap statement of that — it forces every field, including the ones no test
+# reads back explicitly, to survive.
+fn fz_json_roundtrip() {
+    fz_group("json: to_json -> from_json -> to_json is byte-identical");
+    var i = 0;
+    while (i < 700) {
+        var n = fz_rand_range(1, 6);
+        var mode = fz_rand_below(4);
+        var descending = 1;
+        var edges = vec_new();
+        if (mode == FLOW_DAG) { edges = fz_rand_edges(n, 25, 0, descending); }
+        var name = fz_cat_int("rt", i);
+        var f = fz_build_flow(name, mode, n, edges);
+        # Populate the optional fields too — a round-trip that only ever sees defaults proves
+        # nothing about them. version/timeout/rollback are exactly the fields serde defaults
+        # would silently paper over.
+        flow_with_version(f, fz_rand_range(1, 9));
+        if (fz_rand_below(2) == 1) { flow_with_rollback(f); }
+        if (fz_rand_below(2) == 1) { flow_with_timeout(f, fz_rand_range(1, 600000)); }
+        var js1 = fz_to_json(f);
+        if (fz_check(js1 != 0, "flow_to_json returns a Str", name) == 1) {
+            var back = fz_from_json(js1);
+            if (fz_check(back != 0, "flow_from_json accepts our own output", name) == 1) {
+                # (14) The fields a caller reads directly.
+                fz_check(str_eq(flow_name(back), flow_name(f)) == 1, "name survives", name);
+                fz_check(flow_mode(back) == flow_mode(f), "mode survives", name);
+                fz_check(flow_version(back) == flow_version(f), "version survives", name);
+                fz_check(flow_steps_len(back) == flow_steps_len(f), "step count survives", name);
+                fz_check(flow_rollback_on_failure(back) == flow_rollback_on_failure(f),
+                    "rollback flag survives", name);
+                fz_check(flow_timeout_present(back) == flow_timeout_present(f),
+                    "timeout presence survives", name);
+                if (flow_timeout_present(f) == 1) {
+                    fz_check(flow_timeout_ms(back) == flow_timeout_ms(f), "timeout survives", name);
+                }
+                fz_check(flow_id_hi(back) == flow_id_hi(f), "flow id hi survives", name);
+                fz_check(flow_id_lo(back) == flow_id_lo(f), "flow id lo survives", name);
+                # Per-step identity AND the dependency edges — the edges are the part that has
+                # to route through uuid text, so they are the most fragile.
+                var k = 0;
+                while (k < flow_steps_len(f)) {
+                    var s1 = flow_step_at(f, k);
+                    var s2 = flow_step_at(back, k);
+                    fz_check(str_eq(step_name(s2), step_name(s1)) == 1, "step name survives", name);
+                    fz_check(step_id_hi(s2) == step_id_hi(s1), "step id hi survives", name);
+                    fz_check(step_id_lo(s2) == step_id_lo(s1), "step id lo survives", name);
+                    fz_check(step_depends_on_len(s2) == step_depends_on_len(s1),
+                        "dependency count survives", name);
+                    var j = 0;
+                    while (j < step_depends_on_len(s1)) {
+                        fz_check(step_depends_on_hi(s2, j) == step_depends_on_hi(s1, j),
+                            "dependency id hi survives", name);
+                        fz_check(step_depends_on_lo(s2, j) == step_depends_on_lo(s1, j),
+                            "dependency id lo survives", name);
+                        j = j + 1;
+                    }
+                    k = k + 1;
+                }
+                # (13) Byte-identical re-serialization: covers every field at once, including
+                # any this harness forgot to name.
+                var js2 = fz_to_json(back);
+                fz_check_str(str_eq(js1, js2) == 1, "re-serialization is byte-identical", js1);
+                # (15) And the round-tripped flow must reach the same validation verdict.
+                fz_check(fz_verdict(back) == fz_verdict(f),
+                    "a round-tripped flow validates the same", name);
+            }
+        }
+        i = i + 1;
+    }
+    # A cyclic flow must still round-trip: serialization does not get to silently "fix" it, and
+    # the reloaded copy must be rejected for the same reason.
+    var cyc_edges = vec_new();
+    vec_push(cyc_edges, 0);
+    vec_push(cyc_edges, 1);
+    vec_push(cyc_edges, 1);
+    vec_push(cyc_edges, 0);
+    var cyc = fz_build_flow("cyclic", FLOW_DAG, 2, cyc_edges);
+    fz_check(fz_verdict(cyc) == 1, "the cyclic fixture is Err(SZAL_ERR_CYCLE)", "cyclic");
+    var cjs = fz_to_json(cyc);
+    var cback = fz_from_json(cjs);
+    if (fz_check(cback != 0, "a cyclic flow round-trips", "cyclic") == 1) {
+        fz_check(fz_verdict(cback) == 1, "the reloaded cyclic flow is still Err(SZAL_ERR_CYCLE)",
+            "cyclic");
+    }
+    # UNPARSEABLE JSON must return 0, not a partially-built flow.
+    fz_check(fz_from_json(str_from("")) == 0, "empty JSON is rejected", "");
+    fz_check(fz_from_json(str_from("{")) == 0, "truncated JSON is rejected", "{");
+    fz_check(fz_from_json(str_from("[1,2")) == 0, "truncated array is rejected", "[1,2");
+    fz_check(fz_from_json(str_from("nope")) == 0, "non-JSON text is rejected", "nope");
+    # PARSEABLE JSON of the wrong shape does NOT fail — it deserializes with serde-default
+    # semantics for every field. That is the accepted port-wide divergence in
+    # docs/development/parity-notes.md §3 (Rust serde would error with "invalid type: sequence,
+    # expected struct FlowDef"). Asserted here rather than omitted so the divergence is pinned:
+    # if _flow_from_v ever starts rejecting these, this harness says so instead of some consumer
+    # discovering it at runtime.
+    var arr = fz_from_json(str_from("[1,2,3]"));
+    if (fz_check(arr != 0, "a JSON array deserializes to a default flow (parity-notes §3)",
+            "[1,2,3]") == 1) {
+        fz_check(flow_steps_len(arr) == 0, "the defaulted flow has no steps", "[1,2,3]");
+        fz_check(flow_version(arr) == flow_default_version(),
+            "the defaulted flow takes the default version", "[1,2,3]");
+        fz_check(fz_verdict(arr) == 0, "the defaulted flow is itself valid", "[1,2,3]");
+    }
+    var num = fz_from_json(str_from("42"));
+    fz_check(num != 0, "a bare JSON number also defaults (parity-notes §3)", "42");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    fz_seed(FZ_SEED);
+    fz_begin("flow_validate", FZ_SEED);
+    fz_differential();
+    fz_acyclic_by_construction();
+    fz_back_edge();
+    fz_mode_and_trigger_rules();
+    fz_unknown_dep();
+    fz_hierarchical();
+    fz_json_roundtrip();
+    return fz_summary();
+}
+
+var rc = main();
+syscall(60, rc);

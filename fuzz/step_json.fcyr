@@ -1,0 +1,482 @@
+# step_json.fcyr — property harness for src/step.cyr: the StepDef / StepResult JSON round-trip,
+# the three enum wire encodings, and the saturating retry-backoff arithmetic.
+#
+#   cyrius build --strict --no-deps fuzz/step_json.fcyr build/fuzz_step_json && ./build/fuzz_step_json
+#
+# This is the port-plan §"fuzz" `fuzz_step_deser` target. StepDef is the widest struct in szal —
+# sixteen fields, three of them optional-with-a-0-sentinel, two of them vectors, one recursive
+# (sub_steps) — and it crosses the disk boundary on every persisted ExecutionRecord. Anything
+# to_json/from_json drops is data loss on reload, and a hand-written deserializer loses fields
+# quietly: the reloaded step simply has a default where the value used to be.
+#
+# The core property is therefore ROUND-TRIP CLOSURE on randomly-populated steps, checked two ways:
+# field by field (so a failure names the field) and by byte-identical re-serialization (so a field
+# this harness forgot to name is still covered).
+#
+# Properties:
+#   1. field round-trip     every StepDef field survives to_json -> from_json
+#   2. byte-identical       to_json -> from_json -> to_json is byte-identical
+#   3. recursive nesting    sub_steps survive at depth, with their own fields intact
+#   4. dependency edges     depends_on ids survive in order (they route through UUID text)
+#   5. optional discipline  an absent optional stays absent; a present one keeps its value
+#   6. result round-trip    StepResult (incl. its json_v output + optional error) round-trips
+#   7. enum wire forms      backoff / trigger / status names round-trip over the whole enum
+#   8. status two forms     the Display and serde spellings stay distinct
+#   9. enum leniency        an unknown enum name defaults, per serde #[default] parity
+#  10. reject unparseable   malformed JSON returns 0, not a half-built step
+#  11. lenient shapes       parseable JSON of the wrong type defaults (parity-notes §3)
+#  12. backoff saturation   delay is never negative and never wraps, at any attempt
+#  13. backoff monotonic    linear/exponential are non-decreasing in attempt; fixed is constant
+#  14. mutation robustness  a corrupted step JSON never crashes the deserializer
+#
+# Single-pass dependency order (mirrors tests/szal_core.tcyr through src/step.cyr).
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+include "fuzz/fuzz_util.cyr"
+
+enum FzStep {
+    FZ_SEED = 0x57E9704E;
+    FZ_NBACKOFF = 3;
+    FZ_NTRIGGER = 2;
+    FZ_NSTATUS = 6;
+}
+
+# --- helpers routed through one-line fns -----------------------------------------------------
+# step_from_json / step_result_from_json reach bayan_json_v_parse, which must not be called
+# inline from a larger fn on this toolchain (the documented stale-parser-globals hazard).
+fn fz_step_parse(js) { return step_from_json(js); }
+fn fz_result_parse(js) { return step_result_from_json(js); }
+fn fz_step_ser(s) { return step_to_json(s); }
+fn fz_result_ser(r) { return step_result_to_json(r); }
+
+# "<prefix><n>" as a cstr.
+fn fz_name(prefix, n) {
+    var out = alloc(32);
+    if (out == 0) { return prefix; }
+    var pl = strlen(prefix);
+    memcpy(out, prefix, pl);
+    var wrote = fmt_int_buf(n, out + pl);
+    store8(out + pl + wrote, 0);
+    return out;
+}
+
+# A randomly-populated StepDef. `depth` bounds sub_steps recursion. Each optional field is
+# present about half the time, so the sample covers both the Some and None arms of every one —
+# a generator that always populated them would never test that absence round-trips as absence.
+fn fz_rand_step(depth, tag) {
+    var s = step_new(str_from(fz_name("step", tag)));
+    step_with_timeout(s, fz_rand_range(0, 600000));
+    step_with_retries(s, fz_rand_below(6), fz_rand_range(0, 5000));
+    step_with_backoff(s, fz_rand_below(FZ_NBACKOFF));
+    if (fz_rand_below(2) == 1) { step_with_rollback(s); }
+    if (fz_rand_below(2) == 1) { step_with_step_type(s, str_from("shell")); }
+    if (fz_rand_below(2) == 1) {
+        step_with_condition(s, str_from("steps.build.status == 'completed'"));
+    }
+    if (fz_rand_below(2) == 1) { step_with_trigger_mode(s, TRIGGER_ANY); }
+    # Dependencies: random ids, so the round-trip has to carry them through 36-char UUID text.
+    var ndeps = fz_rand_below(4);
+    var d = 0;
+    while (d < ndeps) {
+        var hi, lo = uuid_generate();
+        step_depends_on_add(s, hi, lo);
+        d = d + 1;
+    }
+    # Recursive nesting — the field a non-recursive deserializer silently truncates.
+    if (depth > 0) {
+        var nsub = fz_rand_below(3);
+        var k = 0;
+        while (k < nsub) {
+            step_with_sub_step(s, fz_rand_step(depth - 1, tag * 10 + k + 1));
+            k = k + 1;
+        }
+    }
+    return s;
+}
+
+# Compare two StepDefs field by field, recursing into sub_steps. `label` names the side being
+# checked so a violation says which nesting level failed. Returns 1 when they match.
+fn fz_steps_equal(a, b, label) {
+    var ok = 1;
+    if (fz_check(step_id_hi(b) == step_id_hi(a), "step id hi survives", label) == 0) { ok = 0; }
+    if (fz_check(step_id_lo(b) == step_id_lo(a), "step id lo survives", label) == 0) { ok = 0; }
+    if (fz_check(str_eq(step_name(b), step_name(a)) == 1, "name survives", label) == 0) { ok = 0; }
+    if (fz_check(str_eq(step_description(b), step_description(a)) == 1,
+        "description survives", label) == 0) { ok = 0; }
+    if (fz_check(step_timeout_ms(b) == step_timeout_ms(a), "timeout_ms survives", label) == 0) { ok = 0; }
+    if (fz_check(step_max_retries(b) == step_max_retries(a),
+        "max_retries survives", label) == 0) { ok = 0; }
+    if (fz_check(step_retry_delay_ms(b) == step_retry_delay_ms(a),
+        "retry_delay_ms survives", label) == 0) { ok = 0; }
+    if (fz_check(step_backoff(b) == step_backoff(a), "backoff survives", label) == 0) { ok = 0; }
+    if (fz_check(step_rollbackable(b) == step_rollbackable(a),
+        "rollbackable survives", label) == 0) { ok = 0; }
+    if (fz_check(step_trigger_mode(b) == step_trigger_mode(a),
+        "trigger_mode survives", label) == 0) { ok = 0; }
+    if (fz_check(step_hardware(b) == step_hardware(a), "hardware survives", label) == 0) { ok = 0; }
+    # (5) Optionals: 0 is the None sentinel. Presence must round-trip as presence and absence as
+    # absence — a deserializer that materializes an empty Str for a missing field passes a
+    # value comparison but breaks this one.
+    var st_a = step_step_type(a);
+    var st_b = step_step_type(b);
+    if (st_a == 0) {
+        if (fz_check(st_b == 0, "an absent step_type stays absent", label) == 0) { ok = 0; }
+    } else {
+        if (fz_check(st_b != 0, "a present step_type stays present", label) == 0) { ok = 0; }
+        if (st_b != 0) {
+            if (fz_check(str_eq(st_b, st_a) == 1, "step_type value survives", label) == 0) { ok = 0; }
+        }
+    }
+    var cd_a = step_condition(a);
+    var cd_b = step_condition(b);
+    if (cd_a == 0) {
+        if (fz_check(cd_b == 0, "an absent condition stays absent", label) == 0) { ok = 0; }
+    } else {
+        if (fz_check(cd_b != 0, "a present condition stays present", label) == 0) { ok = 0; }
+        if (cd_b != 0) {
+            if (fz_check(str_eq(cd_b, cd_a) == 1, "condition value survives", label) == 0) { ok = 0; }
+        }
+    }
+    # (4) Dependency ids, in order.
+    var nd = step_depends_on_len(a);
+    if (fz_check(step_depends_on_len(b) == nd, "dependency count survives", label) == 0) { ok = 0; }
+    if (step_depends_on_len(b) == nd) {
+        var i = 0;
+        while (i < nd) {
+            if (fz_check(step_depends_on_hi(b, i) == step_depends_on_hi(a, i),
+                "dependency id hi survives in order", label) == 0) { ok = 0; }
+            if (fz_check(step_depends_on_lo(b, i) == step_depends_on_lo(a, i),
+                "dependency id lo survives in order", label) == 0) { ok = 0; }
+            i = i + 1;
+        }
+    }
+    # (3) sub_steps, recursively.
+    var ns = step_sub_steps_len(a);
+    if (fz_check(step_sub_steps_len(b) == ns, "sub_step count survives", label) == 0) { ok = 0; }
+    if (step_sub_steps_len(b) == ns) {
+        var j = 0;
+        while (j < ns) {
+            if (fz_steps_equal(step_sub_step_at(a, j), step_sub_step_at(b, j), label) == 0) {
+                ok = 0;
+            }
+            j = j + 1;
+        }
+    }
+    return ok;
+}
+
+# --- 1/2/3/4/5: the StepDef round-trip -------------------------------------------------------
+fn fz_step_roundtrip() {
+    fz_group("StepDef: to_json -> from_json preserves every field, at every depth");
+    var i = 0;
+    while (i < 1200) {
+        var s = fz_rand_step(fz_rand_below(3), i);
+        var js1 = fz_step_ser(s);
+        if (fz_check(js1 != 0, "step_to_json returns a Str", 0) == 1) {
+            if (fz_check(str_len(js1) > 0, "step JSON is non-empty", 0) == 1) {
+                var back = fz_step_parse(js1);
+                if (fz_check(back != 0, "step_from_json accepts our own output", 0) == 1) {
+                    fz_steps_equal(s, back, "roundtrip");
+                    # (2) Byte-identical re-serialization. Covers the fields above AND any field
+                    # this harness has no accessor for.
+                    var js2 = fz_step_ser(back);
+                    fz_check_str(str_eq(js1, js2) == 1, "step re-serialization is byte-identical",
+                        js1);
+                    # A second round-trip must be a fixed point too — if the first pass silently
+                    # normalized something, the second would drift again.
+                    var back2 = fz_step_parse(js2);
+                    if (back2 != 0) {
+                        fz_check_str(str_eq(fz_step_ser(back2), js1) == 1,
+                            "the round-trip is a fixed point", js1);
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 6: the StepResult round-trip -----------------------------------------------------------
+# StepResult carries a json_v `output` of arbitrary shape plus an optional error message, so it
+# exercises a different part of the serializer than StepDef does.
+fn fz_result_roundtrip() {
+    fz_group("StepResult: round-trip including the json_v output and optional error");
+    var i = 0;
+    while (i < 1200) {
+        var hi, lo = uuid_generate();
+        var status = fz_rand_below(FZ_NSTATUS);
+        # Vary the output across every json_v shape the field can hold.
+        var out = bayan_json_v_null();
+        var pick = fz_rand_below(6);
+        if (pick == 1) { out = bayan_json_v_int_new(fz_rand_range(0 - 1000, 1000)); }
+        elif (pick == 2) { out = bayan_json_v_bool_new(fz_rand_below(2)); }
+        elif (pick == 3) { out = bayan_json_v_str_new(str_from(fz_name("out", i))); }
+        elif (pick == 4) {
+            var o = bayan_json_v_obj_new();
+            bayan_json_v_obj_set(o, str_from("artifact"), bayan_json_v_str_new(str_from("a.tar")));
+            bayan_json_v_obj_set(o, str_from("count"), bayan_json_v_int_new(fz_rand_below(100)));
+            out = o;
+        } elif (pick == 5) {
+            var arr = bayan_json_v_arr_new();
+            bayan_json_v_arr_push(arr, bayan_json_v_int_new(1));
+            bayan_json_v_arr_push(arr, bayan_json_v_str_new(str_from("two")));
+            out = arr;
+        }
+        var r = step_result_new(hi, lo, status, out, fz_rand_range(0, 100000),
+            fz_rand_range(1, 5));
+        var has_err = fz_rand_below(2);
+        if (has_err == 1) { step_result_set_error(r, str_from("assertion failed")); }
+        var js1 = fz_result_ser(r);
+        if (fz_check(js1 != 0, "step_result_to_json returns a Str", 0) == 1) {
+            var back = fz_result_parse(js1);
+            if (fz_check(back != 0, "step_result_from_json accepts our own output", 0) == 1) {
+                fz_check(step_result_id_hi(back) == hi, "result id hi survives", 0);
+                fz_check(step_result_id_lo(back) == lo, "result id lo survives", 0);
+                fz_check(step_result_status(back) == status, "result status survives", 0);
+                fz_check(step_result_duration_ms(back) == step_result_duration_ms(r),
+                    "result duration survives", 0);
+                fz_check(step_result_attempts(back) == step_result_attempts(r),
+                    "result attempts survives", 0);
+                # The optional error: absent must stay absent.
+                if (has_err == 1) {
+                    fz_check(step_result_error(back) != 0, "a present error stays present", 0);
+                } else {
+                    fz_check(step_result_error(back) == 0, "an absent error stays absent", 0);
+                }
+                var js2 = fz_result_ser(back);
+                fz_check_str(str_eq(js1, js2) == 1,
+                    "result re-serialization is byte-identical", js1);
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 7/8/9: the three enum wire encodings ----------------------------------------------------
+# All three are exhaustive — the enums are closed and tiny, so there is no reason to sample.
+fn fz_enum_wire_forms() {
+    fz_group("enums: wire names round-trip, and unknown names default");
+    var b = 0;
+    while (b < FZ_NBACKOFF) {
+        var nm = step_backoff_name(b);
+        fz_check(step_backoff_from_name(str_from(nm)) == b, "backoff name round-trips", nm);
+        b = b + 1;
+    }
+    var t = 0;
+    while (t < FZ_NTRIGGER) {
+        var tn = step_trigger_name(t);
+        fz_check(step_trigger_from_name(str_from(tn)) == t, "trigger name round-trips", tn);
+        t = t + 1;
+    }
+    var s = 0;
+    while (s < FZ_NSTATUS) {
+        var sn = step_status_serde_name(s);
+        fz_check(step_status_from_name(str_from(sn)) == s, "status serde name round-trips", sn);
+        # (8) The Display form is snake_case and the serde form is PascalCase, and step_from_json
+        # only accepts the serde form. Note the difference from state.cyr: state_from_json signals
+        # an unrecognized name with a (0 - 1) sentinel, whereas step_status_from_name DEFAULTS to
+        # Pending (serde #[default] parity). So the precise statement is not "it must not parse"
+        # but "it must fall through to the default" — for STATUS_PENDING the two coincide, and
+        # writing it as `!= s` would make the property trivially false for that one state.
+        var dn = step_status_display(s);
+        fz_check(streq(dn, sn) == 0, "the Display and serde spellings differ", dn);
+        fz_check(step_status_from_name(str_from(dn)) == STATUS_PENDING,
+            "a Display spelling is not a serde name, so it falls through to the default", dn);
+        # Both spellings must be non-empty and distinct across states.
+        var s2 = s + 1;
+        while (s2 < FZ_NSTATUS) {
+            fz_check(streq(step_status_serde_name(s), step_status_serde_name(s2)) == 0,
+                "serde status spellings are pairwise distinct", sn);
+            fz_check(streq(step_status_display(s), step_status_display(s2)) == 0,
+                "Display status spellings are pairwise distinct", dn);
+            s2 = s2 + 1;
+        }
+        s = s + 1;
+    }
+    # (9) Unknown enum names default rather than erroring — serde #[default] parity, and the
+    # reason a slightly-stale persisted record still loads.
+    var i = 0;
+    while (i < 800) {
+        var junk = fz_rand_from(fz_rand_below(12), "abcdefFixedLinarExpontlAyNRodBck_ ");
+        if (junk != 0) {
+            var bv = step_backoff_from_name(str_from(junk));
+            fz_check((bv >= 0) && (bv < FZ_NBACKOFF), "backoff parse stays in range", junk);
+            if (streq(junk, "Linear") == 0) {
+                if (streq(junk, "Exponential") == 0) {
+                    fz_check(bv == BACKOFF_FIXED, "an unknown backoff name defaults to Fixed",
+                        junk);
+                }
+            }
+            var tv = step_trigger_from_name(str_from(junk));
+            fz_check((tv >= 0) && (tv < FZ_NTRIGGER), "trigger parse stays in range", junk);
+            if (streq(junk, "Any") == 0) {
+                fz_check(tv == TRIGGER_ALL, "an unknown trigger name defaults to All", junk);
+            }
+            var sv = step_status_from_name(str_from(junk));
+            fz_check((sv >= 0) && (sv < FZ_NSTATUS), "status parse stays in range", junk);
+        }
+        i = i + 1;
+    }
+    # A 0 (None) name must take the default, not dereference.
+    fz_check(step_backoff_from_name(0) == BACKOFF_FIXED, "a null backoff name defaults", 0);
+    fz_check(step_trigger_from_name(0) == TRIGGER_ALL, "a null trigger name defaults", 0);
+    return 0;
+}
+
+# --- 10/11/14: malformed and hostile JSON ----------------------------------------------------
+fn fz_malformed_json() {
+    fz_group("deserializer: unparseable JSON is rejected, corrupt JSON never crashes");
+    # (10) Unparseable input must return 0.
+    fz_check(fz_step_parse(str_from("")) == 0, "empty JSON is rejected", "");
+    fz_check(fz_step_parse(str_from("{")) == 0, "truncated object is rejected", "{");
+    fz_check(fz_step_parse(str_from("{\"name\":")) == 0, "dangling key is rejected", 0);
+    fz_check(fz_step_parse(str_from("garbage")) == 0, "non-JSON text is rejected", "garbage");
+    fz_check(fz_result_parse(str_from("")) == 0, "empty result JSON is rejected", "");
+    fz_check(fz_result_parse(str_from("{{{")) == 0, "malformed result JSON is rejected", "{{{");
+    # (11) Parseable JSON of the wrong shape defaults instead of failing — the accepted port-wide
+    # divergence in docs/development/parity-notes.md §3. Pinned here so a change is visible.
+    var arr = fz_step_parse(str_from("[1,2,3]"));
+    if (fz_check(arr != 0, "a JSON array deserializes to a default step (parity-notes §3)",
+            "[1,2,3]") == 1) {
+        fz_check(step_backoff(arr) == BACKOFF_FIXED, "the defaulted step takes the default backoff",
+            0);
+        fz_check(step_trigger_mode(arr) == TRIGGER_ALL, "the defaulted step takes trigger All", 0);
+        fz_check(step_depends_on_len(arr) == 0, "the defaulted step has no dependencies", 0);
+        # A missing/malformed id yields a FRESHLY GENERATED one, so the port always carries a
+        # valid StepId (parity-notes §3 again) — it must not be the parse sentinel.
+        fz_check(uuid_parse_ok(step_id_hi(arr), step_id_lo(arr)) == 1,
+            "the defaulted step still has a valid id", 0);
+    }
+    var empty_obj = fz_step_parse(str_from("{}"));
+    fz_check(empty_obj != 0, "an empty object deserializes to a default step", "{}");
+    # (14) Byte-level corruption of a real step JSON: whatever it produces, it must not crash and
+    # must return either 0 or a usable StepDef.
+    var i = 0;
+    while (i < 2000) {
+        var s = fz_rand_step(1, i);
+        var js = fz_step_ser(s);
+        if (js != 0) {
+            var c = fz_dup(str_cstr(js));
+            var n = strlen(c);
+            if (n > 2) {
+                var muts = fz_rand_range(1, 3);
+                var m = 0;
+                while (m < muts) {
+                    store8(c + fz_rand_below(n), fz_rand_range(1, 255));
+                    m = m + 1;
+                }
+                var out = fz_step_parse(str_from(c));
+                # Either rejected (0) or a step whose invariants still hold. The accessors below
+                # would fault on a half-built blob, which is the crash this property guards.
+                if (out != 0) {
+                    fz_check(step_depends_on_len(out) >= 0,
+                        "a step from corrupt JSON has a readable depends_on", 0);
+                    fz_check(step_sub_steps_len(out) >= 0,
+                        "a step from corrupt JSON has a readable sub_steps", 0);
+                    var bo = step_backoff(out);
+                    fz_check((bo >= 0) && (bo < FZ_NBACKOFF),
+                        "a step from corrupt JSON has an in-range backoff", 0);
+                    var tm = step_trigger_mode(out);
+                    fz_check((tm >= 0) && (tm < FZ_NTRIGGER),
+                        "a step from corrupt JSON has an in-range trigger_mode", 0);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 12/13: the saturating backoff arithmetic ------------------------------------------------
+# step_backoff_delay_ms is where a retry storm becomes a wrapped negative sleep. Rust saturates
+# at u64::MAX; the port saturates at i64::MAX (parity-notes §2). Either way the invariant that
+# matters operationally is the same: the result is never negative and never wraps.
+fn fz_backoff_math() {
+    fz_group("backoff: saturating, never negative, monotonic in attempt");
+    var i = 0;
+    while (i < 3000) {
+        var strategy = fz_rand_below(FZ_NBACKOFF);
+        # Bases spanning the ordinary range AND the region where the multiply overflows.
+        var base = 0;
+        var pick = fz_rand_below(4);
+        if (pick == 0) { base = fz_rand_range(0, 5000); }
+        elif (pick == 1) { base = fz_rand_range(0, 1000000); }
+        elif (pick == 2) { base = STEP_I64_MAX; }
+        else { base = STEP_I64_MAX / fz_rand_range(1, 1000); }
+        # Attempts spanning 0, the normal range, and past the 63-bit shift cliff.
+        var attempt = 0;
+        var apick = fz_rand_below(4);
+        if (apick == 0) { attempt = fz_rand_below(10); }
+        elif (apick == 1) { attempt = fz_rand_range(1, 64); }
+        elif (apick == 2) { attempt = fz_rand_range(60, 200); }
+        else { attempt = fz_rand_range(0, 5); }
+        var d = step_backoff_delay_ms(strategy, base, attempt);
+        # (12) The invariant that matters: never negative (a wrapped i64 would sleep forever or
+        # not at all) and never above the saturation ceiling.
+        fz_check(d >= 0, "backoff delay is never negative", 0);
+        fz_check(d <= STEP_I64_MAX, "backoff delay never exceeds the ceiling", 0);
+        if (strategy == BACKOFF_FIXED) {
+            # (13) Fixed ignores the attempt entirely.
+            fz_check(d == base, "fixed backoff is the base, whatever the attempt", 0);
+        } else {
+            # (13) Non-decreasing in attempt. Growth must never reverse — a wrapped multiply
+            # shows up here as a later attempt sleeping LESS than an earlier one.
+            var dprev = step_backoff_delay_ms(strategy, base, attempt);
+            fz_check(step_backoff_delay_ms(strategy, base, attempt) == dprev,
+                "backoff is deterministic", 0);
+            if (attempt >= 1) {
+                var dnext = step_backoff_delay_ms(strategy, base, attempt + 1);
+                fz_check(dnext >= d, "backoff is non-decreasing in attempt", 0);
+                fz_check(dnext >= 0, "the next attempt's delay is never negative", 0);
+            }
+            if (base == 0) {
+                fz_check(d == 0, "a zero base yields a zero delay", 0);
+            }
+        }
+        i = i + 1;
+    }
+    # Fixed points worth pinning by name.
+    fz_check(step_backoff_delay_ms(BACKOFF_FIXED, 1000, 5) == 1000, "fixed(1000, 5) == 1000", 0);
+    fz_check(step_backoff_delay_ms(BACKOFF_LINEAR, 1000, 3) == 3000, "linear(1000, 3) == 3000", 0);
+    fz_check(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, 1000, 1) == 1000,
+        "exponential(1000, 1) == 1000 (2^0)", 0);
+    fz_check(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, 1000, 4) == 8000,
+        "exponential(1000, 4) == 8000 (2^3)", 0);
+    fz_check(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, STEP_I64_MAX, 64) == STEP_I64_MAX,
+        "a shift past the cliff clamps to the ceiling", 0);
+    fz_check(step_backoff_delay_ms(BACKOFF_LINEAR, STEP_I64_MAX, 2) == STEP_I64_MAX,
+        "an overflowing linear multiply clamps to the ceiling", 0);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    fz_seed(FZ_SEED);
+    fz_begin("step_json", FZ_SEED);
+    fz_step_roundtrip();
+    fz_result_roundtrip();
+    fz_enum_wire_forms();
+    fz_malformed_json();
+    fz_backoff_math();
+    return fz_summary();
+}
+
+var rc = main();
+syscall(60, rc);

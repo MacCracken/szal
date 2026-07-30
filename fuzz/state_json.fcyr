@@ -1,0 +1,326 @@
+# state_json.fcyr — property harness for src/state.cyr: the WorkflowState FSM and its TWO
+# distinct text encodings.
+#
+#   cyrius build --strict --no-deps fuzz/state_json.fcyr build/fuzz_state_json && ./build/fuzz_state_json
+#
+# state.cyr is the port's smallest module and its highest-leverage correctness risk: it exposes
+# a Display (snake_case) form AND a serde (PascalCase) form, and conflating them silently breaks
+# the on-disk ExecutionRecord round-trip. The FSM half (is_terminal / valid_transition) is a
+# closed table, so it can be checked EXHAUSTIVELY rather than sampled.
+#
+# Properties:
+#   1. serde round-trip      state_from_json(state_json_name(s)) == s          (exhaustive, 0..7)
+#   2. Display round-trip    state_from_name(state_name(s)) == s               (exhaustive, 0..7)
+#   3. form separation       neither parser accepts the OTHER form's spelling  (exhaustive)
+#   4. out-of-range          any s outside 0..7 -> "Unknown"/"unknown", unparseable
+#   5. name injectivity      the 8 names are pairwise distinct in both forms   (exhaustive)
+#   6. garbage rejection     random bytes parse to the sentinel unless they ARE a valid name
+#   7. single-byte mutation  mutating a valid name yields the sentinel (unless it hits another)
+#   8. terminality           terminal states have ZERO outgoing transitions    (exhaustive)
+#   9. no self-loops         state_valid_transition(s, s) == 0                (exhaustive)
+#  10. liveness              every non-terminal state has >= 1 outgoing transition
+#  11. reachability          every state is reachable from Created (BFS in this harness)
+#  12. transition purity     valid_transition is deterministic + out-of-range safe
+#
+# Single-pass dependency order (mirrors tests/szal_core.tcyr; state.cyr is stdlib-only, so the
+# szal tail is just error.cyr + state.cyr).
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "fuzz/fuzz_util.cyr"
+
+# The closed state set. STATE_CANCELLED is 7, so 0..7 is every legal value.
+enum FzState { FZ_NSTATES = 8; FZ_SEED = 0x5A41C0DE; }
+
+# Is `name` (cstr) one of the 8 PascalCase serde spellings? The generators produce random bytes
+# that can legitimately land on a valid name, and asserting "random input must not parse" would
+# then be wrong. This lets the garbage/mutation properties be stated precisely: an input parses
+# iff it IS a valid spelling.
+fn fz_is_json_name(name) {
+    var s = 0;
+    while (s < FZ_NSTATES) {
+        if (streq(name, state_json_name(s)) == 1) { return 1; }
+        s = s + 1;
+    }
+    return 0;
+}
+
+# Is `name` (cstr) one of the 8 snake_case Display spellings?
+fn fz_is_display_name(name) {
+    var s = 0;
+    while (s < FZ_NSTATES) {
+        if (streq(name, state_name(s)) == 1) { return 1; }
+        s = s + 1;
+    }
+    return 0;
+}
+
+# Count outgoing transitions from `from` over the whole state set.
+fn fz_out_degree(from) {
+    var n = 0;
+    var to = 0;
+    while (to < FZ_NSTATES) {
+        if (state_valid_transition(from, to) == 1) { n = n + 1; }
+        to = to + 1;
+    }
+    return n;
+}
+
+# --- 1/2/3/5: the two encodings round-trip and never cross-parse -----------------------------
+fn fz_encodings() {
+    fz_group("encodings: serde and Display round-trip, and stay separate");
+    var s = 0;
+    while (s < FZ_NSTATES) {
+        var j = state_json_name(s);
+        var d = state_name(s);
+        fz_check(state_from_json(j) == s, "state_from_json(state_json_name(s)) == s", j);
+        fz_check(state_from_name(d) == s, "state_from_name(state_name(s)) == s", d);
+        # Neither name may be the out-of-range placeholder: that would mean a hole in the table.
+        fz_check(streq(j, "Unknown") == 0, "in-range state is not \"Unknown\"", j);
+        fz_check(streq(d, "unknown") == 0, "in-range state is not \"unknown\"", d);
+        # Form separation. Every Display spelling is lowercase and every serde spelling starts
+        # uppercase, so NO valid state may parse under the other form's parser. This is the
+        # property that catches the Display/serde conflation the module header warns about.
+        fz_check(state_from_json(d) == (0 - 1), "Display spelling must NOT parse as serde", d);
+        fz_check(state_from_name(j) == (0 - 1), "serde spelling must NOT parse as Display", j);
+        # Injectivity: distinct states must have distinct spellings in BOTH forms, else the
+        # round-trip above would be satisfiable by a table that maps two states to one name.
+        var t = s + 1;
+        while (t < FZ_NSTATES) {
+            fz_check(streq(state_json_name(s), state_json_name(t)) == 0,
+                "serde spellings are pairwise distinct", j);
+            fz_check(streq(state_name(s), state_name(t)) == 0,
+                "Display spellings are pairwise distinct", d);
+            t = t + 1;
+        }
+        s = s + 1;
+    }
+    return 0;
+}
+
+# --- 4: values outside the closed enum -----------------------------------------------------
+# The Rust enum is closed; the port's out-of-range guard maps anything else to "Unknown" /
+# "unknown". Those placeholders must NOT parse back, or a corrupt on-disk record would silently
+# deserialize to a real state.
+fn fz_out_of_range() {
+    fz_group("out-of-range: unknown placeholder, never parseable");
+    fz_check(streq(state_json_name(FZ_NSTATES), "Unknown") == 1, "8 -> \"Unknown\"", 0);
+    fz_check(streq(state_name(FZ_NSTATES), "unknown") == 1, "8 -> \"unknown\"", 0);
+    fz_check(state_from_json("Unknown") == (0 - 1), "\"Unknown\" does not parse", 0);
+    fz_check(state_from_name("unknown") == (0 - 1), "\"unknown\" does not parse", 0);
+    var i = 0;
+    while (i < 400) {
+        # Sample both the near-boundary values and far-out garbage, including negatives.
+        var v = 0;
+        if ((i % 2) == 0) { v = fz_rand_range(FZ_NSTATES, FZ_NSTATES + 40); }
+        else { v = 0 - fz_rand_range(1, 1000000); }
+        fz_check(streq(state_json_name(v), "Unknown") == 1, "out-of-range serde -> Unknown", 0);
+        fz_check(streq(state_name(v), "unknown") == 1, "out-of-range Display -> unknown", 0);
+        fz_check(state_is_terminal(v) == 0, "out-of-range is not terminal", 0);
+        # An out-of-range endpoint can never make a transition legal, in either position.
+        var k = 0;
+        while (k < FZ_NSTATES) {
+            fz_check(state_valid_transition(v, k) == 0, "no transition FROM out-of-range", 0);
+            fz_check(state_valid_transition(k, v) == 0, "no transition TO out-of-range", 0);
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 6: random byte strings ---------------------------------------------------------------
+# Both parsers are exact-match tables, so the precise property is: input parses iff it IS one
+# of the 8 spellings. Stated that way, the check is exact and the generator is free to (rarely)
+# produce a real name.
+fn fz_garbage_names() {
+    fz_group("garbage: an input parses iff it is exactly a valid spelling");
+    var i = 0;
+    while (i < 6000) {
+        var len = fz_rand_below(16);
+        var s = 0;
+        var pick = fz_rand_below(3);
+        if (pick == 0) {
+            # Uniform-ish printable noise.
+            s = fz_rand_bytes(len, 32, 126);
+        } elif (pick == 1) {
+            # Letters only — far more likely to brush against a real spelling, and the case
+            # mix probes the Display/serde boundary directly.
+            s = fz_rand_from(len, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_");
+        } else {
+            # Alphabet drawn from the union of the real spellings: maximum near-miss density
+            # (e.g. "Rolledback", "rolling_Back", "Cancelledd").
+            s = fz_rand_from(len, "CreatdRunigPasedomplFilRoBckanx_");
+        }
+        if (s != 0) {
+            var jr = state_from_json(s);
+            var dr = state_from_name(s);
+            if (fz_is_json_name(s) == 1) {
+                fz_check(jr >= 0, "a valid serde spelling must parse", s);
+                fz_check(streq(state_json_name(jr), s) == 1, "serde parse is self-consistent", s);
+            } else {
+                fz_check(jr == (0 - 1), "a non-spelling must NOT parse as serde", s);
+            }
+            if (fz_is_display_name(s) == 1) {
+                fz_check(dr >= 0, "a valid Display spelling must parse", s);
+                fz_check(streq(state_name(dr), s) == 1, "Display parse is self-consistent", s);
+            } else {
+                fz_check(dr == (0 - 1), "a non-spelling must NOT parse as Display", s);
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 7: single-byte mutation of a valid spelling -------------------------------------------
+# The highest-value garbage: a name that is one byte away from correct. This is what a truncated
+# write or a wrong-case serializer actually produces.
+fn fz_mutated_names() {
+    fz_group("mutation: one byte off a valid spelling");
+    var i = 0;
+    while (i < 4000) {
+        var s = fz_rand_below(FZ_NSTATES);
+        var use_json = fz_rand_below(2);
+        var orig = 0;
+        if (use_json == 1) { orig = state_json_name(s); } else { orig = state_name(s); }
+        var n = strlen(orig);
+        var m = fz_dup(orig);
+        if ((m != 0) && (n > 0)) {
+            var op = fz_rand_below(3);
+            if (op == 0) {
+                # substitute one byte
+                store8(m + fz_rand_below(n), fz_rand_range(32, 126));
+            } elif (op == 1) {
+                # truncate
+                store8(m + fz_rand_below(n), 0);
+            } else {
+                # swap two adjacent bytes (transposition — the classic typo)
+                if (n >= 2) {
+                    var p = fz_rand_below(n - 1);
+                    var a = load8(m + p);
+                    store8(m + p, load8(m + p + 1));
+                    store8(m + p + 1, a);
+                }
+            }
+            # Same exact-match property as the garbage generator. A mutation can land back on a
+            # valid spelling (a transposition that swaps two equal bytes is a no-op), so the
+            # check is "parses iff valid", not "must not parse".
+            var jr = state_from_json(m);
+            if (fz_is_json_name(m) == 1) {
+                fz_check(jr >= 0, "mutation landed on a valid serde spelling: must parse", m);
+            } else {
+                fz_check(jr == (0 - 1), "mutated spelling must NOT parse as serde", m);
+            }
+            var dr = state_from_name(m);
+            if (fz_is_display_name(m) == 1) {
+                fz_check(dr >= 0, "mutation landed on a valid Display spelling: must parse", m);
+            } else {
+                fz_check(dr == (0 - 1), "mutated spelling must NOT parse as Display", m);
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 8/9/10/12: the transition table, exhaustively ------------------------------------------
+fn fz_fsm_table() {
+    fz_group("FSM: terminality, self-loops, liveness, determinism");
+    var from = 0;
+    while (from < FZ_NSTATES) {
+        # No self-loops anywhere in the table (Rust's valid_transition has no s->s edge).
+        fz_check(state_valid_transition(from, from) == 0, "no self-loop", state_name(from));
+        if (state_is_terminal(from) == 1) {
+            # A terminal state is defined as "no outgoing transitions" — so the two functions
+            # must agree. If is_terminal ever disagreed with the edge table, a finished workflow
+            # could be restarted.
+            fz_check(fz_out_degree(from) == 0, "terminal state has no outgoing transitions",
+                state_name(from));
+        } else {
+            fz_check(fz_out_degree(from) >= 1, "non-terminal state has an outgoing transition",
+                state_name(from));
+        }
+        var to = 0;
+        while (to < FZ_NSTATES) {
+            var a = state_valid_transition(from, to);
+            # Boolean-valued (never a truthy non-1) and deterministic across calls: the whole
+            # engine branches on `== 1`, so a 2 would read as false.
+            fz_check((a == 0) || (a == 1), "valid_transition returns 0 or 1", state_name(from));
+            fz_check(state_valid_transition(from, to) == a, "valid_transition is deterministic",
+                state_name(from));
+            to = to + 1;
+        }
+        # is_terminal is likewise boolean and deterministic.
+        var t = state_is_terminal(from);
+        fz_check((t == 0) || (t == 1), "is_terminal returns 0 or 1", state_name(from));
+        fz_check(state_is_terminal(from) == t, "is_terminal is deterministic", state_name(from));
+        from = from + 1;
+    }
+    # Failed is deliberately NOT terminal (it can still roll back) — the one non-obvious entry
+    # in the table, and the one a refactor is most likely to "tidy" into terminality.
+    fz_check(state_is_terminal(STATE_FAILED) == 0, "Failed is NOT terminal", 0);
+    fz_check(state_valid_transition(STATE_FAILED, STATE_ROLLING_BACK) == 1,
+        "Failed -> RollingBack is legal", 0);
+    return 0;
+}
+
+# --- 11: every state is reachable from Created ----------------------------------------------
+# A state no execution can ever enter is dead code in the engine; a BFS over the edge table is
+# the cheap way to prove there is none. (Rust has no such test — this is a port-added invariant
+# derived from the same table.)
+fn fz_reachability() {
+    fz_group("FSM: every state is reachable from Created");
+    var seen = alloc(FZ_NSTATES * 8);
+    var i = 0;
+    while (i < FZ_NSTATES) {
+        store64(seen + i * 8, 0);
+        i = i + 1;
+    }
+    store64(seen + STATE_CREATED * 8, 1);
+    # At most NSTATES rounds of relaxation suffice to close the reachable set.
+    var round = 0;
+    while (round < FZ_NSTATES) {
+        var from = 0;
+        while (from < FZ_NSTATES) {
+            if (load64(seen + from * 8) == 1) {
+                var to = 0;
+                while (to < FZ_NSTATES) {
+                    if (state_valid_transition(from, to) == 1) { store64(seen + to * 8, 1); }
+                    to = to + 1;
+                }
+            }
+            from = from + 1;
+        }
+        round = round + 1;
+    }
+    var s = 0;
+    while (s < FZ_NSTATES) {
+        fz_check(load64(seen + s * 8) == 1, "state is reachable from Created", state_name(s));
+        s = s + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    fz_seed(FZ_SEED);
+    fz_begin("state_json", FZ_SEED);
+    fz_encodings();
+    fz_out_of_range();
+    fz_garbage_names();
+    fz_mutated_names();
+    fz_fsm_table();
+    fz_reachability();
+    return fz_summary();
+}
+
+var rc = main();
+syscall(60, rc);

@@ -1,0 +1,691 @@
+# condition_expr.fcyr — property harness for src/condition.cyr: the step-condition DSL
+# (tokenizer -> parser -> evaluator -> cache -> template renderer).
+#
+#   cyrius build --strict --no-deps fuzz/condition_expr.fcyr build/fuzz_condition_expr && ./build/fuzz_condition_expr
+#
+# condition.cyr is the one szal module that parses UNTRUSTED text: a step's `condition` field
+# comes straight out of a flow definition. It is also the module where a fuzzer earns its keep,
+# because a hand-written recursive-descent parser has three separate failure modes and each one
+# needs a different generator:
+#
+#   * garbage bytes            -> must not crash, must produce a well-formed Result
+#   * grammatically VALID text -> must ALWAYS parse (a valid sentence that fails to compile is
+#                                 a parser bug the per-module tests cannot find by hand)
+#   * valid text, wrong answer -> caught by algebraic laws, not by hardcoded expectations
+#
+# That last point is why this harness has no table of expected truth values. It uses metamorphic
+# testing: generate an expression `e`, evaluate it, then evaluate expressions DERIVED from `e`
+# whose value is forced by boolean algebra (!!e == e, De Morgan, precedence, ...). A wrong
+# answer breaks a law without the harness ever needing to know what `e` "should" be.
+#
+# Properties:
+#   1. total function        every input yields Ok or Err, never a crash, never both
+#   2. error discipline      an Err always leaves a non-empty message + SZAL_ERR_FLOW_INVALID
+#   3. valid text compiles   every grammar-generated sentence compiles Ok        (generator-driven)
+#   4. boolean result        Ok(v) always has v == 0 or v == 1
+#   5. determinism           the same expression + context always gives the same answer
+#   6. double negation       !!e == e
+#   7. paren transparency    (e) == e
+#   8. negation              !e == 1 - e
+#   9. idempotence           e && e == e   and   e || e == e
+#  10. identity/annihilator  e && true == e, e || false == e, e && false == 0, e || true == 1
+#  11. commutativity         a && b == b && a,  a || b == b || a
+#  12. associativity         (a && b) && c == a && (b && c)
+#  13. De Morgan             !(a && b) == !a || !b,  !(a || b) == !a && !b
+#  14. precedence            a || b && c == a || (b && c)   (&& binds tighter than ||)
+#  15. trim invariance       surrounding whitespace never changes the answer
+#  16. empty is true         "" / "   " compile to a vacuous true
+#  17. comparison duality    a != b == !(a == b),  a > b == b < a,  a >= b == b <= a
+#  18. order exclusivity     never both a > b and a < b
+#  19. cache agreement       cache_evaluate agrees with cond_evaluate on EVERY input, Ok or Err
+#  20. cache accounting      cache_len == the number of distinct expressions seen
+#  21. malformed rejection   truncations / juxtapositions / unbalanced parens are Err
+#  22. template fidelity     no-placeholder templates are the identity; misses render empty
+#  23. step context          cond_build_step_context exposes each result under its step name
+#
+# Single-pass dependency order (mirrors tests/szal_core.tcyr through src/condition.cyr).
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "src/error.cyr"
+include "src/state.cyr"
+include "src/uuid.cyr"
+include "src/step.cyr"
+include "src/condition.cyr"
+include "fuzz/fuzz_util.cyr"
+
+enum FzCond { FZ_SEED = 0x0C0ED171; }
+
+# ---------------------------------------------------------------------------
+# cstr helpers — the generator composes expressions as plain cstrs
+# ---------------------------------------------------------------------------
+
+# Concatenate two cstrs into a fresh NUL-terminated buffer.
+fn fz_cat(a, b) {
+    var la = strlen(a);
+    var lb = strlen(b);
+    var out = alloc(la + lb + 1);
+    if (out == 0) { return 0; }
+    memcpy(out, a, la);
+    memcpy(out + la, b, lb);
+    store8(out + la + lb, 0);
+    return out;
+}
+
+fn fz_cat3(a, b, c) { return fz_cat(fz_cat(a, b), c); }
+fn fz_cat4(a, b, c, d) { return fz_cat(fz_cat(a, b), fz_cat(c, d)); }
+fn fz_cat5(a, b, c, d, e) { return fz_cat(fz_cat3(a, b, c), fz_cat(d, e)); }
+
+# Wrap `e` in parentheses. Every composition below parenthesizes its operands so that the
+# generator's own precedence never depends on the parser's — otherwise a precedence BUG would
+# silently rewrite the expression the law is stated over, and the law would still "pass".
+fn fz_paren(e) { return fz_cat3("(", e, ")"); }
+
+# ---------------------------------------------------------------------------
+# The evaluation context
+# ---------------------------------------------------------------------------
+# Built with the bayan json_v CONSTRUCTORS rather than bayan_json_v_parse: parsing is a known
+# miscompile hazard when bayan is linked alongside the szal modules (see the project memo on
+# routing every parse through a helper), and building the tree directly removes the hazard from
+# a harness whose whole job is to be trustworthy.
+#
+# Shape mirrors what the engine actually feeds cond_evaluate — a `steps` map of step outcomes —
+# plus an `env` object that covers every json_v type the evaluator special-cases: string, int,
+# float, bool, empty string and zero (the two falsey non-null values), null, and a nested object.
+var _fz_ctx = 0;
+
+fn fz_obj_kv(o, k, v) {
+    bayan_json_v_obj_set(o, str_from(k), v);
+    return o;
+}
+
+fn fz_build_ctx() {
+    var build_out = bayan_json_v_obj_new();
+    fz_obj_kv(build_out, "artifact", bayan_json_v_str_new(str_from("build.tar.gz")));
+    fz_obj_kv(build_out, "count", bayan_json_v_int_new(3));
+
+    var s_build = bayan_json_v_obj_new();
+    fz_obj_kv(s_build, "status", bayan_json_v_str_new(str_from("completed")));
+    fz_obj_kv(s_build, "output", build_out);
+    fz_obj_kv(s_build, "error", bayan_json_v_null());
+
+    var s_test = bayan_json_v_obj_new();
+    fz_obj_kv(s_test, "status", bayan_json_v_str_new(str_from("failed")));
+    fz_obj_kv(s_test, "output", bayan_json_v_null());
+    fz_obj_kv(s_test, "error", bayan_json_v_str_new(str_from("assertion failed")));
+
+    var deploy_out = bayan_json_v_obj_new();
+    fz_obj_kv(deploy_out, "count", bayan_json_v_int_new(0));
+    var s_deploy = bayan_json_v_obj_new();
+    fz_obj_kv(s_deploy, "status", bayan_json_v_str_new(str_from("skipped")));
+    fz_obj_kv(s_deploy, "output", deploy_out);
+    fz_obj_kv(s_deploy, "error", bayan_json_v_null());
+
+    var steps = bayan_json_v_obj_new();
+    fz_obj_kv(steps, "build", s_build);
+    fz_obj_kv(steps, "test", s_test);
+    fz_obj_kv(steps, "deploy", s_deploy);
+
+    var env = bayan_json_v_obj_new();
+    fz_obj_kv(env, "name", bayan_json_v_str_new(str_from("prod")));
+    fz_obj_kv(env, "replicas", bayan_json_v_int_new(5));
+    fz_obj_kv(env, "ratio", bayan_json_v_float_new(f64_div(f64_from(5), f64_from(2))));
+    fz_obj_kv(env, "debug", bayan_json_v_bool_new(0));
+    fz_obj_kv(env, "on", bayan_json_v_bool_new(1));
+    fz_obj_kv(env, "empty", bayan_json_v_str_new(str_from("")));
+    fz_obj_kv(env, "zero", bayan_json_v_int_new(0));
+    fz_obj_kv(env, "nil", bayan_json_v_null());
+    # An ident may contain '-' (the grammar's ident is [a-zA-Z_][a-zA-Z0-9_-]*), so a key with a
+    # hyphen must resolve as ONE path segment rather than tokenizing as subtraction.
+    fz_obj_kv(env, "region-id", bayan_json_v_str_new(str_from("us-east-1")));
+
+    var root = bayan_json_v_obj_new();
+    fz_obj_kv(root, "steps", steps);
+    fz_obj_kv(root, "env", env);
+    fz_obj_kv(root, "flag", bayan_json_v_bool_new(1));
+    return root;
+}
+
+# ---------------------------------------------------------------------------
+# Terminal pools
+# ---------------------------------------------------------------------------
+# Every pool entry is grammatically valid on its own. Paths deliberately mix hits and misses:
+# a missing path resolves to JSON null (falsey) and is a perfectly legal sentence, so it belongs
+# in the "must compile" population, not the garbage one.
+enum FzPools { FZ_NPATHS = 18; FZ_NSTRS = 8; FZ_NNUMS = 9; }
+
+fn fz_path(i) {
+    if (i == 0) { return "steps.build.status"; }
+    if (i == 1) { return "steps.test.status"; }
+    if (i == 2) { return "steps.deploy.status"; }
+    if (i == 3) { return "steps.test.error"; }
+    if (i == 4) { return "steps.build.output.artifact"; }
+    if (i == 5) { return "steps.build.output.count"; }
+    if (i == 6) { return "steps.deploy.output.count"; }
+    if (i == 7) { return "env.name"; }
+    if (i == 8) { return "env.replicas"; }
+    if (i == 9) { return "env.ratio"; }
+    if (i == 10) { return "env.debug"; }
+    if (i == 11) { return "env.on"; }
+    if (i == 12) { return "env.empty"; }
+    if (i == 13) { return "env.zero"; }
+    if (i == 14) { return "env.nil"; }
+    if (i == 15) { return "env.region-id"; }
+    # misses: absent root, absent leaf, and a walk INTO a non-object (env.name is a string)
+    if (i == 16) { return "nope.not.here"; }
+    return "env.name.deeper";
+}
+
+fn fz_strlit(i) {
+    if (i == 0) { return "'completed'"; }
+    if (i == 1) { return "'failed'"; }
+    if (i == 2) { return "'skipped'"; }
+    if (i == 3) { return "'prod'"; }
+    if (i == 4) { return "''"; }
+    if (i == 5) { return "'build.tar.gz'"; }
+    if (i == 6) { return "'us-east-1'"; }
+    return "'zzz'";
+}
+
+fn fz_numlit(i) {
+    if (i == 0) { return "0"; }
+    if (i == 1) { return "1"; }
+    if (i == 2) { return "3"; }
+    if (i == 3) { return "5"; }
+    if (i == 4) { return "42"; }
+    if (i == 5) { return "0.5"; }
+    if (i == 6) { return "2.5"; }
+    if (i == 7) { return "100"; }
+    return "0.0";
+}
+
+# Random whitespace run (possibly empty) drawn from the six bytes the tokenizer treats as
+# whitespace — including the exotic VT/FF, which a hand-written is_ascii_whitespace often misses.
+fn fz_ws() {
+    var n = fz_rand_below(3);
+    if (n == 0) { return ""; }
+    return fz_rand_from(n, " \t\n\r");
+}
+
+# ---------------------------------------------------------------------------
+# Grammar-directed generator — every output is a VALID sentence
+# ---------------------------------------------------------------------------
+
+# value = path | string | number | bool | "!" value | "(" expr ")"
+fn fz_gen_value(depth) {
+    var pick = fz_rand_below(10);
+    if (pick < 3) { return fz_path(fz_rand_below(FZ_NPATHS)); }
+    if (pick < 5) { return fz_strlit(fz_rand_below(FZ_NSTRS)); }
+    if (pick < 7) { return fz_numlit(fz_rand_below(FZ_NNUMS)); }
+    if (pick == 7) {
+        if (fz_rand_below(2) == 0) { return "true"; }
+        return "false";
+    }
+    if (depth <= 0) { return fz_path(fz_rand_below(FZ_NPATHS)); }
+    if (pick == 8) { return fz_cat("!", fz_gen_value(depth - 1)); }
+    return fz_paren(fz_gen_expr(depth - 1));
+}
+
+# cmp = value (op value)?  — comparisons are the layer where cross-type incomparability lives.
+fn fz_gen_cmp(depth) {
+    var left = fz_gen_value(depth);
+    if (fz_rand_below(3) == 0) { return left; }
+    var op = fz_rand_below(6);
+    var ops = "==";
+    if (op == 1) { ops = "!="; }
+    elif (op == 2) { ops = ">"; }
+    elif (op == 3) { ops = ">="; }
+    elif (op == 4) { ops = "<"; }
+    elif (op == 5) { ops = "<="; }
+    var right = fz_gen_value(depth);
+    return fz_cat5(left, fz_ws(), ops, fz_ws(), right);
+}
+
+# expr = cmp (("&&" | "||") cmp)*
+fn fz_gen_expr(depth) {
+    var acc = fz_gen_cmp(depth);
+    var extra = fz_rand_below(3);
+    var i = 0;
+    while (i < extra) {
+        var ops = " && ";
+        if (fz_rand_below(2) == 0) { ops = " || "; }
+        acc = fz_cat3(acc, ops, fz_gen_cmp(depth));
+        i = i + 1;
+    }
+    return acc;
+}
+
+# ---------------------------------------------------------------------------
+# Evaluation plumbing
+# ---------------------------------------------------------------------------
+# Every evaluation goes through these two helpers rather than calling cond_evaluate inline. That
+# is a hard requirement, not a style choice: with lib/bayan.cyr linked alongside the szal modules,
+# calling into the bayan-touching path directly from a large fn miscompiles the argument register
+# on this toolchain (the CO-01 family). A one-line helper is the documented workaround.
+
+# Evaluate `e` (cstr). Returns 1 (true), 0 (false), or (0 - 1) if it failed to compile.
+fn fz_eval(e) {
+    var r = cond_evaluate(str_from(e), _fz_ctx);
+    if (is_ok(r) == 0) { return (0 - 1); }
+    return result_unwrap(r);
+}
+
+# Evaluate `e` (cstr) through a cache. Same encoding as fz_eval.
+fn fz_eval_cached(cache, e) {
+    var r = cache_evaluate(cache, str_from(e), _fz_ctx);
+    if (is_ok(r) == 0) { return (0 - 1); }
+    return result_unwrap(r);
+}
+
+# Compile `e` (cstr) and return the raw Result, for the error-discipline checks.
+fn fz_compile(e) {
+    return compiled_compile(str_from(e));
+}
+
+# Render template `t` (cstr) against the shared context. Same one-line-helper rule as fz_eval:
+# cond_render_template reaches bayan_json_v_build, so it must not be called inline from a large fn.
+fn fz_render(t) {
+    return cond_render_template(str_from(t), _fz_ctx);
+}
+
+# --- 1/2/4/5: universal invariants that hold for ANY input, valid or not ---------------------
+# Called on every input the harness produces, from every generator. `expect_ok` is 1 when the
+# input is known-valid by construction, 0 when nothing is claimed.
+fn fz_check_total(e, expect_ok) {
+    var r = fz_compile(e);
+    var ok = is_ok(r);
+    var err = is_err_result(r);
+    # (1) Exactly one of Ok/Err. A Result that is neither (or both) means the tagged-union
+    # discipline broke, and every `?` in the module is then reading a corrupt tag.
+    fz_check((ok + err) == 1, "compile returns exactly one of Ok/Err", e);
+    if (err == 1) {
+        # (2) A parse failure must be reportable. An empty message means the engine surfaces
+        # "condition invalid" with no reason, which is the failure mode operators actually hit.
+        fz_check(err_code_of(r) == SZAL_ERR_FLOW_INVALID, "parse error is SZAL_ERR_FLOW_INVALID", e);
+        fz_check(str_len(szal_get_err_msg()) > 0, "parse error carries a message", e);
+        fz_check(expect_ok == 0, "a grammar-valid sentence must compile", e);
+        return (0 - 1);
+    }
+    var v = fz_eval(e);
+    # (4) The engine branches on this value directly, so a truthy-but-not-1 leaks through as false.
+    fz_check((v == 0) || (v == 1), "evaluate yields exactly 0 or 1", e);
+    # (5) Determinism: same text, same context, same answer. Catches state left behind in the
+    # tokenizer/parser globals between calls.
+    fz_check(fz_eval(e) == v, "evaluation is deterministic", e);
+    return v;
+}
+
+# --- 3/6..15: valid sentences and the laws that must hold over them -------------------------
+fn fz_laws() {
+    fz_group("valid sentences: compile, then obey boolean algebra");
+    var i = 0;
+    while (i < 2500) {
+        var a = fz_gen_expr(3);
+        var va = fz_check_total(a, 1);
+        if (va >= 0) {
+            var pa = fz_paren(a);
+            # (7) Parenthesizing changes nothing.
+            fz_check(fz_eval(pa) == va, "(e) == e", pa);
+            # (8) Negation flips.
+            var na = fz_cat("!", pa);
+            fz_check(fz_eval(na) == (1 - va), "!e == 1 - e", na);
+            # (6) Double negation restores. Distinct from (8) because it exercises the parser's
+            # right-recursive unary path, where a missing recursion drops one '!' silently.
+            fz_check(fz_eval(fz_cat("!!", pa)) == va, "!!e == e", pa);
+            # (9) Idempotence.
+            fz_check(fz_eval(fz_cat3(pa, " && ", pa)) == va, "e && e == e", pa);
+            fz_check(fz_eval(fz_cat3(pa, " || ", pa)) == va, "e || e == e", pa);
+            # (10) Identity and annihilator elements.
+            fz_check(fz_eval(fz_cat(pa, " && true")) == va, "e && true == e", pa);
+            fz_check(fz_eval(fz_cat(pa, " || false")) == va, "e || false == e", pa);
+            fz_check(fz_eval(fz_cat(pa, " && false")) == 0, "e && false == 0", pa);
+            fz_check(fz_eval(fz_cat(pa, " || true")) == 1, "e || true == 1", pa);
+            # (15) Leading/trailing whitespace is trimmed before tokenizing, so it cannot move
+            # the answer — and must not turn a valid sentence into a parse error.
+            var padded = fz_cat3(fz_ws(), a, fz_ws());
+            fz_check(fz_eval(padded) == va, "surrounding whitespace is irrelevant", padded);
+
+            # Two- and three-operand laws.
+            var b = fz_gen_expr(2);
+            var vb = fz_check_total(b, 1);
+            if (vb >= 0) {
+                var pb = fz_paren(b);
+                # (11) Commutativity. Neither operator short-circuits observably (evaluation has
+                # no side effects), so order cannot matter.
+                fz_check(fz_eval(fz_cat3(pa, " && ", pb)) == fz_eval(fz_cat3(pb, " && ", pa)),
+                    "a && b == b && a", pa);
+                fz_check(fz_eval(fz_cat3(pa, " || ", pb)) == fz_eval(fz_cat3(pb, " || ", pa)),
+                    "a || b == b || a", pa);
+                # (13) De Morgan — the strongest single law here: it ties !, && and || together,
+                # so it fails if ANY of the three is wrong, or if precedence misgroups them.
+                fz_check(fz_eval(fz_cat3("!(", fz_cat3(pa, " && ", pb), ")"))
+                       == fz_eval(fz_cat3(fz_cat("!", pa), " || ", fz_cat("!", pb))),
+                    "!(a && b) == !a || !b", pa);
+                fz_check(fz_eval(fz_cat3("!(", fz_cat3(pa, " || ", pb), ")"))
+                       == fz_eval(fz_cat3(fz_cat("!", pa), " && ", fz_cat("!", pb))),
+                    "!(a || b) == !a && !b", pa);
+                var c = fz_gen_cmp(1);
+                var vc = fz_check_total(c, 1);
+                if (vc >= 0) {
+                    var pc = fz_paren(c);
+                    # (12) Associativity.
+                    fz_check(fz_eval(fz_cat3(fz_paren(fz_cat3(pa, " && ", pb)), " && ", pc))
+                           == fz_eval(fz_cat3(pa, " && ", fz_paren(fz_cat3(pb, " && ", pc)))),
+                        "(a && b) && c == a && (b && c)", pa);
+                    # (14) Precedence: && binds tighter than ||. The UNPARENTHESIZED form must
+                    # equal the explicitly grouped one. This is the law that fails if _parse_or
+                    # and _parse_and are ever swapped — a bug that leaves every expression
+                    # parsing "successfully" while computing the wrong branch.
+                    fz_check(fz_eval(fz_cat5(pa, " || ", pb, " && ", pc))
+                           == fz_eval(fz_cat3(pa, " || ", fz_paren(fz_cat3(pb, " && ", pc)))),
+                        "a || b && c == a || (b && c)", pa);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 17/18: comparison-operator duality ------------------------------------------------------
+# Stated only as laws that hold for INCOMPARABLE operands too. `a <= b == !(a > b)` is NOT such
+# a law: cross-type operands make both sides false, so it would be a bug in the harness, not the
+# code. What does hold universally is the mirror symmetry of the ordering primitive, and the
+# exact complementarity of == / !=.
+fn fz_comparisons() {
+    fz_group("comparisons: duality and mutual exclusion, incomparable operands included");
+    var i = 0;
+    while (i < 2000) {
+        var a = fz_gen_value(1);
+        var b = fz_gen_value(1);
+        var eq = fz_cat5(a, " ", "==", " ", b);
+        var ne = fz_cat5(a, " ", "!=", " ", b);
+        var veq = fz_check_total(eq, 1);
+        var vne = fz_check_total(ne, 1);
+        if ((veq >= 0) && (vne >= 0)) {
+            # (17) != is the exact complement of ==: values_equal is a total predicate (cross-type
+            # simply returns "not equal"), so there is no third outcome to leak through.
+            fz_check(vne == (1 - veq), "a != b == !(a == b)", eq);
+        }
+        var gt = fz_cat3(a, " > ", b);
+        var lt_swapped = fz_cat3(b, " < ", a);
+        var vgt = fz_check_total(gt, 1);
+        var vls = fz_check_total(lt_swapped, 1);
+        if ((vgt >= 0) && (vls >= 0)) {
+            # (17) Mirror symmetry of the ordering: holds for numbers, for strings, AND for
+            # incomparable pairs (where both sides are false).
+            fz_check(vgt == vls, "a > b == b < a", gt);
+        }
+        var gte = fz_cat3(a, " >= ", b);
+        var lte_swapped = fz_cat3(b, " <= ", a);
+        var vgte = fz_check_total(gte, 1);
+        var vlts = fz_check_total(lte_swapped, 1);
+        if ((vgte >= 0) && (vlts >= 0)) {
+            fz_check(vgte == vlts, "a >= b == b <= a", gte);
+        }
+        var lt = fz_cat3(a, " < ", b);
+        var vlt = fz_check_total(lt, 1);
+        if ((vgt >= 0) && (vlt >= 0)) {
+            # (18) A single comparison cannot report both directions.
+            fz_check((vgt & vlt) == 0, "never both a > b and a < b", gt);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 1/2: garbage bytes -----------------------------------------------------------------------
+# The tokenizer is the only part of szal that consumes arbitrary bytes, so it gets the widest
+# generator: uniform noise, operator soup, and near-miss text built from the DSL's own alphabet.
+fn fz_garbage() {
+    fz_group("garbage: never crashes, always a well-formed Result");
+    var i = 0;
+    while (i < 4000) {
+        var len = fz_rand_below(48);
+        var s = 0;
+        var pick = fz_rand_below(4);
+        if (pick == 0) {
+            # Uniform bytes INCLUDING non-ASCII (>= 128), which the tokenizer must reject with
+            # the hex-formatted "unexpected byte 0x..", not walk past.
+            s = fz_rand_bytes(len, 1, 255);
+        } elif (pick == 1) {
+            # Operator/punctuation soup: unbalanced parens, stray quotes, lone '&' and '|'.
+            s = fz_rand_from(len, "()!&|<>='.,;:\"[]{}+-*/%^~$#@ 0123456789");
+        } elif (pick == 2) {
+            # Near-miss identifiers and keywords.
+            s = fz_rand_from(len, "abcdefghijklmnopqrstuvwxyz_.-0123456789 truefalse");
+        } else {
+            # A valid sentence with one byte corrupted — the most productive mutation, because
+            # it reaches deep parser states that random noise never gets to.
+            var base = fz_gen_expr(2);
+            s = fz_dup(base);
+            var n = strlen(s);
+            if (n > 0) { store8(s + fz_rand_below(n), fz_rand_range(1, 255)); }
+        }
+        if (s != 0) { fz_check_total(s, 0); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 16/21: inputs whose verdict is known by construction -----------------------------------
+fn fz_structural() {
+    fz_group("structure: empty is vacuously true, malformed shapes are rejected");
+    # (16) An empty or whitespace-only condition means "no condition" and must be vacuously
+    # true — a step with a blank condition has to RUN, not be skipped.
+    fz_check(fz_eval("") == 1, "\"\" is vacuously true", "");
+    fz_check(fz_eval("   ") == 1, "whitespace-only is vacuously true", "   ");
+    fz_check(fz_eval("\t\n\r") == 1, "exotic whitespace is vacuously true", 0);
+    var ce = fz_compile("");
+    fz_check(is_ok(ce) == 1, "empty compiles Ok", "");
+    fz_check(str_len(compiled_source(result_unwrap(ce))) == 0, "empty compiles to empty source", "");
+    var i = 0;
+    while (i < 1500) {
+        var base = fz_gen_expr(2);
+        # (21) Truncation: cutting a valid sentence at a random point almost always breaks it,
+        # but not always ("a && b" cut to "a" is still valid), so the check is stated as
+        # "compile-or-reject cleanly" via fz_check_total, and only the shapes that CANNOT be
+        # valid are asserted to be Err below.
+        var n = strlen(base);
+        if (n > 1) {
+            var cut = fz_dup(base);
+            store8(cut + fz_rand_below(n), 0);
+            fz_check_total(cut, 0);
+        }
+        # These three shapes are unconditionally invalid for ANY valid `base`:
+        #   "(base"        unbalanced open paren      -> expected ')'
+        #   "base)"        trailing close paren       -> unexpected trailing token
+        #   "(base) (base)" two juxtaposed sentences  -> unexpected trailing token
+        var unbalanced = fz_cat("(", base);
+        var ru = fz_compile(unbalanced);
+        fz_check(is_err_result(ru) == 1, "unbalanced open paren is rejected", unbalanced);
+        var trailing = fz_cat(base, ")");
+        var rt = fz_compile(trailing);
+        fz_check(is_err_result(rt) == 1, "trailing close paren is rejected", trailing);
+        var juxt = fz_cat3(fz_paren(base), " ", fz_paren(base));
+        var rj = fz_compile(juxt);
+        fz_check(is_err_result(rj) == 1, "two juxtaposed sentences are rejected", juxt);
+        # A dangling binary operator can never complete.
+        var dangling = fz_cat(fz_paren(base), " && ");
+        var rd = fz_compile(dangling);
+        fz_check(is_err_result(rd) == 1, "dangling && is rejected", dangling);
+        # An unterminated string literal cannot close.
+        var openstr = fz_cat(fz_paren(base), " == 'unterminated");
+        var ro = fz_compile(openstr);
+        fz_check(is_err_result(ro) == 1, "unterminated string literal is rejected", openstr);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 19/20: the compilation cache ------------------------------------------------------------
+# The cache memoizes BOTH successes and parse errors, so it must be indistinguishable from the
+# uncached path on every input — including the ones that fail.
+fn fz_cache() {
+    fz_group("cache: indistinguishable from the uncached path, and accounted for");
+    var cache = cache_new();
+    fz_check(cache_is_empty(cache) == 1, "a fresh cache is empty", 0);
+    # Distinct expression texts seen so far — the cache keys by the ORIGINAL (untrimmed) text,
+    # so this map must key the same way for the accounting property to be exact.
+    var distinct = map_new();
+    var i = 0;
+    while (i < 2000) {
+        var e = 0;
+        if (fz_rand_below(4) == 0) {
+            # Deliberately feed invalid text too: a cached Err must be re-raised as an Err with
+            # its message intact, not silently downgraded to false.
+            e = fz_rand_from(fz_rand_below(20), "()!&|<>='. abcdef0123");
+        } else {
+            e = fz_gen_expr(2);
+        }
+        if (e != 0) {
+            var direct = fz_eval(e);
+            var cached = fz_eval_cached(cache, e);
+            # (19) Agreement on the Ok/Err verdict AND on the value.
+            fz_check(cached == direct, "cache_evaluate agrees with cond_evaluate", e);
+            # A second pass must hit the cache and still agree — this is where a corrupted
+            # cache entry (freed Str, stale message) would show up.
+            fz_check(fz_eval_cached(cache, e) == direct, "a cache hit agrees too", e);
+            if (map_has(distinct, e) == 0) { map_set(distinct, e, 1); }
+            # (20) One entry per distinct text, successes and errors alike.
+            fz_check(cache_len(cache) == map_count(distinct),
+                "cache_len == distinct expressions seen", e);
+        }
+        i = i + 1;
+    }
+    fz_check(cache_is_empty(cache) == 0, "a used cache is not empty", 0);
+    return 0;
+}
+
+# --- 22: template rendering ------------------------------------------------------------------
+fn fz_templates() {
+    fz_group("templates: identity without placeholders, empty on a miss");
+    # Fixed cases pin the documented semantics.
+    var r_lit = fz_render("no placeholders here");
+    fz_check(str_eq_cstr(r_lit, "no placeholders here") == 1,
+        "a template without {{ }} is the identity", 0);
+    var r_str = fz_render("{{env.name}}");
+    fz_check(str_eq_cstr(r_str, "prod") == 1, "a string value renders raw (unquoted)", 0);
+    var r_trim = fz_render("{{ env.name }}");
+    fz_check(str_eq_cstr(r_trim, "prod") == 1, "the path inside {{ }} is trimmed", 0);
+    var r_num = fz_render("{{env.replicas}}");
+    fz_check(str_eq_cstr(r_num, "5") == 1, "a number renders as its JSON form", 0);
+    var r_miss = fz_render("a{{nope.missing}}b");
+    fz_check(str_eq_cstr(r_miss, "ab") == 1, "a missing path renders as empty", 0);
+    var r_open = fz_render("{{unclosed");
+    fz_check(str_eq_cstr(r_open, "{{unclosed") == 1,
+        "an unclosed placeholder is copied verbatim", 0);
+    var i = 0;
+    while (i < 2000) {
+        # Random templates: literal noise, real paths, missing paths, and unbalanced braces.
+        var t = 0;
+        var pick = fz_rand_below(3);
+        if (pick == 0) {
+            t = fz_rand_from(fz_rand_below(40), "{}. abcdefghijklmnopqrstuvwxyz0123456789");
+        } elif (pick == 1) {
+            t = fz_cat5("x", "{{", fz_path(fz_rand_below(FZ_NPATHS)), "}}", "y");
+        } else {
+            t = fz_rand_bytes(fz_rand_below(32), 1, 255);
+        }
+        if (t != 0) {
+            var out = fz_render(t);
+            fz_check(out != 0, "render returns a Str", t);
+            # Determinism — the renderer walks shared parser/builder state, so a second pass
+            # differing would mean it mutated something.
+            var again = fz_render(t);
+            fz_check(str_eq(out, again) == 1, "render is deterministic", t);
+            # A template with no '{' cannot be rewritten: the output must be the input verbatim.
+            var has_brace = 0;
+            var n = strlen(t);
+            var j = 0;
+            while (j < n) {
+                if (load8(t + j) == 123) { has_brace = 1; }
+                j = j + 1;
+            }
+            if (has_brace == 0) {
+                fz_check(str_eq_cstr(out, t) == 1, "a brace-free template is the identity", t);
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- 23: the step-result context builder ----------------------------------------------------
+# cond_build_step_context is the bridge the engine actually crosses: StepResults in, a json_v
+# context out. The property is that every result whose step id is known appears under its step
+# NAME with its status in Display form — i.e. `steps.<name>.status == '<display>'` evaluates true.
+fn fz_step_context() {
+    fz_group("step context: every known result is reachable under its step name");
+    var i = 0;
+    while (i < 300) {
+        var nsteps = fz_rand_range(1, 5);
+        var steps = vec_new();
+        var results = vec_new();
+        var statuses = vec_new();
+        var k = 0;
+        while (k < nsteps) {
+            # Distinct, DNS-safe-ish names so the generated path is a valid ident chain.
+            var nm = fz_cat("s", fz_rand_from(4, "abcdefghijklmnopqrstuvwxyz"));
+            var st = step_new(str_from(nm));
+            vec_push(steps, st);
+            var status = fz_rand_below(6);
+            var r = step_result_new(step_id_hi(st), step_id_lo(st), status,
+                bayan_json_v_int_new(k), 10, 1);
+            vec_push(results, r);
+            vec_push(statuses, status);
+            k = k + 1;
+        }
+        var ctx = cond_build_step_context(results, steps);
+        fz_check(ctx != 0, "build_step_context returns a context", 0);
+        k = 0;
+        while (k < nsteps) {
+            var st2 = vec_get(steps, k);
+            var nm2 = str_cstr(step_name(st2));
+            var want = step_status_display(vec_get(statuses, k));
+            # steps.<name>.status == '<display>'
+            var e = fz_cat5("steps.", nm2, ".status == '", want, "'");
+            var rr = cond_evaluate(str_from(e), ctx);
+            if (fz_check(is_ok(rr) == 1, "the generated context path compiles", e) == 1) {
+                fz_check(result_unwrap(rr) == 1, "the result's status is readable by name", e);
+            }
+            # A name that is NOT in the flow must resolve to null, hence compare false.
+            var missing = fz_cat3("steps.", nm2, "zz.status == 'completed'");
+            var rm = cond_evaluate(str_from(missing), ctx);
+            if (fz_check(is_ok(rm) == 1, "an absent step path still compiles", missing) == 1) {
+                fz_check(result_unwrap(rm) == 0, "an absent step compares false", missing);
+            }
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    _fz_ctx = fz_build_ctx();
+    fz_seed(FZ_SEED);
+    fz_begin("condition_expr", FZ_SEED);
+    fz_laws();
+    fz_comparisons();
+    fz_garbage();
+    fz_structural();
+    fz_cache();
+    fz_templates();
+    fz_step_context();
+    return fz_summary();
+}
+
+var rc = main();
+syscall(60, rc);
