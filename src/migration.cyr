@@ -179,7 +179,7 @@ fn migration_latest_version_present(reg) {
 
 # Migrate flow up to target, applying the registry's migrations in order. Mirrors the Rust
 # method registry.migrate_to(flow, target) (migration.rs 159-192) — reg is the `self` receiver.
-# Returns Ok(flow) or Err(ERR_MIGRATION) with the detail in the szal last-error buffer.
+# Returns Ok(flow) or Err(SZAL_ERR_MIGRATION) with the detail in the szal last-error buffer.
 # Behaviour, in EXACT Rust order:
 #   - flow.version == target            -> Ok(flow) unchanged (no-op).
 #   - flow.version  > target            -> Err: downgrades are not supported.
@@ -202,7 +202,7 @@ fn migrate_to(reg, flow, target) {
         str_builder_add_cstr(sb, " which is newer than target ");
         str_builder_add_int(sb, target);
         str_builder_add_cstr(sb, "; downgrades are not supported");
-        return szal_err(ERR_MIGRATION, str_builder_build(sb));
+        return szal_err(SZAL_ERR_MIGRATION, str_builder_build(sb));
     }
     var map = migration_registry_map(reg);
     while (flow_version(flow) < target) {
@@ -216,7 +216,7 @@ fn migrate_to(reg, flow, target) {
             str_builder_add_cstr(sb2, "', target ");
             str_builder_add_int(sb2, target);
             str_builder_add_cstr(sb2, ")");
-            return szal_err(ERR_MIGRATION, str_builder_build(sb2));
+            return szal_err(SZAL_ERR_MIGRATION, str_builder_build(sb2));
         }
         var m = map_u64_get(map, current);
         var to = flow_migration_to(m);
@@ -231,7 +231,7 @@ fn migrate_to(reg, flow, target) {
             str_builder_add_cstr(sb3, " (flow '");
             str_builder_add(sb3, flow_name(flow));
             str_builder_add_cstr(sb3, "')");
-            return szal_err(ERR_MIGRATION, str_builder_build(sb3));
+            return szal_err(SZAL_ERR_MIGRATION, str_builder_build(sb3));
         }
         # Apply the migration transform: callptr(fp, flow) -> Result. Propagate an Err from the
         # migration fn unchanged (migration.rs 186: `flow = migration.migrate(flow)?;`).
@@ -248,7 +248,7 @@ fn migrate_to(reg, flow, target) {
 
 # Migrate flow up to the latest registered version. Mirrors migrate_latest (migration.rs
 # 197-202): a no-op (Ok(flow)) if the registry is empty or the flow is already current,
-# otherwise migrate_to(reg, flow, latest). Returns Ok(flow) or Err(ERR_MIGRATION).
+# otherwise migrate_to(reg, flow, latest). Returns Ok(flow) or Err(SZAL_ERR_MIGRATION).
 fn migrate_latest(reg, flow) {
     if (migration_latest_version_present(reg) == 0) {
         return Ok(flow);

@@ -11,7 +11,7 @@
 # Usage: include AFTER src/vendor/ai-hwaccel.cyr + src/error.cyr + src/step.cyr + src/engine_core.cyr.
 # Requires: src/vendor/ai-hwaccel.cyr (cached_registry_new/cached_get/reg_profiles/count_satisfying/
 #   reg_count_by_family/reg_has_accelerator/requirement_name + REQ_*/FAMILY_* constants),
-#   src/error.cyr (ERR_HW_UNAVAILABLE/szal_err), src/step.cyr (step_hardware/step_name),
+#   src/error.cyr (SZAL_ERR_HW_UNAVAILABLE/szal_err), src/step.cyr (step_hardware/step_name),
 #   src/engine_core.cyr (engine_config_set_hardware_ctx), lib/str.cyr (str_builder), lib/result.cyr.
 #
 # PARITY NOTE: szal's StepDef flattened the Rust `AcceleratorRequirement` enum to a plain REQ_* i64
@@ -54,7 +54,7 @@ fn _hw_unavailable_msg(step, req) {
 }
 
 # HardwareContext::check_requirements — validate that every step's hardware requirement can be met
-# by some available device. Returns Ok(0), or Err(ERR_HW_UNAVAILABLE) for the FIRST step whose
+# by some available device. Returns Ok(0), or Err(SZAL_ERR_HW_UNAVAILABLE) for the FIRST step whose
 # requirement cannot be satisfied (detail message in the szal last-error buffer). Mirrors
 # hardware.rs 49-64. min_chips=1 (szal flattened Tpu{min_chips}; see PARITY NOTE above).
 fn hw_check_requirements(ctx, steps) {
@@ -71,7 +71,7 @@ fn hw_check_requirements(ctx, steps) {
         }
         if (count_satisfying(req, 1, profs) == 0) {
             var msg = _hw_unavailable_msg(s, req);
-            return szal_err(ERR_HW_UNAVAILABLE, msg);
+            return szal_err(SZAL_ERR_HW_UNAVAILABLE, msg);
         }
     }
     return Ok(0);

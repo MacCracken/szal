@@ -64,7 +64,7 @@ fn mig_add_verify(flow) {
 # A migration that always fails. Mirrors migration_error_propagates'
 # `Err(SzalError::MigrationFailed("boom"))`.
 fn mig_boom(flow) {
-    return szal_err(ERR_MIGRATION, str_from("boom"));
+    return szal_err(SZAL_ERR_MIGRATION, str_from("boom"));
 }
 
 # Build a fresh flow "pipeline" (Sequential) at the given version with one "deploy" step.
@@ -140,7 +140,7 @@ fn main() {
     migration_with(reg6, fn_migration(1, 2, &mig_identity));
     var out6 = migrate_to(reg6, flow_v(3), 2);
     assert(is_err_result(out6), "downgrade is Err");
-    assert_eq(err_code_of(out6), ERR_MIGRATION, "downgrade code is ERR_MIGRATION");
+    assert_eq(err_code_of(out6), SZAL_ERR_MIGRATION, "downgrade code is SZAL_ERR_MIGRATION");
     assert(str_eq_cstr(szal_get_err_msg(),
         "flow 'pipeline' is at version 3 which is newer than target 2; downgrades are not supported"),
         "downgrade detail message");
@@ -150,7 +150,7 @@ fn main() {
     migration_with(reg7, fn_migration(1, 2, &mig_identity));
     var out7 = migrate_to(reg7, flow_v(1), 3);
     assert(is_err_result(out7), "missing path is Err");
-    assert_eq(err_code_of(out7), ERR_MIGRATION, "missing path code is ERR_MIGRATION");
+    assert_eq(err_code_of(out7), SZAL_ERR_MIGRATION, "missing path code is SZAL_ERR_MIGRATION");
     # After the 1->2 hop applies, the flow is at v2 with no migration from 2; fails there.
     assert(str_eq_cstr(szal_get_err_msg(),
         "no migration registered from version 2 (flow 'pipeline', target 3)"),
@@ -161,7 +161,7 @@ fn main() {
     migration_with(reg8, fn_migration(1, 3, &mig_identity));
     var out8 = migrate_to(reg8, flow_v(1), 2);
     assert(is_err_result(out8), "overshoot is Err");
-    assert_eq(err_code_of(out8), ERR_MIGRATION, "overshoot code is ERR_MIGRATION");
+    assert_eq(err_code_of(out8), SZAL_ERR_MIGRATION, "overshoot code is SZAL_ERR_MIGRATION");
     assert(str_eq_cstr(szal_get_err_msg(),
         "migration from version 1 jumps to 3, overshooting target 2 (flow 'pipeline')"),
         "overshoot detail message");
@@ -171,7 +171,7 @@ fn main() {
     migration_with(reg9, fn_migration(1, 2, &mig_boom));
     var out9 = migrate_to(reg9, flow_v(1), 2);
     assert(is_err_result(out9), "migration-fn Err propagates");
-    assert_eq(err_code_of(out9), ERR_MIGRATION, "propagated code is ERR_MIGRATION");
+    assert_eq(err_code_of(out9), SZAL_ERR_MIGRATION, "propagated code is SZAL_ERR_MIGRATION");
     assert(str_eq_cstr(szal_get_err_msg(), "boom"), "propagated detail is boom");
 
     test_group("abort guards (duplicate-source + non-increasing) — precondition path");

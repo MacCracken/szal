@@ -202,9 +202,9 @@ fn run_distributed_dag(steps, fleet, timeout_ms, start_ms, token, ctx) {
         }
 
         if (vec_len(results) >= total) { return _dist_finish(results, steps, total, id_map,
-        event_sink, token, timeout_ms, start_ms, done, workers); }
+            event_sink, token, timeout_ms, start_ms, done, workers); }
         if (in_flight == 0) { return _dist_finish(results, steps, total, id_map, event_sink, token,
-        timeout_ms, start_ms, done, workers); }
+            timeout_ms, start_ms, done, workers); }
 
         var cancelled = 0;
         if (token != 0) {

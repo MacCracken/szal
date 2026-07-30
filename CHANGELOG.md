@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-07-29
+
+Maintenance release: toolchain and vendored-dependency refresh for the Cyrius port. No functional
+or behavioural changes to the workflow engine — the full suite (1,434 assertions across 45 test
+files) is green, `rust-old/` parity oracle untouched.
+
+### Changed
+- **Cyrius toolchain 6.2.2 → 6.5.2** (`cyrius.cyml [package].cyrius`). Verified against the released
+  `6.5.2-x86_64-linux` asset — the same artifact CI's installer fetches — so CI's "Verify toolchain
+  matches pin" step passes. Stdlib re-provisioned from the 6.5.2 snapshot
+- **Vendored majra 2.4.6 → 2.5.3** (`src/vendor/majra.cyr`, 3,131 → 3,289 lines). Collision scan
+  re-run: no new clashes; the rename set shrank 9 → 7 symbols (see below). `MJ_ERR_`/`MJ_STEP_`/
+  `MJ_TRIGGER_` + `majra_uuid_generate`/`majra_step_result_new` renames retained
+- **Vendored bote-core 2.7.5 → 3.1.4** (`src/vendor/bote-core.cyr`, 2,025 → 2,612 lines). Despite the
+  major version bump, **no szal changes were needed**: `compiled_compile` → `bote_compiled_compile`
+  is still the only collision, and szal referenced none of the 13 bare `ERR_*` that bote 3.x prefixed
+  to `BOTE_ERR_*`
+- **Vendored ai-hwaccel 2.3.9 → 2.3.15** (`src/vendor/ai-hwaccel.cyr`, 6,210 → 6,348 lines). Its
+  error codes are now `HWA_ERR_*`-prefixed upstream
+- **szal's own error constants are now `SZAL_ERR_*`-prefixed** (11 constants: `ERR_NONE`,
+  `ERR_STEP_FAILED`, `ERR_STEP_TIMEOUT`, `ERR_FLOW_INVALID`, `ERR_RETRY_EXHAUSTED`,
+  `ERR_ROLLBACK_FAILED`, `ERR_CYCLE`, `ERR_MIGRATION`, `ERR_HW_UNAVAILABLE`, `ERR_QUEUE`,
+  `ERR_OTHER`). Matches the convention sigil 6.5.2 / bote 3.1.4 / ai-hwaccel 2.3.15 all adopted
+  upstream in the same window. Cyrius resolves fns, enum constants and globals in one flat namespace
+  with last-definition-wins, so unprefixed error codes are a standing collision hazard
+- `src/mcp_tools_conversion.cyr`'s `SECS_PER_*` / `BYTES_PER_*` constants are likewise `SZAL_`-prefixed
+- `scripts/version-bump.sh` no longer rewrites `Cargo.toml` or regenerates `Cargo.lock` — dead steps
+  inherited from the pre-port Rust project, which has no root Cargo manifest (the Rust oracle at
+  `rust-old/` is never touched). It now writes only `VERSION`, validates the semver triple, and
+  cross-checks that `cyrius.cyml` still resolves to it
+- `src/engine_distributed.cyr` reformatted for the 6.5.2 formatter (continuation-line indent only)
+
+### Fixed
+- **`BYTES_PER_GB` value divergence** — szal defined it as `1073741824` (2^30) while vendored
+  ai-hwaccel defines `var BYTES_PER_GB = 1000000000` (10^9). Under last-definition-wins these
+  resolved correctly only because of `main.cyr`'s include order. Now `SZAL_BYTES_PER_GB`, so the
+  byte-formatting tools can't be silently repointed at the decimal value by an include reshuffle
+- **`json_v_parse_str` → `json_v_parse_buf`** in `src/mcp_tools_system.cyr` (`_sys_uptime_json`).
+  bayan 1.3.0 renamed its cstr+len JSON entry point because the `_str` suffix is reserved for the
+  Str-taking overload that Cyrius auto-dispatches to — while the cstr+len form held that name, every
+  `bayan_json_v_parse(someStr)` in the ecosystem was silently rewritten into a 1-arg call to the
+  2-arg function and returned 0 for valid JSON
+- **Enum-constant array sizes replaced with literals** in `src/md5.cyr` and `src/error.cyr`. cycc
+  resolves a `var buf[ENUM_CONST]` size through `FINDVAR`, which only honours var-table indices
+  < 1024, so whether it compiles depends on how many globals the preceding includes declared. The
+  larger 6.5.2 stdlib (sigil 19k → 26k lines, bayan 3.5k → 5.3k) pushed `md5.cyr:36` past the cap and
+  broke three test builds. This is also the real mechanism behind the long-standing "full-deps
+  `cyrius build` breaks `var buf[ENUM_CONST]`" gotcha
+- **Zero duplicate-symbol warnings** from `cyrius build --strict --no-deps src/main.cyr`, down from
+  four. The only remaining cross-library symbol anywhere is `REQ_NONE` (szal × ai-hwaccel), which is
+  the intentionally shared hardware-requirement API
+- Stale files left in `lib/` shadow the version-pinned stdlib snapshot, so a toolchain bump needs
+  `rm -rf lib && cyrius lib sync` rather than a bare re-sync (documented in `state.md`)
+
 ## [1.2.0] — 2026-06-10
 
 ### Added

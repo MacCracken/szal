@@ -1,9 +1,15 @@
-# Full majra vendoring — ✅ DONE (2026-06-11), majra 2.4.6 at `src/vendor/majra.cyr`
+# Full majra vendoring — ✅ DONE (2026-06-11), majra 2.5.3 at `src/vendor/majra.cyr`
 
-> **Status: COMPLETE.** The full majra dist is vendored at `src/vendor/majra.cyr` (3,131 lines,
-> 9-symbol collision rename applied via `scripts/sync-majra.sh`), included in `main.cyr`, and the
-> whole suite is green (882 assertions, 0 duplicate-symbol warnings). The interim metrics shim
+> **Status: COMPLETE.** The full majra dist is vendored at `src/vendor/majra.cyr` (3,289 lines,
+> collision rename applied via `scripts/sync-majra.sh`), included in `main.cyr`, and the
+> whole suite is green (1,434 assertions, 0 duplicate-symbol warnings). The interim metrics shim
 > (`src/vendor/majra_metrics.cyr`) has been **retired** and `metrics.cyr` repointed at the full dist.
+>
+> **Re-synced 2.4.6 → 2.5.3 at szal 2.1.0 (2026-07-29).** Collision scan re-run over the full
+> fn/const/var surface: **no new clashes**, and the set shrank **9 → 7** because szal prefixed its
+> own error codes `SZAL_ERR_*` in the same release, so majra's bare `ERR_NONE`/`ERR_QUEUE` stopped
+> colliding with szal entirely (see §4). The `MJ_ERR_` rename is kept anyway — it still isolates
+> majra's 20 bare `ERR_*` from bote / ai-hwaccel / stdlib.
 >
 > This doc is kept as the **maintenance record** for re-syncing majra and for the collision
 > rationale. The "blockers" below are annotated with how they actually resolved.
@@ -22,9 +28,9 @@ metrics vtable (row 10 — shipped now via the shim). All but metrics need the *
 
 ## 2. The pin
 
-- **majra 2.4.6**, `dist/majra.cyr` (85,031 bytes upstream-dist source; the renamed
-  `src/vendor/majra.cyr` is ~85.6 KB with its provenance header), synced from a majra checkout's `dist/`.
-  (cyrius.cyml pin still reads 2.4.5 — known, reconcile at M5; see §8.)
+- **majra 2.5.3**, `dist/majra.cyr` (93,035 bytes upstream-dist source; the renamed
+  `src/vendor/majra.cyr` is ~93.6 KB with its provenance header), synced from a majra checkout's `dist/`.
+  (The old 2.4.5-vs-2.4.6 pin skew noted here is resolved: `cyrius.cyml` and this doc both read 2.5.3.)
 - Lands at `src/vendor/majra.cyr` (hoosh vendor pattern — a `[deps.majra]` block would make
   `cyrius deps` recurse into majra's own git sub-deps; see `cyrius.cyml`).
 
@@ -44,15 +50,24 @@ Had it been real, the resolution options were:
 
 Do NOT start the full vendoring until this is decided.
 
-## 4. Symbol collisions (9) — majra bundles its own workflow/error surface that overlaps szal
+## 4. Symbol collisions (7 as of majra 2.5.3 / szal 2.1.0; was 9)
 
 Cyrius duplicate-symbol semantics = **last definition wins** (+ warning for fns; enum-const dupes
 can hard-error). Verified clashes between `dist/majra.cyr` and szal's `src/*.cyr`:
 
+**Retired from this table at szal 2.1.0** — szal renamed *its* side, so these two are no longer
+clashes at all (the `MJ_ERR_` rename is still applied, to keep majra's 20 bare `ERR_*` off
+bote / ai-hwaccel / stdlib):
+
+| was | why it's gone |
+|---|---|
+| `ERR_NONE` (=0) vs szal `ERR_NONE` (=0) | szal's is now `SZAL_ERR_NONE` |
+| `ERR_QUEUE` (=1) vs szal `ERR_QUEUE` (=9) — **the value-divergence one** | szal's is now `SZAL_ERR_QUEUE` |
+
+The 7 that remain:
+
 | majra symbol | kind | szal owner | clash detail |
 |---|---|---|---|
-| `ERR_NONE` | enum const (=0) | `SzalErr` ERR_NONE (=0) | same value but duplicate def |
-| `ERR_QUEUE` | enum const (=1) | `SzalErr` ERR_QUEUE (=9) | **different value → silent corruption** |
 | `STEP_COMPLETED` | enum const | bus `EventType` STEP_COMPLETED (=5) | different value |
 | `STEP_FAILED` | enum const | bus `EventType` STEP_FAILED (=6) | different value |
 | `STEP_SKIPPED` | enum const | bus `EventType` STEP_SKIPPED (=9) | different value |
@@ -85,9 +100,18 @@ sed -E \
 ```
 
 `\bERR_` etc. are word-boundary anchored so they only hit identifier starts (idempotent: `MJ_ERR_`
-won't re-match). Verified: the 9 collisions are the *complete* set (full `comm` symbol-intersection
-of majra fns/consts/vars vs all szal modules — 234 fns / 57 consts / 29 vars on the majra side).
+won't re-match). Verified: the collisions listed in §4 are the *complete* set (full `comm`
+symbol-intersection of majra fns/consts/vars vs all szal modules — 234 fns / 57 consts / 29 vars on
+the majra side, unchanged from 2.4.6 to 2.5.3).
 **Re-run the `comm` check after any majra version bump** — a new majra release may add new clashes.
+
+The scan is only trustworthy if it covers all three symbol kinds *and* compares them across kinds:
+Cyrius resolves fns, enum constants and globals in ONE flat namespace, so a `var X` in one file
+really does collide with an `enum { X = .. }` in another. A same-kind-only scan misses those — that
+is exactly how ai-hwaccel's `var BYTES_PER_GB = 1000000000` sat against szal's
+`enum { BYTES_PER_GB = 1073741824 }` (a **value divergence**, silently resolved by include order)
+until the 2.1.0 sweep caught it. Also scan against the **stdlib** modules `main.cyr` includes, not
+just szal + the other vendored dists.
 
 ### 5b. Alternative considered: strip majra's workflow/dag module
 
@@ -116,12 +140,25 @@ so include `thread` but **not** `sync` (else last-wins duplicate warnings on `mu
 ## 8. Acceptance checklist — ✅ all done (2026-06-11)
 
 - [x] `lib/bigint.cyr` — N/A (core dist doesn't reference it; §intro).
-- [x] `scripts/sync-majra.sh` written (§5a) + committed; produces `src/vendor/majra.cyr` (3,131 lines).
-- [x] Re-ran the 9-collision `comm` check vs majra 2.4.6 — same 9 symbols, no NEW clashes.
+- [x] `scripts/sync-majra.sh` written (§5a) + committed; produces `src/vendor/majra.cyr`
+      (3,131 lines at 2.4.6; **3,289 at 2.5.3**).
+- [x] Re-ran the collision `comm` check vs majra 2.4.6 — same 9 symbols, no NEW clashes.
 - [x] `main.cyr` includes `lib/thread.cyr` + `src/vendor/majra.cyr` in single-pass order.
 - [x] `cyrius build --strict` clean — full main (all szal modules + full majra) has **0 undefined
       fns, 0 duplicate-symbol warnings**; `./build/szal` runs; 882 assertions green.
 - [x] Deleted `src/vendor/majra_metrics.cyr` + `scripts/sync-majra-metrics.sh`; repointed `metrics.cyr`.
-- [ ] **TODO (M5):** CHANGELOG 2.0.0 — note majra 2.4.6 vendored + the `MJ_`/`majra_` rename of its
-      bundled workflow surface. Also: `cyrius.cyml` pin says 2.4.5 but the checkout/vendor is 2.4.6 —
-      reconcile the pin at release (dist byte-identical, so functionally equal).
+- [x] **CHANGELOG + pin reconcile — done at 2.1.0** (was "TODO (M5)"): the `cyrius.cyml` 2.4.5-vs-2.4.6
+      skew is gone (both now read **2.5.3**), and CHANGELOG 2.1.0 records the vendored bump plus the
+      `MJ_`/`majra_` rename of majra's bundled workflow surface.
+
+### 8a. 2.5.3 re-sync (szal 2.1.0, 2026-07-29)
+
+- [x] `scripts/sync-majra.sh ../majra` → `src/vendor/majra.cyr`, 3,289 lines, from majra 2.5.3.
+- [x] Collision scan re-run across **all three symbol kinds and cross-kind** (§5a note), over
+      szal × majra × bote × ai-hwaccel × the 29 stdlib modules `main.cyr` includes: **no new
+      clashes**; majra's own set shrank 9 → 7 (§4). majra's surface is unchanged in size
+      (234 fns / 57 consts / 29 vars, same as 2.4.6).
+- [x] majra 2.5.3 still ships its `ERR_*`/`STEP_*`/`TRIGGER_*` families **unprefixed**, and contains
+      zero pre-existing `MJ_` symbols — so the sed recipe applies cleanly and stays idempotent.
+- [x] `cyrius build --strict --no-deps src/main.cyr` clean; `./build/szal` runs; **45/45 test files,
+      1,434 assertions, 0 failures**; lint/fmt/doc clean; `rust-old/` oracle pristine.

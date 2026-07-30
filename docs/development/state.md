@@ -5,16 +5,39 @@
 
 ## Version
 
-**2.0.0** (in development) — Rust→Cyrius port. Rust 1.2.0 (13172 lines) frozen at
+**2.1.0** (in development) — Rust→Cyrius port. Rust 1.2.0 (13172 lines) frozen at
 `rust-old/` (git tag `1.2.0`) as the parity oracle. `VERSION` is the single source of truth;
-`cyrius.cyml` reads `${file:VERSION}`.
+`cyrius.cyml` reads `${file:VERSION}`. (`scripts/version-bump.sh` writes only `VERSION`; its old
+Cargo.toml/Cargo.lock steps were dead — there is no root Cargo manifest — and were removed at 2.1.0.)
 
 ## Toolchain
 
-- **Cyrius pin**: `6.2.2` (in `cyrius.cyml [package].cyrius`) — **reconciled to the installed wrapper
-  2026-06-13; no pin-drift warning.** The full suite (1427 assertions across 43 module test files +
-  the `szal.tcyr` smoke) + main are green under **6.2.2**. (Silence the lib-shadow note per-invocation
-  with `CYRIUS_NO_WARN_SHADOW_LIB=1`.) History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 → 6.2.2.
+- **Cyrius pin**: `6.5.2` (in `cyrius.cyml [package].cyrius`) — bumped 6.2.2 → 6.5.2 at 2.1.0
+  (2026-07-29). The full suite (**1,434 assertions across 45 test files**) + main are green under
+  **6.5.2**, verified against the *released* `6.5.2-x86_64-linux` asset (the same artifact CI's
+  installer fetches), so CI's "Verify toolchain matches pin" step passes.
+  (Silence the lib-shadow note per-invocation with `CYRIUS_NO_WARN_SHADOW_LIB=1`.)
+  History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 → 6.2.2 → 6.5.2.
+
+- **⚠️ Local-install trap (cost real time; check this first if `cyrius --version` looks wrong):** a
+  *locally built* toolchain in `~/.cyrius/versions/<v>/` can embed the **previous** version string —
+  `versions/6.5.2/bin/cyrius` reported `cyrius 6.5.1`, and `versions/6.5.1/` reported `6.5.0`. The
+  banner comes from the compile-time `_VERSION_TOOLCHAIN` embed, not from the directory name or
+  `~/.cyrius/current`, so with the pin at 6.5.2 the wrapper prints a **spurious**
+  `manifest-pin: 6.5.2 (drift — wrapper is 6.5.1)`. The released tarball is correct (`cyrius 6.5.2`,
+  no drift line). Builds still work either way — the pin re-exec finds `versions/6.5.2/bin/cyrius` by
+  path — but the *compiler* used is then the local dev `cycc`, not the released one. To verify
+  against what CI actually runs, unpack the release tarball into a scratch `HOME/.cyrius/versions/`
+  and build with that `HOME`.
+
+- **stdlib provisioning:** on a clean tree `cyrius lib sync` provisions **53** modules — the declared
+  `[deps].stdlib` subset. `main.cyr` also includes `lib/ct.cyr`, `lib/math.cyr` and `lib/trait.cyr`,
+  which are **not** in that subset and **not** synced; those resolve via `cyrius build`'s fallback to
+  the pinned snapshot (`~/.cyrius/versions/<pin>/lib`). That fallback is what makes CI work, since CI
+  runs `cyrius lib sync` only. Corollary: **stale files in `lib/` shadow the pinned snapshot.** After
+  a toolchain bump, `rm -rf lib && cyrius lib sync` — otherwise a leftover module (e.g. a 6.2.2-era
+  `lib/math.cyr`) is silently preferred over the pinned one. `cycc` warns
+  `./lib/ shadows version-pinned .../lib — N bundled lib(s) differ`; do not ignore it.
 
 ## Milestone
 
@@ -122,7 +145,8 @@ ported, tested (per-group + full-stack), security-audited (validate_path / no-sh
   `hex_encode`). Uses sigil `sha256_hex` + szal `md5_hex`. `tests/szal_mcp_tools_hash.tcyr` (19) ports
   all hash_tools.rs tests (known SHA-256 vector, file hashing, validation errors, token lengths) +
   registration. One accepted divergence (parity-notes §13: sha256 file read capped at 1 MiB).
-  Surfaced the **sigil/`ERR_NONE` include-ordering trap** (now in the pattern notes above). lint/fmt/doc clean.
+  Surfaced the **sigil/`ERR_NONE` include-ordering trap** (see the pattern notes above — resolved on
+  both sides at 2.1.0). lint/fmt/doc clean.
 - ✅ **MCP tools group 3/15 `src/mcp_tools_system.cyr`** (2026-06-13) — `szal_system_info`
   (hostname from /etc/hostname, os/arch literals, cpus via `sched_getaffinity` popcount, uptime float
   from /proc/uptime), `szal_cwd` (`_mcp_getcwd`), `szal_env_get` (`getenv`; unset → NotFound),
@@ -332,7 +356,7 @@ ported, tested (per-group + full-stack), security-audited (validate_path / no-sh
   terminal `flow_rolled_back`/`flow_failed`/`flow_completed` + metric → build `FlowResult` → save
   final record → deregister heartbeat. Plus `engine_run_with_cancellation` (was_cancelled = signalled
   && any Skipped-"cancelled"; **never persists**) and `engine_run_distributed` (Dag-only, else
-  `Err(ERR_FLOW_INVALID)`; calls `run_distributed_dag`). Returns `Ok(FlowResult*)` or the validate
+  `Err(SZAL_ERR_FLOW_INVALID)`; calls `run_distributed_dag`). Returns `Ok(FlowResult*)` or the validate
   Err. **Faithful divergences (runner.rs):** (a) the **queue path** does NOT persist a final record
   and always passes `"failed"` (never `"rolled_back"`) to flow_failed; (b) **hardware check** deferred
   to row 17 (config.hardware stays 0); (c) **heartbeat** registers/deregisters but omits the 10s
@@ -359,7 +383,7 @@ ported, tested (per-group + full-stack), security-audited (validate_path / no-sh
 - ✅ **row 17 `src/engine_hardware.cyr`** (2026-06-13) — `engine/hardware.rs`. `HardwareContext` = the
   ai-hwaccel `CachedRegistry` handle (`hw_detect`=`cached_registry_new(300)`, `hw_with_ttl`,
   `hw_registry`=`cached_get`); `hw_check_requirements(ctx, steps)` (skip `REQ_NONE`; first
-  unsatisfiable → `Err(ERR_HW_UNAVAILABLE)` via `count_satisfying`, exact `hardware unavailable: step
+  unsatisfiable → `Err(SZAL_ERR_HW_UNAVAILABLE)` via `count_satisfying`, exact `hardware unavailable: step
   '<name>' requires <req>…` message); `hw_effective_concurrency(ctx, steps, base)` (GPU/TPU cap, floor
   1 — latent, never called by the engine); `hw_debug`; `engine_config_with_hardware` (mirrors
   `EngineConfig::with_hardware`). **Wired into `engine_runner`** at all three entry points
@@ -417,13 +441,24 @@ Hard-won while porting the first tool group (`mcp_tools_encoding.cyr`) — apply
   is below the parity threshold (developer-facing hint, untested) — compact JSON is fine.
 - **Invoke a handler fn-pointer with `fncall2(fp, args, 0)`** (lib/fnptr.cyr); register a group with
   `register_tools(<group>_tools())`.
-- **stdlib `ERR_NONE` collision (sigil):** `lib/sigil.cyr` (and likely other crypto libs) defines its
-  own `ERR_NONE` enum constant that collides with `src/error.cyr`'s. Including sigil BEFORE error.cyr
-  breaks error.cyr's enum resolution (`error.cyr:36 var buf[SZAL_ERR_MSG_CAP]` → "array size must be
-  an enum constant"). Fix: include such libs AFTER the szal core modules, right before the tool file
-  that needs them (see `main.cyr`: ct/thread_local/sigil/random sit just before `mcp_tools_hash`).
-  sigil also needs `lib/ct.cyr` + `lib/thread_local.cyr` (constant-time + TLS helpers) included first;
-  its unreachable SHA-3/threading paths emit benign "undefined function" warnings (DCE'd, build OK).
+- **~~stdlib `ERR_NONE` collision (sigil)~~ — RESOLVED at 2.1.0, both sides.** Historically
+  `lib/sigil.cyr` defined a bare `ERR_NONE` clashing with `src/error.cyr`'s, and including sigil
+  BEFORE error.cyr broke that enum's resolution (`var buf[SZAL_ERR_MSG_CAP]` → "array size must be an
+  enum constant"), which forced the late-include ordering. Both halves are gone: **sigil 6.5.2**
+  prefixes its codes `SIGIL_ERR_*` (it defines zero bare `ERR_*`), and **szal 2.1.0** prefixes its own
+  `SZAL_ERR_*`. The `main.cyr` late-include order (ct/thread_local/sigil/random just before
+  `mcp_tools_hash`) is retained for locality but is no longer load-bearing. sigil still needs
+  `lib/ct.cyr` + `lib/thread_local.cyr` included first; its unreachable SHA-3 paths emit benign
+  "undefined function" warnings for `shake256`/`_keccak_absorb`/`_keccak_f1600` (DCE'd, build OK).
+- **Never size a global array with an enum constant** — `var buf[SOME_ENUM_CONST]` is a trap. cycc
+  resolves the size through `FINDVAR`, which only honours var-table indices **< 1024**
+  (`src/frontend/parse_decl.cyr`); past that it hard-errors "array size identifier must be an enum
+  constant". Whether a given declaration lands under the cap depends on how many globals the
+  *preceding includes* declared, so the same file compiles in `main.cyr` and fails in a smaller
+  per-module test — which is exactly what the 6.5.2 stdlib (sigil 19k→26k lines, bayan 3.5k→5.3k)
+  triggered at `md5.cyr:36`. **Use a literal** and keep the enum as the documented name (see
+  `src/error.cyr:42`, `src/md5.cyr:43`). This is also the real mechanism behind the "full-deps
+  `cyrius build` breaks `var buf[ENUM_CONST]`" gotcha below — full-deps just adds more globals.
 
 ## Build/test recipe (validated)
 
@@ -445,14 +480,32 @@ full-deps path, so `error.cyr:36 array size` shows in the editor but the `--no-d
 
 ## Dependencies
 
-- stdlib (88 modules via `cyrius lib sync`): string, fmt, alloc, freelist, vec, str, hashmap,
-  syscalls, tagged, result, fnptr, chrono, bayan (JSON), sakshi/log, patra, sigil, …
-- `[deps.ai-hwaccel]` 2.3.9 (declared; overlaid by `cyrius deps` from M2 onward).
-- **majra 2.4.6 — VENDORED** at `src/vendor/majra.cyr` (full dist, 9-symbol collision rename; needs
-  `lib/thread.cyr`). Re-sync: `scripts/sync-majra.sh`. See [`majra-vendoring.md`](majra-vendoring.md).
-- **bote-core 2.7.5 — VENDORED** at `src/vendor/bote-core.cyr` (2,025 lines; 1-symbol rename
+All pins below were refreshed at 2.1.0 (2026-07-29). szal has **ZERO git deps** — all three
+third-party libs are vendored — so there is no `cyrius deps` step and no `cyrius.lock`.
+
+- stdlib (53 modules via `cyrius lib sync`, from the 6.5.2 snapshot): string, fmt, alloc, freelist,
+  vec, str, hashmap, syscalls, tagged, result, fnptr, chrono, bayan (JSON), sakshi/log, patra,
+  sigil, … Plus `ct`/`math`/`trait`, which `main.cyr` includes but `lib sync` does **not** provision
+  — they resolve from the pinned snapshot (see the Toolchain note above).
+- **ai-hwaccel 2.3.15 — VENDORED** at `src/vendor/ai-hwaccel.cyr` (6,348 lines, no rename; its
+  `REQ_*`/`FAMILY_*` are shared with `src/step.cyr` by design). Re-sync: `scripts/sync-ai-hwaccel.sh`.
+  2.3.15 prefixed its error codes `HWA_ERR_*`. **Two latent upstream breakages, harmless to szal
+  because nothing reaches them:** `profile_from_json_str` calls bayan's removed pre-1.3.0
+  `json_v_parse_str`, and an arg helper calls `argc`/`argv` without szal including `lib/args.cyr`.
+  Both surface only as `warning: undefined function`; szal calls just `cached_registry_new`/`cached_get`.
+- **majra 2.5.3 — VENDORED** at `src/vendor/majra.cyr` (3,289 lines, full dist, collision rename —
+  now 7 symbols, was 9; needs `lib/thread.cyr`). Re-sync: `scripts/sync-majra.sh`.
+  See [`majra-vendoring.md`](majra-vendoring.md).
+- **bote-core 3.1.4 — VENDORED** at `src/vendor/bote-core.cyr` (2,612 lines; 1-symbol rename
   `compiled_compile`→`bote_compiled_compile`). Re-sync: `scripts/sync-bote.sh`. 2.7.5 renamed
-  `registry_new`→`tool_registry_new` (Q9 dissolved; see below).
+  `registry_new`→`tool_registry_new` (Q9 dissolved; see below). The **2.7.5 → 3.1.4 major bump needed
+  no szal changes**: `compiled_compile` is still the only collision, and szal's MCP surface referenced
+  none of the 13 bare `ERR_*` that 3.x prefixed to `BOTE_ERR_*`.
+
+**Collision status (full fn/const/var, cross-kind, incl. stdlib):** the only remaining intersection
+anywhere is `REQ_NONE` (szal × ai-hwaccel, intentional). `cyrius build --strict --no-deps
+src/main.cyr` reports **zero duplicate symbols** — the old `ERR_NONE`/`ERR_PARSE`/`ERR_TOOL_NOT_FOUND`/
+`ERR_TIMEOUT`/`BYTES_PER_GB` warnings are all cleared.
 
 ## Consumers
 
@@ -462,7 +515,21 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 **Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 ✅ MCP COMPLETE (stream + sql_store + mcp core +
 pool/tenant + ALL 15 tool groups / 54 tools) + bote vendoring, all parity-verified 0-findings): 44
-modules, 1427 assertions, 0 failures, oracle pristine. Pin 6.2.2 (reconciled — drift cleared).**
+modules, 1,434 assertions across 45 test files, 0 failures, oracle pristine. Pin 6.5.2.**
+
+**2.1.0 maintenance pass (2026-07-29)** — version + toolchain + all three vendored libs refreshed;
+no functional/port changes. Cyrius 6.2.2→6.5.2, majra 2.4.6→2.5.3, bote-core 2.7.5→3.1.4 (major),
+ai-hwaccel 2.3.9→2.3.15. Four code fixes were required, all mechanical:
+1. `src/mcp_tools_system.cyr` — bayan renamed its cstr+len JSON entry `json_v_parse_str` →
+   `json_v_parse_buf` (bayan 1.3.0; the `_str` suffix is reserved for the Str-taking overload that
+   Cyrius auto-dispatches to, so a cstr+len fn may never hold that name). Same signature.
+2. `src/md5.cyr` + `src/error.cyr` — enum-constant array sizes replaced with literals (the cycc
+   `FINDVAR` < 1024 cap; see the pattern note above). The bigger 6.5.2 stdlib pushed `md5.cyr` past it.
+3. **szal's bare `ERR_*` → `SZAL_ERR_*`** (11 constants) and `ConversionTools`' `SECS_PER_*`/
+   `BYTES_PER_*` → `SZAL_*`. Matches what sigil/bote/ai-hwaccel all did upstream in the same window,
+   and fixed a genuine latent hazard: szal's `BYTES_PER_GB` (2^30) vs ai-hwaccel's
+   `var BYTES_PER_GB` (10^9) — **different values**, silently resolved by include order.
+4. `src/engine_distributed.cyr` — reformatted for the 6.5.2 formatter (continuation-line indent).
 All engine modules ported (six modes + core + step_exec + Engine + sub_flow + **hardware/row 17**).
 M3: streaming (`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` —
 result/errcode/**validate_path security**/registration) + **MCP pool + tenant** done; **bote-core

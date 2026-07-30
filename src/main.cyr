@@ -37,7 +37,7 @@ include "lib/fs.cyr"
 include "lib/process.cyr"
 include "src/vendor/ai-hwaccel.cyr"
 
-# --- vendored deps (hoosh pattern). Full majra 2.4.6 dist with szal-collision renames applied
+# --- vendored deps (hoosh pattern). Full majra 2.5.3 dist with szal-collision renames applied
 # (MJ_ERR_/MJ_STEP_/MJ_TRIGGER_ + majra_uuid_generate/majra_step_result_new) — synced by
 # scripts/sync-majra.sh. See docs/development/majra-vendoring.md. ---
 include "src/vendor/majra.cyr"
@@ -73,10 +73,12 @@ include "src/mcp.cyr"
 include "src/mcp_pool.cyr"
 include "src/mcp_tenant.cyr"
 include "src/mcp_tools_encoding.cyr"
-# sigil (sha256/hex_encode) + random (random_bytes) for the hash tools. Included HERE, after the
-# szal core modules, NOT in the stdlib block: sigil defines its own `ERR_NONE` enum constant that
-# collides with src/error.cyr's, and including it before error.cyr breaks that enum's resolution
-# (error.cyr:36 `var buf[SZAL_ERR_MSG_CAP]`). Late inclusion keeps error.cyr's enum authoritative.
+# sigil (sha256/hex_encode) + random (random_bytes) for the hash tools. Kept HERE, after the szal
+# core modules, rather than in the stdlib block above. Historically this was load-bearing: sigil
+# defined a bare `ERR_NONE` that collided with src/error.cyr's, and including it first broke that
+# enum's resolution. Both halves of that clash are gone as of 2.1.0 — sigil 6.5.2 prefixes its codes
+# `SIGIL_ERR_*`, and szal's are now `SZAL_ERR_*` — so the ordering is no longer required, only
+# retained (it also keeps the hash/system/math/net tool groups next to the libs they pull in).
 include "lib/ct.cyr"
 include "lib/thread_local.cyr"
 include "lib/sigil.cyr"

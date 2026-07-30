@@ -76,7 +76,9 @@ fn _sys_uptime_json() {
     var n = file_read_all("/proc/uptime", buf, SYS_UPTIME_CAP);
     if (n <= 0) { return bayan_json_v_null(); }
     var tlen = _sys_token_len(buf, n);
-    var v = bayan_json_v_parse_str(buf, tlen);
+    # bayan 1.3.0+ renamed the cstr+len entry `_parse_str` -> `_parse_buf` (the `_str` suffix is
+    # reserved for the Str-taking overload, which Cyrius auto-dispatches to). Same signature.
+    var v = bayan_json_v_parse_buf(buf, tlen);
     if (v == 0) { return bayan_json_v_null(); }
     return v;
 }

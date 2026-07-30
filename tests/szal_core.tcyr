@@ -83,7 +83,7 @@ fn main() {
 
     # --- sanity: a symbol from every module resolves in this single TU ---
     test_group("cross-module: every module's surface is linkable");
-    assert_eq(ERR_CYCLE, 6, "error: ERR_CYCLE code");
+    assert_eq(SZAL_ERR_CYCLE, 6, "error: SZAL_ERR_CYCLE code");
     assert(state_is_terminal(STATE_COMPLETED), "state: Completed terminal");
     assert_streq(md5_hex("abc", 3), "900150983cd24fb0d6963f7d28e17f72", "md5: abc vector");
 
@@ -101,8 +101,8 @@ fn main() {
     assert_eq(step_depends_on_len(flow_step_at(pipe, 1)), 1, "deploy keeps its dependency");
     assert_eq(step_depends_on_hi(flow_step_at(pipe, 1), 0), step_id_hi(build), "dep hi matches build");
 
-    # --- flow + step: a cycle is rejected with ERR_CYCLE and the flow-name detail ---
-    test_group("flow + step: a<->b cycle is Err(ERR_CYCLE)");
+    # --- flow + step: a cycle is rejected with SZAL_ERR_CYCLE and the flow-name detail ---
+    test_group("flow + step: a<->b cycle is Err(SZAL_ERR_CYCLE)");
     var ca = step_new(str_from("a"));
     var cb = step_new(str_from("b"));
     step_depends_on_add(cb, step_id_hi(ca), step_id_lo(ca));
@@ -112,7 +112,7 @@ fn main() {
     flow_add_step(broken, cb);
     var cyc = flow_validate(broken);
     assert(is_err_result(cyc), "cyclic dag is Err");
-    assert_eq(err_code_of(cyc), ERR_CYCLE, "cycle code is ERR_CYCLE");
+    assert_eq(err_code_of(cyc), SZAL_ERR_CYCLE, "cycle code is SZAL_ERR_CYCLE");
     assert(str_eq_cstr(szal_get_err_msg(), "broken"), "cycle detail is the flow name");
 
     # --- condition + step + uuid: build a JSON step-context, then evaluate against it ---

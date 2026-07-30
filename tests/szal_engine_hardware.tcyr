@@ -3,7 +3,7 @@
 # Ports the #[cfg(test)] module from rust-old/src/engine/hardware.rs: check_requirements (REQ_NONE
 # always passes; GPU fails when no accelerator is present), effective_concurrency (CPU-only =
 # unconstrained; capped at device count), and the Debug rendering. Plus szal-specific runner-wiring
-# tests: engine_run consults config.hardware (Ok when satisfiable, Err(ERR_HW_UNAVAILABLE) when not),
+# tests: engine_run consults config.hardware (Ok when satisfiable, Err(SZAL_ERR_HW_UNAVAILABLE) when not),
 # and is a no-op when no hardware context is configured.
 #
 # Machine-agnostic like the Rust suite: accelerator-dependent assertions branch on

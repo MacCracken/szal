@@ -31,9 +31,16 @@ var _md5_s[64];
 # RFC 1321 §3.4 — the 64 additive constants K[i] = floor(abs(sin(i+1)) * 2^32).
 # Each slot is one 32-bit value (held in the low word of a native i64 slot, 8 bytes apart):
 # 64 slots * 8 bytes = 512 bytes. `var buf[N]` needs a literal/enum-constant size.
+#
+# The size is a LITERAL, not the `MD5_K_BYTES` enum constant below, deliberately: cycc resolves an
+# enum-constant array size through FINDVAR, which only honours table indices < 1024
+# (`parse_decl.cyr` "array size identifier must be an enum constant"). Whether this declaration
+# lands under that cap depends on how many globals the preceding includes declared — so with the
+# 6.5.2 stdlib (sigil/bayan grew substantially) the enum form started failing in the smaller
+# per-module test suites. A literal is index-independent. The enum is kept as the documented name.
 enum Md5KLayout { MD5_K_BYTES = 512; }
 var _md5_k_init = 0;
-var _md5_k[MD5_K_BYTES];
+var _md5_k[512];
 
 # Lazily populate the s (shift) and K (sine) tables. Idempotent; safe to call every digest.
 fn _md5_tables_init(): i64 {

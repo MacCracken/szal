@@ -4,8 +4,14 @@
 # majra bundles its own workflow/dag/error surface that overlaps szal's. Cyrius duplicate-symbol
 # semantics = last-definition-wins, so the colliding majra symbols are renamed (in the vendored
 # copy ONLY — never szal's src/*.cyr). Safe because szal never passes its own values into majra's
-# workflow surface (szal implements its own engine). Full rationale + the verified 9-symbol
-# collision set: docs/development/majra-vendoring.md.
+# workflow surface (szal implements its own engine). Full rationale + the collision set:
+# docs/development/majra-vendoring.md.
+#
+# Re-verified against majra 2.5.3 (szal 2.1.0): NO new clashes. The documented set shrank 9 -> 7
+# because szal prefixed its own error codes SZAL_ERR_* at 2.1.0, so majra's bare ERR_NONE/ERR_QUEUE
+# no longer collide with szal at all. The MJ_ERR_ rename below is therefore now belt-and-braces
+# rather than load-bearing — KEEP IT: it still isolates majra's 20 bare ERR_* from bote/ai-hwaccel/
+# stdlib, which is why a full main.cyr build reports zero duplicate symbols.
 #
 # Renames (word-boundary anchored, idempotent):
 #   ERR_*     -> MJ_ERR_*       STEP_*    -> MJ_STEP_*       TRIGGER_* -> MJ_TRIGGER_*

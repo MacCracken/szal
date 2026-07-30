@@ -195,7 +195,7 @@ fn flow_with_timeout(f, ms) {
 #   3. any step with trigger_mode Any AND empty depends_on is invalid.
 fn flow_validate(f) {
     if (f == 0) {
-        return szal_err(ERR_FLOW_INVALID, str_from("flow is null"));
+        return szal_err(SZAL_ERR_FLOW_INVALID, str_from("flow is null"));
     }
     var mode = flow_mode(f);
     if (mode == FLOW_DAG) {
@@ -205,7 +205,7 @@ fn flow_validate(f) {
         str_builder_add_cstr(sb, "steps have dependencies but flow mode is ");
         str_builder_add_cstr(sb, flow_mode_display(mode));
         str_builder_add_cstr(sb, " (use dag mode for dependencies)");
-        return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+        return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sb));
     }
     if (mode == FLOW_HIERARCHICAL) {
         _flow_validate_hierarchical(flow_steps(f))?;
@@ -220,7 +220,7 @@ fn flow_validate(f) {
             str_builder_add_cstr(sb2, "step '");
             str_builder_add(sb2, step_name(step));
             str_builder_add_cstr(sb2, "' has trigger_mode Any but no dependencies");
-            return szal_err(ERR_FLOW_INVALID, str_builder_build(sb2));
+            return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sb2));
         }
         i = i + 1;
     }
@@ -254,7 +254,7 @@ fn _flow_validate_hierarchical(steps) {
             str_builder_add_cstr(sb, "step '");
             str_builder_add(sb, step_name(step));
             str_builder_add_cstr(sb, "' has depends_on in hierarchical mode (use sub_steps for nesting)");
-            return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+            return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sb));
         }
         _flow_validate_hierarchical(step_sub_steps(step))?;
         i = i + 1;
@@ -264,8 +264,8 @@ fn _flow_validate_hierarchical(steps) {
 
 # _flow_check_cycles(f) -> Ok(0) or Err. Mirrors check_cycles (flow.rs 170-220): a DFS three-
 # color cycle check over the depends_on edges, then a check that every depends_on target
-# references a known step. On a cycle: Err(ERR_CYCLE) with the FLOW NAME as the detail
-# (CycleDetected(self.name)). On an unknown dep: Err(ERR_FLOW_INVALID) with the per-step msg.
+# references a known step. On a cycle: Err(SZAL_ERR_CYCLE) with the FLOW NAME as the detail
+# (CycleDetected(self.name)). On an unknown dep: Err(SZAL_ERR_FLOW_INVALID) with the per-step msg.
 #
 # UUIDs are 128-bit (two i64 halves); we index steps by a 32-char hex UUID-string key in cstr-
 # keyed hashmaps (id_set / visited / in_stack) and resolve a node's neighbor list (depends_on)
@@ -294,7 +294,7 @@ fn _flow_check_cycles(f) {
         var key2 = str_cstr(uuid_to_str(step_id_hi(step2), step_id_lo(step2)));
         if (map_has(visited, key2) == 0) {
             if (_flow_dfs(key2, deps_map, visited, in_stack) == 1) {
-                return szal_err(ERR_CYCLE, flow_name(f));
+                return szal_err(SZAL_ERR_CYCLE, flow_name(f));
             }
         }
         i2 = i2 + 1;
@@ -313,7 +313,7 @@ fn _flow_check_cycles(f) {
                 str_builder_add_cstr(sb, "step '");
                 str_builder_add(sb, step_name(step3));
                 str_builder_add_cstr(sb, "' depends on non-existent step");
-                return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+                return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sb));
             }
             j = j + 1;
         }

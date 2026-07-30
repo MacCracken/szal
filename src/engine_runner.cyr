@@ -380,7 +380,7 @@ fn _engine_finalize_queue(e, flow, results, start_ms) {
 
 # Hardware requirements pre-check (row 17): when EngineConfig.hardware is set, validate every step's
 # accelerator requirement against the detected registry. Returns Ok(0) (also when no hardware ctx is
-# configured) or Err(ERR_HW_UNAVAILABLE). Mirrors the `#[cfg(feature = "hardware")] if let Some(hw)`
+# configured) or Err(SZAL_ERR_HW_UNAVAILABLE). Mirrors the `#[cfg(feature = "hardware")] if let Some(hw)`
 # blocks (runner.rs 144-147 / 374-377 / 530-533) — engine_hardware.hw_check_requirements.
 fn _engine_check_hardware(e, flow) {
     var hwc = engine_config_hardware_ctx(engine_config(e));
@@ -444,7 +444,7 @@ fn engine_run_with_cancellation(e, flow, token) {
 }
 
 # Execute a Dag-mode `flow` distributed across the nodes of `fleet` (a majra FleetQueue). Requires
-# Dag mode — any other mode returns Err(ERR_FLOW_INVALID). Shares the prepare/finalize/persistence
+# Dag mode — any other mode returns Err(SZAL_ERR_FLOW_INVALID). Shares the prepare/finalize/persistence
 # path with engine_run. Mirrors run_distributed + finalize (runner.rs 361-515). Returns
 # Ok(FlowResult*), or the Err from validate / the mode check.
 fn engine_run_distributed(e, flow, fleet) {
@@ -454,7 +454,7 @@ fn engine_run_distributed(e, flow, fleet) {
         var sb = str_builder_new();
         str_builder_add_cstr(sb, "run_distributed requires Dag mode, got ");
         str_builder_add_cstr(sb, flow_mode_display(flow_mode(flow)));
-        return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+        return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sb));
     }
     var hwv = _engine_check_hardware(e, flow);
     if (is_err_result(hwv) == 1) { return hwv; }

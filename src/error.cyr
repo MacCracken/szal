@@ -11,45 +11,51 @@
 # Naming: every symbol is szal_-prefixed — vendored majra defines bare set_err_msg/err_name
 # (port-plan §3.3); the szal_ prefix keeps both surfaces collision-free.
 
-# SzalError variants as integer codes. ERR_NONE=0 is the "no error" sentinel (Rust's enum
-# is always-an-error; ERR_NONE is the Cyrius convention for absence). The Rust hardware/majra
+# SzalError variants as integer codes. SZAL_ERR_NONE=0 is the "no error" sentinel (Rust's enum
+# is always-an-error; SZAL_ERR_NONE is the Cyrius convention for absence). The Rust hardware/majra
 # feature-gated variants are always present here (port-plan feature strategy: no #ifdef).
 enum SzalErr {
-    ERR_NONE = 0;
-    ERR_STEP_FAILED = 1;
-    ERR_STEP_TIMEOUT = 2;
-    ERR_FLOW_INVALID = 3;
-    ERR_RETRY_EXHAUSTED = 4;
-    ERR_ROLLBACK_FAILED = 5;
-    ERR_CYCLE = 6;
-    ERR_MIGRATION = 7;
-    ERR_HW_UNAVAILABLE = 8;
-    ERR_QUEUE = 9;
-    ERR_OTHER = 10;
+    SZAL_ERR_NONE = 0;
+    SZAL_ERR_STEP_FAILED = 1;
+    SZAL_ERR_STEP_TIMEOUT = 2;
+    SZAL_ERR_FLOW_INVALID = 3;
+    SZAL_ERR_RETRY_EXHAUSTED = 4;
+    SZAL_ERR_ROLLBACK_FAILED = 5;
+    SZAL_ERR_CYCLE = 6;
+    SZAL_ERR_MIGRATION = 7;
+    SZAL_ERR_HW_UNAVAILABLE = 8;
+    SZAL_ERR_QUEUE = 9;
+    SZAL_ERR_OTHER = 10;
 }
 
-# Detail buffer capacity (bytes). Enum constant so it is legal as a `var buf[N]` size.
+# Detail buffer capacity (bytes). Used for the length clamp in szal_err_set_detail.
 enum SzalErrBuf { SZAL_ERR_MSG_CAP = 512; }
 
 # Process-global last-error detail. STATIC data section — shared across all calls, not
 # thread-safe (see header). _szal_err_msg_len is the live byte length (<= cap).
-var _szal_err_msg_buf[SZAL_ERR_MSG_CAP];
+#
+# Size is a LITERAL, kept in sync with SZAL_ERR_MSG_CAP by hand. cycc resolves an enum-constant
+# array size through FINDVAR and only honours table indices < 1024 (`parse_decl.cyr` "array size
+# identifier must be an enum constant"), so the enum form fails once the preceding includes have
+# declared >1024 globals — which is include-order dependent and grew past the cap with the 6.5.2
+# stdlib. A literal is index-independent, so this no longer constrains include order.
+var _szal_err_msg_buf[512];
 var _szal_err_msg_len = 0;
 
 # Map an error code to its snake_case name (cstr). Port-introduced convenience — Rust used
 # thiserror Display; the rich interpolated text lives in the detail buffer instead.
 fn szal_err_name(code) {
-    if (code == ERR_NONE) { return "none"; }
-    if (code == ERR_STEP_FAILED) { return "step_failed"; }
-    if (code == ERR_STEP_TIMEOUT) { return "step_timeout"; }
-    if (code == ERR_FLOW_INVALID) { return "flow_invalid"; }
-    if (code == ERR_RETRY_EXHAUSTED) { return "retry_exhausted"; }
-    if (code == ERR_ROLLBACK_FAILED) { return "rollback_failed"; }
-    if (code == ERR_CYCLE) { return "cycle_detected"; }
-    if (code == ERR_MIGRATION) { return "migration_failed"; }
-    if (code == ERR_HW_UNAVAILABLE) { return "hardware_unavailable"; }
-    if (code == ERR_QUEUE) { return "queue_error"; }
-    if (code == ERR_OTHER) { return "other"; }
+    if (code == SZAL_ERR_NONE) { return "none"; }
+    if (code == SZAL_ERR_STEP_FAILED) { return "step_failed"; }
+    if (code == SZAL_ERR_STEP_TIMEOUT) { return "step_timeout"; }
+    if (code == SZAL_ERR_FLOW_INVALID) { return "flow_invalid"; }
+    if (code == SZAL_ERR_RETRY_EXHAUSTED) { return "retry_exhausted"; }
+    if (code == SZAL_ERR_ROLLBACK_FAILED) { return "rollback_failed"; }
+    if (code == SZAL_ERR_CYCLE) { return "cycle_detected"; }
+    if (code == SZAL_ERR_MIGRATION) { return "migration_failed"; }
+    if (code == SZAL_ERR_HW_UNAVAILABLE) { return "hardware_unavailable"; }
+    if (code == SZAL_ERR_QUEUE) { return "queue_error"; }
+    if (code == SZAL_ERR_OTHER) { return "other"; }
     return "unknown";
 }
 

@@ -10,7 +10,7 @@
 # This is port-plan §4 row 10.
 #
 # Usage: include "src/metrics.cyr"
-# Requires: src/vendor/majra.cyr (the full vendored majra 2.4.6 dist — provides
+# Requires: src/vendor/majra.cyr (the full vendored majra 2.5.3 dist — provides
 #   METRICS_VTABLE_SIZE, noop_metrics, metrics_workflow_*), which needs lib/freelist (fl_alloc),
 #   lib/fnptr (fncall2), and lib/thread (chan_/mutex_). See docs/development/majra-vendoring.md.
 # Naming: wrappers are metric_-prefixed (mirroring the Rust crate-internal fn names).

@@ -23,7 +23,7 @@
 # Naming: every public symbol is cond_/tok_/expr_/compiled_/cache_-prefixed; internals use _.
 #
 # Error model: Rust returned Result<_, String> with rich messages. Here a parse/compile error is
-# Err(ERR_FLOW_INVALID) with the human message in the szal global last-error buffer (szal_err).
+# Err(SZAL_ERR_FLOW_INVALID) with the human message in the szal global last-error buffer (szal_err).
 # This is the engine-wide flatten (port-plan §1.6); the message text matches Rust verbatim where
 # a fixed string, and is formatted with str_builder where Rust interpolated.
 
@@ -152,7 +152,7 @@ fn _cond_parse_num(bytes, start, end) {
 }
 
 # Tokenize an input Str into a vec of token blobs. On success returns Ok(vec). On a lexical error
-# returns Err(ERR_FLOW_INVALID) with the message set in the szal last-error buffer (matching the
+# returns Err(SZAL_ERR_FLOW_INVALID) with the message set in the szal last-error buffer (matching the
 # Rust error strings: "unterminated string literal", "invalid number '...': ...",
 # "unexpected character '...'", "unexpected byte 0x..").
 fn _cond_tokenize(input) {
@@ -192,7 +192,7 @@ fn _cond_tokenize(input) {
                 i = i + 1;
             }
             if (i >= len) {
-                return szal_err(ERR_FLOW_INVALID, str_from("unterminated string literal"));
+                return szal_err(SZAL_ERR_FLOW_INVALID, str_from("unterminated string literal"));
             }
             var s = str_new(bytes + start, i - start);
             vec_push(tokens, _tok_new(TOK_STRING, s));
@@ -243,12 +243,12 @@ fn _cond_tokenize(input) {
             str_builder_add_cstr(sbc, "unexpected character '");
             str_builder_add_byte(sbc, b);
             str_builder_add_cstr(sbc, "'");
-            return szal_err(ERR_FLOW_INVALID, str_builder_build(sbc));
+            return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sbc));
         }
         var sbx = str_builder_new();
         str_builder_add_cstr(sbx, "unexpected byte 0x");
         _cond_emit_hex2(sbx, b);
-        return szal_err(ERR_FLOW_INVALID, str_builder_build(sbx));
+        return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sbx));
     }
     return Ok(tokens);
 }
@@ -410,7 +410,7 @@ fn _parse_value(p) {
     }
     var t = _parser_peek(p);
     if (t == 0) {
-        return szal_err(ERR_FLOW_INVALID, str_from("unexpected end of expression"));
+        return szal_err(SZAL_ERR_FLOW_INVALID, str_from("unexpected end of expression"));
     }
     var k = tok_kind(t);
     if (k == TOK_STRING) {
@@ -436,13 +436,13 @@ fn _parse_value(p) {
         if ((nxt != 0) && (tok_kind(nxt) == TOK_RPAREN)) {
             return Ok(e);
         }
-        return szal_err(ERR_FLOW_INVALID, str_from("expected ')'"));
+        return szal_err(SZAL_ERR_FLOW_INVALID, str_from("expected ')'"));
     }
     # Unexpected token. Rust prints "unexpected token: <Debug>"; we name the kind.
     var sb = str_builder_new();
     str_builder_add_cstr(sb, "unexpected token: ");
     str_builder_add_cstr(sb, _cond_tok_name(k));
-    return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+    return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sb));
 }
 
 # Map a token kind to a human name for error messages (port-introduced; Rust used {tok:?}).
@@ -678,13 +678,13 @@ fn compiled_ast(c) { return load64(c + CC_AST); }
 
 # Compile a condition expression (Str) into a reusable CompiledCondition. An empty or
 # whitespace-only expression compiles to a vacuously-true literal with an empty source. Returns
-# Err(ERR_FLOW_INVALID) (message in the szal last-error buffer) on a malformed expression or
+# Err(SZAL_ERR_FLOW_INVALID) (message in the szal last-error buffer) on a malformed expression or
 # trailing tokens. Mirrors Rust CompiledCondition::compile.
 fn compiled_compile(expr) {
     var trimmed = str_trim(expr);
     if (str_len(trimmed) == 0) {
         var c0 = alloc(COMPILED_SIZE);
-        if (c0 == 0) { return szal_err(ERR_OTHER, str_from("out of memory")); }
+        if (c0 == 0) { return szal_err(SZAL_ERR_OTHER, str_from("out of memory")); }
         store64(c0 + CC_SOURCE, str_from(""));
         store64(c0 + CC_AST, _expr_new(EXPR_LITERAL, bayan_json_v_bool_new(1), 0));
         return Ok(c0);
@@ -697,10 +697,10 @@ fn compiled_compile(expr) {
         var sb = str_builder_new();
         str_builder_add_cstr(sb, "unexpected trailing token: ");
         str_builder_add_cstr(sb, _cond_tok_name(tok_kind(vec_get(tokens, pos))));
-        return szal_err(ERR_FLOW_INVALID, str_builder_build(sb));
+        return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sb));
     }
     var c = alloc(COMPILED_SIZE);
-    if (c == 0) { return szal_err(ERR_OTHER, str_from("out of memory")); }
+    if (c == 0) { return szal_err(SZAL_ERR_OTHER, str_from("out of memory")); }
     store64(c + CC_SOURCE, trimmed);
     store64(c + CC_AST, ast);
     return Ok(c);
@@ -768,9 +768,9 @@ fn _cache_compiled(cache, expr) {
 # cached message). Mirrors Rust ConditionCache::evaluate.
 fn cache_evaluate(cache, expr, context) {
     var entry = _cache_compiled(cache, expr);
-    if (entry == 0) { return szal_err(ERR_OTHER, str_from("out of memory")); }
+    if (entry == 0) { return szal_err(SZAL_ERR_OTHER, str_from("out of memory")); }
     if (load64(entry + CE_IS_ERR) == 1) {
-        return szal_err(ERR_FLOW_INVALID, load64(entry + CE_PAYLOAD));
+        return szal_err(SZAL_ERR_FLOW_INVALID, load64(entry + CE_PAYLOAD));
     }
     return compiled_evaluate(load64(entry + CE_PAYLOAD), context);
 }

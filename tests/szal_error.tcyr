@@ -19,30 +19,30 @@ fn main() {
     alloc_init();
 
     test_group("szal error codes");
-    assert_eq(ERR_NONE, 0, "ERR_NONE is 0");
-    assert_eq(ERR_STEP_FAILED, 1, "ERR_STEP_FAILED is 1");
-    assert_eq(ERR_STEP_TIMEOUT, 2, "ERR_STEP_TIMEOUT is 2");
-    assert_eq(ERR_FLOW_INVALID, 3, "ERR_FLOW_INVALID is 3");
-    assert_eq(ERR_RETRY_EXHAUSTED, 4, "ERR_RETRY_EXHAUSTED is 4");
-    assert_eq(ERR_ROLLBACK_FAILED, 5, "ERR_ROLLBACK_FAILED is 5");
-    assert_eq(ERR_CYCLE, 6, "ERR_CYCLE is 6");
-    assert_eq(ERR_MIGRATION, 7, "ERR_MIGRATION is 7");
-    assert_eq(ERR_HW_UNAVAILABLE, 8, "ERR_HW_UNAVAILABLE is 8");
-    assert_eq(ERR_QUEUE, 9, "ERR_QUEUE is 9");
-    assert_eq(ERR_OTHER, 10, "ERR_OTHER is 10");
+    assert_eq(SZAL_ERR_NONE, 0, "SZAL_ERR_NONE is 0");
+    assert_eq(SZAL_ERR_STEP_FAILED, 1, "SZAL_ERR_STEP_FAILED is 1");
+    assert_eq(SZAL_ERR_STEP_TIMEOUT, 2, "SZAL_ERR_STEP_TIMEOUT is 2");
+    assert_eq(SZAL_ERR_FLOW_INVALID, 3, "SZAL_ERR_FLOW_INVALID is 3");
+    assert_eq(SZAL_ERR_RETRY_EXHAUSTED, 4, "SZAL_ERR_RETRY_EXHAUSTED is 4");
+    assert_eq(SZAL_ERR_ROLLBACK_FAILED, 5, "SZAL_ERR_ROLLBACK_FAILED is 5");
+    assert_eq(SZAL_ERR_CYCLE, 6, "SZAL_ERR_CYCLE is 6");
+    assert_eq(SZAL_ERR_MIGRATION, 7, "SZAL_ERR_MIGRATION is 7");
+    assert_eq(SZAL_ERR_HW_UNAVAILABLE, 8, "SZAL_ERR_HW_UNAVAILABLE is 8");
+    assert_eq(SZAL_ERR_QUEUE, 9, "SZAL_ERR_QUEUE is 9");
+    assert_eq(SZAL_ERR_OTHER, 10, "SZAL_ERR_OTHER is 10");
 
     test_group("szal_err_name");
-    assert_streq(szal_err_name(ERR_NONE), "none", "name ERR_NONE");
-    assert_streq(szal_err_name(ERR_STEP_FAILED), "step_failed", "name ERR_STEP_FAILED");
-    assert_streq(szal_err_name(ERR_STEP_TIMEOUT), "step_timeout", "name ERR_STEP_TIMEOUT");
-    assert_streq(szal_err_name(ERR_FLOW_INVALID), "flow_invalid", "name ERR_FLOW_INVALID");
-    assert_streq(szal_err_name(ERR_RETRY_EXHAUSTED), "retry_exhausted", "name ERR_RETRY_EXHAUSTED");
-    assert_streq(szal_err_name(ERR_ROLLBACK_FAILED), "rollback_failed", "name ERR_ROLLBACK_FAILED");
-    assert_streq(szal_err_name(ERR_CYCLE), "cycle_detected", "name ERR_CYCLE");
-    assert_streq(szal_err_name(ERR_MIGRATION), "migration_failed", "name ERR_MIGRATION");
-    assert_streq(szal_err_name(ERR_HW_UNAVAILABLE), "hardware_unavailable", "name ERR_HW_UNAVAILABLE");
-    assert_streq(szal_err_name(ERR_QUEUE), "queue_error", "name ERR_QUEUE");
-    assert_streq(szal_err_name(ERR_OTHER), "other", "name ERR_OTHER");
+    assert_streq(szal_err_name(SZAL_ERR_NONE), "none", "name SZAL_ERR_NONE");
+    assert_streq(szal_err_name(SZAL_ERR_STEP_FAILED), "step_failed", "name SZAL_ERR_STEP_FAILED");
+    assert_streq(szal_err_name(SZAL_ERR_STEP_TIMEOUT), "step_timeout", "name SZAL_ERR_STEP_TIMEOUT");
+    assert_streq(szal_err_name(SZAL_ERR_FLOW_INVALID), "flow_invalid", "name SZAL_ERR_FLOW_INVALID");
+    assert_streq(szal_err_name(SZAL_ERR_RETRY_EXHAUSTED), "retry_exhausted", "name SZAL_ERR_RETRY_EXHAUSTED");
+    assert_streq(szal_err_name(SZAL_ERR_ROLLBACK_FAILED), "rollback_failed", "name SZAL_ERR_ROLLBACK_FAILED");
+    assert_streq(szal_err_name(SZAL_ERR_CYCLE), "cycle_detected", "name SZAL_ERR_CYCLE");
+    assert_streq(szal_err_name(SZAL_ERR_MIGRATION), "migration_failed", "name SZAL_ERR_MIGRATION");
+    assert_streq(szal_err_name(SZAL_ERR_HW_UNAVAILABLE), "hardware_unavailable", "name SZAL_ERR_HW_UNAVAILABLE");
+    assert_streq(szal_err_name(SZAL_ERR_QUEUE), "queue_error", "name SZAL_ERR_QUEUE");
+    assert_streq(szal_err_name(SZAL_ERR_OTHER), "other", "name SZAL_ERR_OTHER");
     assert_streq(szal_err_name(999), "unknown", "name unknown code");
 
     test_group("szal error detail buffer");
@@ -55,9 +55,9 @@ fn main() {
     assert_eq(str_len(szal_get_err_msg()), 0, "cleared again");
 
     test_group("szal_err constructor returns Err(code)");
-    var r = szal_err(ERR_CYCLE, str_from("cycle in dag 'x'"));
+    var r = szal_err(SZAL_ERR_CYCLE, str_from("cycle in dag 'x'"));
     assert(is_err_result(r), "szal_err returns an Err");
-    assert_eq(err_code_of(r), ERR_CYCLE, "szal_err carries the code");
+    assert_eq(err_code_of(r), SZAL_ERR_CYCLE, "szal_err carries the code");
     assert(str_eq_cstr(szal_get_err_msg(), "cycle in dag 'x'"), "szal_err set the detail");
 
     var rc = assert_summary();

@@ -18,6 +18,12 @@
 # no longer owns the registry_new symbol, so overlaying ai-hwaccel for engine_hardware/row 17 no
 # longer clashes. See docs/development/issues/2026-06-11-registry-new-collision.md (resolved).
 #
+# NOTE (bote 3.1.4, szal 2.1.0): re-verified on the 2.7.5 -> 3.1.4 MAJOR bump — `compiled_compile`
+# is STILL the only szal collision, so the rename below remains the complete set, and nothing in
+# szal's MCP surface needed changing despite the major version. bote also prefixed all 13 of its
+# bare ERR_* to BOTE_ERR_* in 3.x, which cleared the old bote x ai-hwaccel ERR_PARSE /
+# ERR_TOOL_NOT_FOUND duplicate-symbol warnings. szal referenced none of those constants directly.
+#
 # After bumping bote, RE-RUN the collision scan:
 #   grep -oE '^fn [a-zA-Z_][a-zA-Z0-9_]*' ../bote/dist/bote-core.cyr | awk '{print $2}' | sort -u \
 #     | comm -12 - <(grep -hoE '^fn [a-zA-Z_][a-zA-Z0-9_]*' src/*.cyr | awk '{print $2}' | sort -u)

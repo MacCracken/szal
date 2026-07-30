@@ -10,13 +10,13 @@
 # Usage: include AFTER src/mcp.cyr (+ lib/bayan, lib/str, lib/fmt for fmt_float_buf).
 
 enum ConversionTools {
-    SECS_PER_MINUTE = 60;
-    SECS_PER_HOUR = 3600;
-    SECS_PER_DAY = 86400;
-    BYTES_PER_KB = 1024;
-    BYTES_PER_MB = 1048576;
-    BYTES_PER_GB = 1073741824;
-    BYTES_PER_TB = 1099511627776;
+    SZAL_SECS_PER_MINUTE = 60;
+    SZAL_SECS_PER_HOUR = 3600;
+    SZAL_SECS_PER_DAY = 86400;
+    SZAL_BYTES_PER_KB = 1024;
+    SZAL_BYTES_PER_MB = 1048576;
+    SZAL_BYTES_PER_GB = 1073741824;
+    SZAL_BYTES_PER_TB = 1099511627776;
 }
 
 fn _conv_parse_args(args) {
@@ -165,10 +165,10 @@ fn _byte_format_handler(args, claims) {
 
     var divisor = 1;
     var unit = "B";
-    if (bytes >= BYTES_PER_TB) { divisor = BYTES_PER_TB; unit = "TB"; }
-    elif (bytes >= BYTES_PER_GB) { divisor = BYTES_PER_GB; unit = "GB"; }
-    elif (bytes >= BYTES_PER_MB) { divisor = BYTES_PER_MB; unit = "MB"; }
-    elif (bytes >= BYTES_PER_KB) { divisor = BYTES_PER_KB; unit = "KB"; }
+    if (bytes >= SZAL_BYTES_PER_TB) { divisor = SZAL_BYTES_PER_TB; unit = "TB"; }
+    elif (bytes >= SZAL_BYTES_PER_GB) { divisor = SZAL_BYTES_PER_GB; unit = "GB"; }
+    elif (bytes >= SZAL_BYTES_PER_MB) { divisor = SZAL_BYTES_PER_MB; unit = "MB"; }
+    elif (bytes >= SZAL_BYTES_PER_KB) { divisor = SZAL_BYTES_PER_KB; unit = "KB"; }
 
     var value = f64_div(f64_from(bytes), f64_from(divisor));
     var fbuf = alloc(48);
@@ -182,9 +182,9 @@ fn _byte_format_handler(args, claims) {
     var out = bayan_json_v_obj_new();
     bayan_json_v_obj_set(out, str_from("bytes"), bayan_json_v_int_new(bytes));
     bayan_json_v_obj_set(out, str_from("formatted"), bayan_json_v_str_new(formatted));
-    bayan_json_v_obj_set(out, str_from("kb"), _ratio_json(bytes, BYTES_PER_KB));
-    bayan_json_v_obj_set(out, str_from("mb"), _ratio_json(bytes, BYTES_PER_MB));
-    bayan_json_v_obj_set(out, str_from("gb"), _ratio_json(bytes, BYTES_PER_GB));
+    bayan_json_v_obj_set(out, str_from("kb"), _ratio_json(bytes, SZAL_BYTES_PER_KB));
+    bayan_json_v_obj_set(out, str_from("mb"), _ratio_json(bytes, SZAL_BYTES_PER_MB));
+    bayan_json_v_obj_set(out, str_from("gb"), _ratio_json(bytes, SZAL_BYTES_PER_GB));
     var r = result_ok_json(out);
     return str_data(r);
 }
@@ -202,10 +202,10 @@ fn _duration_format_handler(args, claims) {
     var total = bayan_json_v_int(sv);
     var secs_f = bayan_json_v_float(sv);
 
-    var days = total / SECS_PER_DAY;
-    var hours = (total % SECS_PER_DAY) / SECS_PER_HOUR;
-    var minutes = (total % SECS_PER_HOUR) / SECS_PER_MINUTE;
-    var remaining = total % SECS_PER_MINUTE;
+    var days = total / SZAL_SECS_PER_DAY;
+    var hours = (total % SZAL_SECS_PER_DAY) / SZAL_SECS_PER_HOUR;
+    var minutes = (total % SZAL_SECS_PER_HOUR) / SZAL_SECS_PER_MINUTE;
+    var remaining = total % SZAL_SECS_PER_MINUTE;
 
     var sb = str_builder_new();
     var first = 1;
@@ -238,8 +238,8 @@ fn _duration_format_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("seconds"), bayan_json_v_float_new(secs_f));
     bayan_json_v_obj_set(out, str_from("formatted"), bayan_json_v_str_new(formatted));
     bayan_json_v_obj_set(out, str_from("days"), bayan_json_v_int_new(days));
-    bayan_json_v_obj_set(out, str_from("hours"), bayan_json_v_int_new(total / SECS_PER_HOUR));
-    bayan_json_v_obj_set(out, str_from("minutes"), bayan_json_v_int_new(total / SECS_PER_MINUTE));
+    bayan_json_v_obj_set(out, str_from("hours"), bayan_json_v_int_new(total / SZAL_SECS_PER_HOUR));
+    bayan_json_v_obj_set(out, str_from("minutes"), bayan_json_v_int_new(total / SZAL_SECS_PER_MINUTE));
     var r = result_ok_json(out);
     return str_data(r);
 }
