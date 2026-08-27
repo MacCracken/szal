@@ -18,16 +18,29 @@
 # no longer owns the registry_new symbol, so overlaying ai-hwaccel for engine_hardware/row 17 no
 # longer clashes. See docs/development/issues/2026-06-11-registry-new-collision.md (resolved).
 #
-# NOTE (bote 3.1.4, szal 2.1.0): re-verified on the 2.7.5 -> 3.1.4 MAJOR bump — `compiled_compile`
-# is STILL the only szal collision, so the rename below remains the complete set, and nothing in
-# szal's MCP surface needed changing despite the major version. bote also prefixed all 13 of its
-# bare ERR_* to BOTE_ERR_* in 3.x, which cleared the old bote x ai-hwaccel ERR_PARSE /
-# ERR_TOOL_NOT_FOUND duplicate-symbol warnings. szal referenced none of those constants directly.
+# NOTE (bote 3.3.7, szal 2.1.1): re-verified on the 3.1.4 -> 3.3.7 bump (two minors + 7 patches).
+# `compiled_compile` is STILL the only szal collision, so the rename below remains the complete set,
+# and all 13 bote symbols szal calls are signature-identical. No function was removed from the core
+# bundle and no tool-result JSON shape changed; 16 fns were added (the `content_*` family from
+# 3.3.6's new content.cyr module, plus dispatcher_server_name/_version/_set_server_info).
 #
-# After bumping bote, RE-RUN the collision scan:
-#   grep -oE '^fn [a-zA-Z_][a-zA-Z0-9_]*' ../bote/dist/bote-core.cyr | awk '{print $2}' | sort -u \
-#     | comm -12 - <(grep -hoE '^fn [a-zA-Z_][a-zA-Z0-9_]*' src/*.cyr | awk '{print $2}' | sort -u)
-# and add any new clashes to the sed below + this header.
+# The two DECLARED-BREAKING changes in that range do not reach szal:
+#   * 3.3.5 renamed cancel_token_new/_cancel/_is_cancelled -> bote_cancel_token_* (they collided
+#     with stdlib lib/async.cyr). Those live in bote's stream.cyr, which is NOT in the [lib.core]
+#     cut szal vendors — zero `cancel_token` hits in dist/bote-core.cyr at either version.
+#   * 3.3.0 grew Dispatcher 72 -> 88 bytes, but the new fields are APPENDED and szal never allocs
+#     or offsets a Dispatcher — it only calls dispatcher_new/_set_audit/_set_events/_handle/
+#     _registry. Unconfigured serverInfo is byte-identical on the wire to pre-3.3.0.
+# Also note dist/bote-core.deps grew 2 leaves -> 9 at 3.3.6 (hashmap bayan + string alloc vec str
+# fnptr chrono tagged). No impact: szal has no [deps.bote] block and builds --no-deps, and all 9 are
+# already in cyrius.cyml [deps].stdlib.
+#
+# szal's bote consumers are src/mcp.cyr, src/main.cyr, and the 15 src/mcp_tools_*.cyr (schema_prop_new).
+# NOT src/mcp_pool.cyr / src/mcp_tenant.cyr — those use majra ratelimit_* + stdlib only.
+#
+# After bumping bote, RE-RUN `scripts/scan-collisions.sh` — it covers all symbol kinds AND
+# cross-kind, which a same-kind `comm` of fn names cannot (that is how the SYS_GETRANDOM `var` vs
+# enum-constant collision hid until 2.1.1).
 #
 # Usage: scripts/sync-bote.sh [path-to-bote-checkout]   (default ../bote)
 set -eu

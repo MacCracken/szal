@@ -63,7 +63,7 @@ fn _par_skip(out, event_sink, step, reason) {
     var sid = uuid_to_str(step_id_hi(step), step_id_lo(step));
     emit(event_sink, event_step_skipped(step_name(step), sid, str_from(reason)));
     var sr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_SKIPPED,
-    bayan_json_v_null(), 0, 0);
+      bayan_json_v_null(), 0, 0);
     step_result_set_error(sr, str_from(reason));
     vec_push(out, sr);
     return 0;
@@ -144,7 +144,7 @@ fn run_parallel(steps, max_concurrency, timeout_ms, start_ms, token, ctx) {
             if (res == 0) {
                 # No result published (thread_create failed) -> the "task panicked" path.
                 var fr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
-                bayan_json_v_null(), 0, 0);
+                  bayan_json_v_null(), 0, 0);
                 step_result_set_error(fr, str_from("task panicked"));
                 vec_push(results, fr);
             } else {

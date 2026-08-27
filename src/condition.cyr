@@ -206,7 +206,7 @@ fn _cond_tokenize(input) {
                 i = i + 1;
             }
             if ((i < len) && (load8(bytes + i) == 46) && (i + 1 < len)
-            && (_cond_is_digit(load8(bytes + i + 1)) == 1)) {
+              && (_cond_is_digit(load8(bytes + i + 1)) == 1)) {
                 i = i + 1;
                 while ((i < len) && (_cond_is_digit(load8(bytes + i)) == 1)) {
                     i = i + 1;
@@ -858,7 +858,7 @@ fn cond_build_step_context(results, steps) {
         if (name != 0) {
             var entry = bayan_json_v_obj_new();
             bayan_json_v_obj_set(entry, str_from("status"),
-            bayan_json_v_str_new(str_from(step_status_display(step_result_status(r)))));
+              bayan_json_v_str_new(str_from(step_status_display(step_result_status(r)))));
             var out = step_result_output(r);
             if (out == 0) { out = bayan_json_v_null(); }
             bayan_json_v_obj_set(entry, str_from("output"), out);

@@ -92,9 +92,9 @@ fn tenant_ctx_to_json(c) {
     var q = tenant_ctx_quota(c);
     var qo = bayan_json_v_obj_new();
     bayan_json_v_obj_set(qo, str_from("max_requests_per_sec"),
-    bayan_json_v_float_new(tenant_quota_rate(q)));
+      bayan_json_v_float_new(tenant_quota_rate(q)));
     bayan_json_v_obj_set(qo, str_from("max_concurrent_flows"),
-    bayan_json_v_int_new(tenant_quota_max_flows(q)));
+      bayan_json_v_int_new(tenant_quota_max_flows(q)));
     bayan_json_v_obj_set(o, str_from("quota"), qo);
 
     var allowed = tenant_ctx_allowed_tools(c);

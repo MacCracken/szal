@@ -250,9 +250,9 @@ fn _base_convert_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("value", "{ \"type\": \"string\", \"description\": \"Number to convert\" }"));
     vec_push(v, schema_prop_new("from_base",
-    "{ \"type\": \"integer\", \"description\": \"Source base (2, 8, 10, 16)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Source base (2, 8, 10, 16)\" }"));
     vec_push(v, schema_prop_new("to_base",
-    "{ \"type\": \"integer\", \"description\": \"Target base (2, 8, 10, 16)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Target base (2, 8, 10, 16)\" }"));
     return v;
 }
 
@@ -276,19 +276,19 @@ fn conversion_tools() {
     vec_push(bc_req, "from_base");
     vec_push(bc_req, "to_base");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_base_convert", "Convert a number between bases (binary, octal, decimal, hexadecimal)",
-    _base_convert_props(), bc_req), &_base_convert_handler));
+        mcp_tool_def("szal_base_convert", "Convert a number between bases (binary, octal, decimal, hexadecimal)",
+          _base_convert_props(), bc_req), &_base_convert_handler));
 
     var bf_req = vec_new();
     vec_push(bf_req, "bytes");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_byte_format", "Convert bytes to human-readable format (KB, MB, GB, TB)",
-    _byte_format_props(), bf_req), &_byte_format_handler));
+        mcp_tool_def("szal_byte_format", "Convert bytes to human-readable format (KB, MB, GB, TB)",
+          _byte_format_props(), bf_req), &_byte_format_handler));
 
     var d_req = vec_new();
     vec_push(d_req, "seconds");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_duration_format", "Convert seconds to human-readable duration (Xd Xh Xm Xs) and reverse",
-    _duration_props(), d_req), &_duration_format_handler));
+        mcp_tool_def("szal_duration_format", "Convert seconds to human-readable duration (Xd Xh Xm Xs) and reverse",
+          _duration_props(), d_req), &_duration_format_handler));
     return tools;
 }

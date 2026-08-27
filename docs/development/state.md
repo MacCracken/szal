@@ -5,32 +5,51 @@
 
 ## Version
 
-**2.1.0** (in development) — Rust→Cyrius port. Rust 1.2.0 (13172 lines) frozen at
+**2.1.1** (in development) — Rust→Cyrius port. Rust 1.2.0 (13172 lines) frozen at
 `rust-old/` (git tag `1.2.0`) as the parity oracle. `VERSION` is the single source of truth;
 `cyrius.cyml` reads `${file:VERSION}`. (`scripts/version-bump.sh` writes only `VERSION`; its old
 Cargo.toml/Cargo.lock steps were dead — there is no root Cargo manifest — and were removed at 2.1.0.)
 
 ## Toolchain
 
-- **Cyrius pin**: `6.5.2` (in `cyrius.cyml [package].cyrius`) — bumped 6.2.2 → 6.5.2 at 2.1.0
-  (2026-07-29). The full suite (**1,437 assertions across 46 test files**) + main are green under
-  **6.5.2**, verified against the *released* `6.5.2-x86_64-linux` asset (the same artifact CI's
-  installer fetches), so CI's "Verify toolchain matches pin" step passes.
+- **Cyrius pin**: `6.5.35` (in `cyrius.cyml [package].cyrius`) — bumped 6.5.2 → 6.5.35 at 2.1.1
+  (2026-08-26). The full suite (**1,437 assertions across 46 test files**) + 5 fuzz harnesses +
+  the bench harness + main are green under **6.5.35**, so CI's "Verify toolchain matches pin" step
+  passes. Static data in the main binary dropped **13,414,112 → 806,176 bytes** on this bump.
   (Silence the lib-shadow note per-invocation with `CYRIUS_NO_WARN_SHADOW_LIB=1`.)
-  History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 → 6.2.2 → 6.5.2.
+  History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 → 6.2.2 → 6.5.2 → 6.5.35.
 
-- **⚠️ Local-install trap (cost real time; check this first if `cyrius --version` looks wrong):** a
-  *locally built* toolchain in `~/.cyrius/versions/<v>/` can embed the **previous** version string —
-  `versions/6.5.2/bin/cyrius` reported `cyrius 6.5.1`, and `versions/6.5.1/` reported `6.5.0`. The
-  banner comes from the compile-time `_VERSION_TOOLCHAIN` embed, not from the directory name or
-  `~/.cyrius/current`, so with the pin at 6.5.2 the wrapper prints a **spurious**
-  `manifest-pin: 6.5.2 (drift — wrapper is 6.5.1)`. The released tarball is correct (`cyrius 6.5.2`,
-  no drift line). Builds still work either way — the pin re-exec finds `versions/6.5.2/bin/cyrius` by
-  path — but the *compiler* used is then the local dev `cycc`, not the released one. To verify
-  against what CI actually runs, unpack the release tarball into a scratch `HOME/.cyrius/versions/`
-  and build with that `HOME`.
+- **🔴 cycc ≥ 6.5.31 MISCOMPILES enum constants with bit 62 set** — `enum { K = 0x7FFFFFFFFFFFFFFF }`
+  folds to **-1** (sign-extended from bit 62). `var` initialisers and inline literals are immune.
+  This broke szal's `STEP_I64_MAX` "no timeout" sentinel and, because Cyrius `>`/`>=` are signed,
+  inverted both the per-step timeout guard and the flow-deadline guard — every step ran untimed
+  *and* every step was skipped as "flow timeout exceeded". 5 suites + 1 fuzz harness failed.
+  Worked around at 2.1.1 by making `STEP_I64_MAX` a `var` (`src/step.cyr`). **Invariant to hold:
+  no enum constant anywhere in szal's include closure may have bit 62 set** — as of 2.1.1 the
+  closure (szal `src/`, all three vendored dists, `tests/`, `fuzz/`, `benches/`, and the whole
+  6.5.35 stdlib snapshot) contains zero. Full analysis + minimal repro + suggested upstream fix:
+  [`issues/2026-08-26-cycc-enum-bit62-sign-extension.md`](issues/2026-08-26-cycc-enum-bit62-sign-extension.md).
 
-- **stdlib provisioning:** on a clean tree `cyrius lib sync` provisions **53** modules — the declared
+- **⚠️ The pin does NOT select the compiler (this is the trap that hid the bug above).**
+  `~/.cyrius/bin/cyrius` resolves `cycc` through `~/.cyrius/current`, **not** through
+  `cyrius.cyml`'s pin — and it does so even when you invoke `~/.cyrius/versions/<pin>/bin/cyrius`
+  directly. Only `CYRIUS_HOME` overrides it. So a local `current` newer than the pin compiles with
+  the newer `cycc` against the *pinned* `lib/` snapshot, while CI (which installs exactly the pin)
+  uses the pinned compiler — and the two silently disagree. cycc does warn, but it is buried in
+  szal's warning wall: `warning: cyrius.cyml pins X but cycc is Y — toolchain drift`. **Check that
+  line first whenever local and CI results differ.** To reproduce CI exactly:
+  `CYRIUS_HOME=$HOME/.cyrius/versions/<pin> $HOME/.cyrius/versions/<pin>/bin/cyrius build ...`
+
+- **⚠️ Local-install trap (check this if `cyrius --version` looks wrong):** a *locally built*
+  toolchain in `~/.cyrius/versions/<v>/` can embed the **previous** version string — historically
+  `versions/6.5.2/bin/cyrius` reported `cyrius 6.5.1`. The banner comes from the compile-time
+  `_VERSION_TOOLCHAIN` embed, not from the directory name or `~/.cyrius/current`, so the wrapper can
+  print a **spurious** drift line. (The current `versions/6.5.2` install was verified at 2.1.1 to be
+  byte-identical to the released `6.5.2-x86_64-linux` asset — every binary and all 106 `lib/` files
+  match `SHA256SUMS`. So *that* install is fine; see the pin-vs-compiler note above for the trap
+  that actually bit.)
+
+- **stdlib provisioning:** on a clean tree `cyrius lib sync` provisions **55** modules — the declared
   `[deps].stdlib` subset. `main.cyr` also includes `lib/ct.cyr`, `lib/math.cyr` and `lib/trait.cyr`,
   which are **not** in that subset and **not** synced; those resolve via `cyrius build`'s fallback to
   the pinned snapshot (`~/.cyrius/versions/<pin>/lib`). That fallback is what makes CI work, since CI
@@ -496,32 +515,60 @@ full-deps path, so `error.cyr:36 array size` shows in the editor but the `--no-d
 
 ## Dependencies
 
-All pins below were refreshed at 2.1.0 (2026-07-29). szal has **ZERO git deps** — all three
-third-party libs are vendored — so there is no `cyrius deps` step and no `cyrius.lock`.
+All pins below were refreshed at 2.1.1 (2026-08-26) and **every one is at its latest upstream
+release**. szal has **ZERO git deps** — all three third-party libs are vendored — so there is no
+`cyrius deps` step and no `cyrius.lock`.
 
-- stdlib (53 modules via `cyrius lib sync`, from the 6.5.2 snapshot): string, fmt, alloc, freelist,
+- stdlib (55 modules via `cyrius lib sync`, from the 6.5.35 snapshot): string, fmt, alloc, freelist,
   vec, str, hashmap, syscalls, tagged, result, fnptr, chrono, bayan (JSON), sakshi/log, patra,
   sigil, … Plus `ct`/`math`/`trait`, which `main.cyr` includes but `lib sync` does **not** provision
   — they resolve from the pinned snapshot (see the Toolchain note above).
-- **ai-hwaccel 2.3.15 — VENDORED** at `src/vendor/ai-hwaccel.cyr` (6,348 lines, no rename; its
+- **ai-hwaccel 2.3.19 — VENDORED** at `src/vendor/ai-hwaccel.cyr` (6,401 lines, no rename; its
   `REQ_*`/`FAMILY_*` are shared with `src/step.cyr` by design). Re-sync: `scripts/sync-ai-hwaccel.sh`.
-  2.3.15 prefixed its error codes `HWA_ERR_*`. **Two latent upstream breakages, harmless to szal
-  because nothing reaches them:** `profile_from_json_str` calls bayan's removed pre-1.3.0
-  `json_v_parse_str`, and an arg helper calls `argc`/`argv` without szal including `lib/args.cyr`.
-  Both surface only as `warning: undefined function`; szal calls just `cached_registry_new`/`cached_get`.
-- **majra 2.5.3 — VENDORED** at `src/vendor/majra.cyr` (3,289 lines, full dist, collision rename —
-  now 7 symbols, was 9; needs `lib/thread.cyr`). Re-sync: `scripts/sync-majra.sh`.
-  See [`majra-vendoring.md`](majra-vendoring.md).
-- **bote-core 3.1.4 — VENDORED** at `src/vendor/bote-core.cyr` (2,612 lines; 1-symbol rename
-  `compiled_compile`→`bote_compiled_compile`). Re-sync: `scripts/sync-bote.sh`. 2.7.5 renamed
-  `registry_new`→`tool_registry_new` (Q9 dissolved; see below). The **2.7.5 → 3.1.4 major bump needed
-  no szal changes**: `compiled_compile` is still the only collision, and szal's MCP surface referenced
-  none of the 13 bare `ERR_*` that 3.x prefixed to `BOTE_ERR_*`.
+  The `REQ_*`/`FAMILY_*` **value table is byte-identical to 2.3.15**, so szal's hardware gating is
+  unchanged — worth re-diffing on every bump, since both sides declare `REQ_NONE` and cycc is
+  last-definition-wins. 2.3.19 moved its JSON calls to bayan's canonical `bayan_json_v_*` names,
+  which **cleared the `json_v_parse_str` undefined-function warning**. One latent upstream breakage
+  remains, harmless because nothing reaches it: an arg helper calls `argc`/`argv` without szal
+  including `lib/args.cyr`. szal calls only `cached_registry_new`/`cached_get` (plus `reg_profiles`/
+  `count_satisfying`/`reg_count_by_family`/`reg_has_accelerator`/`requirement_name`).
+- **majra 2.7.0 — VENDORED** at `src/vendor/majra.cyr` (4,840 lines, full dist, **6** collision
+  renames as of 2.1.1 — `SYS_GETRANDOM`→`MJ_SYS_GETRANDOM` is new; needs `lib/thread.cyr`).
+  Re-sync: `scripts/sync-majra.sh`. See [`majra-vendoring.md`](majra-vendoring.md).
+  ⚠️ **2.7.0 turns szal's rate limiting on for the first time** — majra ≤ 2.5.3 keyed buckets on the
+  caller's key *pointer*, and every szal call site passes a freshly allocated cstr per request, so
+  each call got a new full-burst bucket and never refused. The HTTP/DNS/port limits in
+  `mcp_pool.cyr` and the tenant limit in `mcp_tenant.cyr` now actually enforce (this restores Rust
+  parity). The suite is unaffected — it uses string literals, one pooled address per call site.
+- **bote-core 3.3.7 — VENDORED** at `src/vendor/bote-core.cyr` (2,881 lines; 1-symbol rename
+  `compiled_compile`→`bote_compiled_compile`). Re-sync: `scripts/sync-bote.sh`. The
+  **3.1.4 → 3.3.7 bump needed no szal changes**: all 13 symbols szal calls are signature-identical,
+  and the two declared-breaking changes miss szal (3.3.5's `cancel_token_*` prefixing is in
+  `stream.cyr`, not the `[lib.core]` cut szal vendors; 3.3.0's `Dispatcher` 72→88 byte growth
+  appends fields szal never offsets into).
 
-**Collision status (full fn/const/var, cross-kind, incl. stdlib):** the only remaining intersection
-anywhere is `REQ_NONE` (szal × ai-hwaccel, intentional). `cyrius build --strict --no-deps
-src/main.cyr` reports **zero duplicate symbols** — the old `ERR_NONE`/`ERR_PARSE`/`ERR_TOOL_NOT_FOUND`/
-`ERR_TIMEOUT`/`BYTES_PER_GB` warnings are all cleared.
+**Collision status at 2.1.1 — `scripts/scan-collisions.sh` is the authority, NOT the compiler.**
+Three intersections remain, all intentional or verified-benign: `REQ_NONE` (szal × ai-hwaccel, the
+deliberately shared hardware-requirement API) and the `StepStatus` / `TriggerMode` enum **type**
+names (szal × majra — Cyrius does not put enum type names in the flat symbol table, and neither is
+used as a type annotation in szal).
+
+`cyrius build --strict --no-deps src/main.cyr` reports **zero duplicate symbols**, but that claim is
+far weaker than it reads, and 2.1.1 measured exactly how weak. cycc is **completely silent** on
+`fn`×`var`, `fn`×enum-constant, `struct`×`struct`, `struct`×`fn`, enum-type×enum-type, string-vs-
+string `var`, and the `var X[8]` array form of enum shadowing; it is silent whenever colliding
+values happen to *match*; and its value-conflict warning is hard-capped at var-table index 1024
+while szal's var_table is >2000 — so over half of szal's globals sit where that warning **cannot
+fire**. The `fn`×data class does not merely go unreported, it **miscompiles**: `&X` binds to the
+data symbol, so any function pointer taken on that name jumps into `.bss`, and szal dispatches 54
+MCP tools through function pointers. Hence the scanner.
+
+That gap was not hypothetical: the 2.1.1 rescan caught **`SYS_GETRANDOM`** — majra's
+`var SYS_GETRANDOM = 318` (x86-hardcoded) against the stdlib's **arch-conditional** enum constant
+(318 x86_64-linux/macos, 278 aarch64-linux, 45 agnos), consumed by `lib/patra.cyr` and
+`lib/sigil.cyr`, both of which szal reaches via `sql_store.cyr`. Cross-kind, and value-identical on
+the CI arch, so nothing warned. Now renamed `MJ_SYS_GETRANDOM`. Same bug shape as the
+`BYTES_PER_GB` divergence caught at 2.1.0.
 
 ## Consumers
 
@@ -531,7 +578,7 @@ _None yet — the port defines the `dist/szal.cyr` contract (daimon/sutra/AgnosA
 
 **Done so far (M1 ✅ + M2 ✅ COMPLETE (rows 8–21) + M3 ✅ MCP COMPLETE (stream + sql_store + mcp core +
 pool/tenant + ALL 15 tool groups / 54 tools) + bote vendoring, all parity-verified 0-findings): 44
-modules, 1,437 assertions across 46 test files, 0 failures, oracle pristine. Pin 6.5.2.**
+modules, 1,437 assertions across 46 test files, 0 failures, oracle pristine. Pin 6.5.35.**
 
 **⚠️ Parallel-executor deadlock FIXED (2026-07-29, shipping in 2.1.0)** — `run_parallel`
 hung forever ~1 per 2,000 parallel `engine_run` calls (`run_dag`/`run_distributed` shared the
@@ -543,6 +590,27 @@ directly**, so check that first if a join is ever added. New 46th suite
 per spawned thread) is the regression guard: it deadlocked on 12/12 pre-fix runs and passed 12/12
 post-fix. CI's test step now wraps each suite in `timeout 300` so a future hang fails the job in
 minutes rather than at GitHub's 6-hour ceiling.
+
+**2.1.1 maintenance pass (2026-08-26)** — version + toolchain + all three vendored libs refreshed;
+every dependency is now at its latest upstream release. Cyrius 6.5.2→6.5.35, majra 2.5.3→2.7.0,
+bote-core 3.1.4→3.3.7, ai-hwaccel 2.3.15→2.3.19. No port/parity changes. Two real defects were
+found and fixed, and one behavioural change comes in from upstream:
+1. 🔴 **`STEP_I64_MAX` miscompiled** (`src/step.cyr`) — cycc ≥ 6.5.31 sign-extends enum constants
+   from bit 62, folding the "no timeout" sentinel to -1 and inverting both the per-step timeout
+   guard and the flow-deadline guard. Now a `var`. 5 suites + 1 fuzz harness were failing. See the
+   Toolchain section and
+   [`issues/2026-08-26-cycc-enum-bit62-sign-extension.md`](issues/2026-08-26-cycc-enum-bit62-sign-extension.md).
+2. 🟠 **`SYS_GETRANDOM` cross-kind collision** — majra's x86-hardcoded `var` clobbered the stdlib's
+   arch-conditional enum constant for the whole program. Latent on x86_64, wrong elsewhere. Now
+   renamed `MJ_SYS_GETRANDOM` (`scripts/sync-majra.sh` rule 6). See Dependencies.
+3. ⚠️ **Rate limiting starts working** — majra 2.7.0 owns its bucket keys instead of storing the
+   caller's pointer, so szal's HTTP/DNS/port/tenant limits stop being no-ops. Restores Rust parity;
+   invisible to the suite. See Dependencies.
+4. **`scripts/scan-collisions.sh` added** — cross-kind collision scanner with a `--check` mode,
+   validated against ground truth and a positive control. It exists because `cyrius build --strict`
+   is blind to most collision classes (Dependencies section has the measured list).
+5. `src/*.cyr` reformatted for the 6.5.35 formatter (continuation-line indent; 468 lines across 30
+   files, whitespace-only). Same class as 2.1.0's 6.5.2 reformat.
 
 **2.1.0 maintenance pass (2026-07-29)** — version + toolchain + all three vendored libs refreshed.
 No port/parity changes in *this* pass (the one behavioural change in 2.1.0 is the deadlock fix
@@ -587,7 +655,7 @@ All engine modules ported (six modes + core + step_exec + Engine + sub_flow + **
 M3: streaming (`stream.cyr`) + persistence (`sql_store.cyr`, patra) + MCP core (`mcp.cyr` —
 result/errcode/**validate_path security**/registration) + **MCP pool + tenant** done; **bote-core
 vendored (Q9 dissolved by the 2.7.5 re-sync, 2026-06-13)**. Current vendored pins are bote-core
-3.1.4 + full majra 2.5.3 + ai-hwaccel 2.3.15 (all at `src/vendor/`, zero git deps — see
+3.3.7 + full majra 2.7.0 + ai-hwaccel 2.3.19 (all at `src/vendor/`, zero git deps — see
 Dependencies). Build recipe + gotchas above (add `CYRIUS_NO_WARN_SHADOW_LIB=1` to silence lib-shadow).
 
 **▶ M3 MCP IS COMPLETE — all 15 tool groups / 54 tools ported, tested, aggregated, and wired into

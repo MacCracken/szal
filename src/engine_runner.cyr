@@ -204,7 +204,7 @@ fn _engine_rollback_completed_steps(e, flow, results) {
     while (j >= 0) {
         var step = vec_get(completed, j);
         emit(sink, event_step_rollback(step_name(step),
-        uuid_to_str(step_id_hi(step), step_id_lo(step))));
+            uuid_to_str(step_id_hi(step), step_id_lo(step))));
         var res = handler_invoke(rh, step);
         if (is_err_result(res) == 1) { all = 0; }
         j = j - 1;
@@ -222,7 +222,7 @@ fn _engine_start_heartbeat(e, flow) {
     var meta = bayan_json_v_obj_new();
     bayan_json_v_obj_set(meta, str_from("flow"), bayan_json_v_str_new(flow_name(flow)));
     bayan_json_v_obj_set(meta, str_from("mode"),
-    bayan_json_v_str_new(str_from(flow_mode_display(flow_mode(flow)))));
+      bayan_json_v_str_new(str_from(flow_mode_display(flow_mode(flow)))));
     bayan_json_v_obj_set(meta, str_from("steps"), bayan_json_v_int_new(flow_steps_len(flow)));
     chb_register(hb, id, meta);
     return id;
@@ -259,14 +259,14 @@ fn _engine_prepare(e, flow, persist_start) {
         var store = engine_config_execution_store_vt(cfg);
         if (store != 0) {
             execution_store_save(store,
-            execution_record_new(execution_id, name, STATE_RUNNING, 0, started_at, 0));
+              execution_record_new(execution_id, name, STATE_RUNNING, 0, started_at, 0));
         }
     }
     metric_run_started(engine_config_metrics_vt(cfg), name);
     var hb_id = _engine_start_heartbeat(e, flow);
     var ec = exec_ctx_new(engine_handler(e), engine_event_sink(e), flow_ctx_of(flow),
-    engine_config_metrics_vt(cfg), engine_config_step_type_metrics(cfg),
-    engine_config_progress_sink(cfg), engine_condition_cache(e));
+      engine_config_metrics_vt(cfg), engine_config_step_type_metrics(cfg),
+      engine_config_progress_sink(cfg), engine_condition_cache(e));
     var rc = alloc(RUNCTX_SIZE);
     store64(rc + RC_EXEC_ID, execution_id);
     store64(rc + RC_STARTED_AT, started_at);
@@ -339,8 +339,8 @@ fn _engine_finalize(e, flow, results, start_ms, started_at, execution_id, was_ca
             if (rolled_back == 1) { fs = STATE_ROLLED_BACK; }
             elif (has_failures == 1) { fs = STATE_FAILED; }
             execution_store_save(store,
-            execution_record_new(execution_id, name, fs, fr, started_at,
-            str_from(iso8601_now())));
+              execution_record_new(execution_id, name, fs, fr, started_at,
+                str_from(iso8601_now())));
         }
     }
     return fr;
@@ -415,7 +415,7 @@ fn engine_run(e, flow) {
 
     var results = _engine_dispatch(flow, cfg, timeout, start_ms, 0, ec);
     var fr = _engine_finalize(e, flow, results, start_ms, load64(rc + RC_STARTED_AT),
-    load64(rc + RC_EXEC_ID), 0, 1);
+      load64(rc + RC_EXEC_ID), 0, 1);
     _engine_stop_heartbeat(e, load64(rc + RC_HB_ID));
     return Ok(fr);
 }
@@ -438,7 +438,7 @@ fn engine_run_with_cancellation(e, flow, token) {
     var results = _engine_dispatch(flow, cfg, timeout, start_ms, token, ec);
     var was_cancelled = _engine_was_cancelled(token, results);
     var fr = _engine_finalize(e, flow, results, start_ms, load64(rc + RC_STARTED_AT),
-    load64(rc + RC_EXEC_ID), was_cancelled, 0);
+      load64(rc + RC_EXEC_ID), was_cancelled, 0);
     _engine_stop_heartbeat(e, load64(rc + RC_HB_ID));
     return Ok(fr);
 }
@@ -466,7 +466,7 @@ fn engine_run_distributed(e, flow, fleet) {
 
     var results = run_distributed_dag(flow_steps(flow), fleet, timeout, start_ms, 0, ec);
     var fr = _engine_finalize(e, flow, results, start_ms, load64(rc + RC_STARTED_AT),
-    load64(rc + RC_EXEC_ID), 0, 1);
+      load64(rc + RC_EXEC_ID), 0, 1);
     _engine_stop_heartbeat(e, load64(rc + RC_HB_ID));
     return Ok(fr);
 }

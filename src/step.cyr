@@ -49,7 +49,16 @@ enum StepHw { REQ_NONE = 0; }
 
 # i64 max sentinel for saturating backoff math (Rust uses u64::MAX; Cyrius i64 clamps to
 # i64::MAX — see docs/development/parity-notes.md §2 for the divergence). 0x7FFF... is 2^63-1.
-enum StepSat { STEP_I64_MAX = 0x7FFFFFFFFFFFFFFF; }
+#
+# MUST be a `var`, not an `enum` constant. cycc >= 6.5.31 sign-extends enum-constant initialisers
+# from bit 62, so `enum { X = 0x7FFFFFFFFFFFFFFF }` folds to -1 — which silently turned this
+# sentinel negative and made every `timeout_ms >= STEP_I64_MAX` / `elapsed > timeout` comparison
+# (Cyrius `>`/`>=` are signed) take the wrong branch: every step ran without a timeout, and every
+# flow instantly "timed out" and skipped its steps. `var` initialisers and inline literals are
+# unaffected by that fold, so this is the immune form. See
+# docs/development/issues/2026-08-26-cycc-enum-bit62-sign-extension.md — do NOT convert it back to
+# an enum until that upstream regression is fixed.
+var STEP_I64_MAX = 0x7FFFFFFFFFFFFFFF;
 
 # Map a BackoffStrategy to its serde/Debug PascalCase name (cstr). Mirrors step.rs derive(
 # Serialize) on the enum (no rename_all). Unknown -> "Fixed" (the default).
@@ -470,24 +479,24 @@ fn _step_id_str(hi, lo) {
 fn step_to_json(s) {
     var o = bayan_json_v_obj_new();
     bayan_json_v_obj_set(o, str_from("id"),
-    bayan_json_v_str_new(_step_id_str(step_id_hi(s), step_id_lo(s))));
+      bayan_json_v_str_new(_step_id_str(step_id_hi(s), step_id_lo(s))));
     bayan_json_v_obj_set(o, str_from("name"), bayan_json_v_str_new(step_name(s)));
     bayan_json_v_obj_set(o, str_from("description"),
-    bayan_json_v_str_new(step_description(s)));
+      bayan_json_v_str_new(step_description(s)));
     bayan_json_v_obj_set(o, str_from("timeout_ms"),
-    bayan_json_v_int_new(step_timeout_ms(s)));
+      bayan_json_v_int_new(step_timeout_ms(s)));
     bayan_json_v_obj_set(o, str_from("max_retries"),
-    bayan_json_v_int_new(step_max_retries(s)));
+      bayan_json_v_int_new(step_max_retries(s)));
     bayan_json_v_obj_set(o, str_from("retry_delay_ms"),
-    bayan_json_v_int_new(step_retry_delay_ms(s)));
+      bayan_json_v_int_new(step_retry_delay_ms(s)));
     bayan_json_v_obj_set(o, str_from("backoff"),
-    bayan_json_v_str_new(str_from(step_backoff_name(step_backoff(s)))));
+      bayan_json_v_str_new(str_from(step_backoff_name(step_backoff(s)))));
     bayan_json_v_obj_set(o, str_from("rollbackable"),
-    bayan_json_v_bool_new(step_rollbackable(s)));
+      bayan_json_v_bool_new(step_rollbackable(s)));
     # step_type: skip_serializing_if = Option::is_none
     if (step_step_type(s) != 0) {
         bayan_json_v_obj_set(o, str_from("step_type"),
-        bayan_json_v_str_new(step_step_type(s)));
+          bayan_json_v_str_new(step_step_type(s)));
     }
     # config: skip_serializing_if = Option::is_none
     if (step_config(s) != 0) {
@@ -496,20 +505,20 @@ fn step_to_json(s) {
     # condition: skip_serializing_if = Option::is_none
     if (step_condition(s) != 0) {
         bayan_json_v_obj_set(o, str_from("condition"),
-        bayan_json_v_str_new(step_condition(s)));
+          bayan_json_v_str_new(step_condition(s)));
     }
     var deps = bayan_json_v_arr_new();
     var n = step_depends_on_len(s);
     var i = 0;
     while (i < n) {
         bayan_json_v_arr_push(deps,
-        bayan_json_v_str_new(_step_id_str(step_depends_on_hi(s, i),
-        step_depends_on_lo(s, i))));
+          bayan_json_v_str_new(_step_id_str(step_depends_on_hi(s, i),
+              step_depends_on_lo(s, i))));
         i = i + 1;
     }
     bayan_json_v_obj_set(o, str_from("depends_on"), deps);
     bayan_json_v_obj_set(o, str_from("trigger_mode"),
-    bayan_json_v_str_new(str_from(step_trigger_name(step_trigger_mode(s)))));
+      bayan_json_v_str_new(str_from(step_trigger_name(step_trigger_mode(s)))));
     # sub_steps: skip_serializing_if = Vec::is_empty
     var subn = step_sub_steps_len(s);
     if (subn != 0) {
@@ -517,13 +526,13 @@ fn step_to_json(s) {
         var j = 0;
         while (j < subn) {
             bayan_json_v_arr_push(subs,
-            bayan_json_v_parse(step_to_json(step_sub_step_at(s, j))));
+              bayan_json_v_parse(step_to_json(step_sub_step_at(s, j))));
             j = j + 1;
         }
         bayan_json_v_obj_set(o, str_from("sub_steps"), subs);
     }
     bayan_json_v_obj_set(o, str_from("hardware"),
-    bayan_json_v_int_new(step_hardware(s)));
+      bayan_json_v_int_new(step_hardware(s)));
     return bayan_json_v_build(o);
 }
 
@@ -645,16 +654,16 @@ fn step_from_json(json) {
 fn step_result_to_json(r) {
     var o = bayan_json_v_obj_new();
     bayan_json_v_obj_set(o, str_from("step_id"),
-    bayan_json_v_str_new(_step_id_str(step_result_id_hi(r), step_result_id_lo(r))));
+      bayan_json_v_str_new(_step_id_str(step_result_id_hi(r), step_result_id_lo(r))));
     bayan_json_v_obj_set(o, str_from("status"),
-    bayan_json_v_str_new(str_from(step_status_serde_name(step_result_status(r)))));
+      bayan_json_v_str_new(str_from(step_status_serde_name(step_result_status(r)))));
     var out = step_result_output(r);
     if (out == 0) { out = bayan_json_v_null(); }
     bayan_json_v_obj_set(o, str_from("output"), out);
     bayan_json_v_obj_set(o, str_from("duration_ms"),
-    bayan_json_v_int_new(step_result_duration_ms(r)));
+      bayan_json_v_int_new(step_result_duration_ms(r)));
     bayan_json_v_obj_set(o, str_from("attempts"),
-    bayan_json_v_int_new(step_result_attempts(r)));
+      bayan_json_v_int_new(step_result_attempts(r)));
     var err = step_result_error(r);
     if (err == 0) {
         bayan_json_v_obj_set(o, str_from("error"), bayan_json_v_null());

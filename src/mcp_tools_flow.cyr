@@ -181,11 +181,11 @@ fn _flow_list_modes_handler(args, claims) {
     var arr = bayan_json_v_arr_new();
     bayan_json_v_arr_push(arr, _flow_mode_entry("sequential", "Steps run one after another"));
     bayan_json_v_arr_push(arr, _flow_mode_entry("parallel",
-    "Steps run concurrently with no dependencies"));
+        "Steps run concurrently with no dependencies"));
     bayan_json_v_arr_push(arr, _flow_mode_entry("dag",
-    "Steps run based on dependency graph (Kahn's algorithm), with cycle detection"));
+        "Steps run based on dependency graph (Kahn's algorithm), with cycle detection"));
     bayan_json_v_arr_push(arr, _flow_mode_entry("hierarchical",
-    "Manager step delegates to sub-steps dynamically"));
+        "Manager step delegates to sub-steps dynamically"));
     var r = result_ok_json(arr);
     return str_data(r);
 }
@@ -234,7 +234,7 @@ fn _flow_create_props() {
     vec_push(v, schema_prop_new("rollback_on_failure", "{ \"type\": \"boolean\" }"));
     vec_push(v, schema_prop_new("timeout_ms", "{ \"type\": \"integer\" }"));
     vec_push(v, schema_prop_new("steps",
-    "{ \"type\": \"array\", \"items\": { \"type\": \"object\" } }"));
+        "{ \"type\": \"array\", \"items\": { \"type\": \"object\" } }"));
     return v;
 }
 
@@ -258,30 +258,31 @@ fn flow_tools() {
     vec_push(c_req, "name");
     vec_push(c_req, "mode");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_flow_create", "Create a workflow flow definition with execution mode and options",
-    _flow_create_props(), c_req), &_flow_create_handler));
+        mcp_tool_def("szal_flow_create", "Create a workflow flow definition with execution mode and options",
+          _flow_create_props(), c_req), &_flow_create_handler));
 
     var v_req = vec_new();
     vec_push(v_req, "flow_json");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_flow_validate", "Validate a flow definition — checks for DAG cycles and missing dependencies",
-    _flow_json_props(), v_req), &_flow_validate_handler));
+        mcp_tool_def("szal_flow_validate",
+          "Validate a flow definition — checks for DAG cycles and missing dependencies",
+          _flow_json_props(), v_req), &_flow_validate_handler));
 
     var f_req = vec_new();
     vec_push(f_req, "flow_json");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_flow_from_json", "Parse and inspect a flow definition from JSON",
-    _flow_json_props(), f_req), &_flow_from_json_handler));
+        mcp_tool_def("szal_flow_from_json", "Parse and inspect a flow definition from JSON",
+          _flow_json_props(), f_req), &_flow_from_json_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_flow_list_modes", "List available workflow execution modes with descriptions",
-    vec_new(), vec_new()), &_flow_list_modes_handler));
+        mcp_tool_def("szal_flow_list_modes", "List available workflow execution modes with descriptions",
+          vec_new(), vec_new()), &_flow_list_modes_handler));
 
     var a_req = vec_new();
     vec_push(a_req, "flow_json");
     vec_push(a_req, "step_json");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_flow_add_step", "Add a step to an existing flow definition, returning the updated flow",
-    _flow_add_step_props(), a_req), &_flow_add_step_handler));
+        mcp_tool_def("szal_flow_add_step", "Add a step to an existing flow definition, returning the updated flow",
+          _flow_add_step_props(), a_req), &_flow_add_step_handler));
     return tools;
 }

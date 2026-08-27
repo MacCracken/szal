@@ -40,7 +40,7 @@ fn _dag_skip(results, event_sink, step, reason) {
     var sid = uuid_to_str(step_id_hi(step), step_id_lo(step));
     emit(event_sink, event_step_skipped(step_name(step), sid, str_from(reason)));
     var sr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_SKIPPED,
-    bayan_json_v_null(), 0, 0);
+      bayan_json_v_null(), 0, 0);
     step_result_set_error(sr, str_from(reason));
     vec_push(results, sr);
     return 0;
@@ -160,7 +160,7 @@ fn run_dag(steps, max_concurrency, timeout_ms, start_ms, token, ctx) {
                 var di = 0;
                 while (di < dn) {
                     var dep_ord = _dag_lookup(id_map, step_depends_on_hi(step, di),
-                    step_depends_on_lo(step, di));
+                      step_depends_on_lo(step, di));
                     if (dep_ord >= 0) {
                         if (load64(failed + dep_ord * 8) == 1) { dep_failed = 1; }
                     }
@@ -211,7 +211,7 @@ fn run_dag(steps, max_concurrency, timeout_ms, start_ms, token, ctx) {
                 var res = load64(load64(rec + DGR_SLOT));
                 if (res == 0) {
                     res = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
-                    bayan_json_v_null(), 0, 0);
+                      bayan_json_v_null(), 0, 0);
                     step_result_set_error(res, str_from("task panicked"));
                     store64(failed + ord * 8, 1);
                 } else {

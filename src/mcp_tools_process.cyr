@@ -193,7 +193,7 @@ fn _exec_handler(args, claims) {
     var command = bayan_json_v_str(cv);
     if (_proc_cmd_has_path(command) == 1) {
         var ep = result_error_typed(MCP_PERMISSION_DENIED,
-        str_from("command must be a plain executable name, not a path — use PATH lookup"));
+          str_from("command must be a plain executable name, not a path — use PATH lookup"));
         return str_data(ep);
     }
 
@@ -303,16 +303,16 @@ fn _exec_props() {
     var args_c = str_cstr(str_builder_build(ab));
     vec_push(v, schema_prop_new("args", args_c));
     vec_push(v, schema_prop_new("cwd",
-    "{ \"type\": \"string\", \"description\": \"Working directory (optional)\" }"));
+        "{ \"type\": \"string\", \"description\": \"Working directory (optional)\" }"));
     vec_push(v, schema_prop_new("timeout_ms",
-    "{ \"type\": \"integer\", \"description\": \"Timeout in milliseconds (default: 30000)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Timeout in milliseconds (default: 30000)\" }"));
     return v;
 }
 
 fn _which_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("command",
-    "{ \"type\": \"string\", \"description\": \"Command name to look up\" }"));
+        "{ \"type\": \"string\", \"description\": \"Command name to look up\" }"));
     return v;
 }
 
@@ -322,16 +322,16 @@ fn process_tools() {
     var c_req = vec_new();
     vec_push(c_req, "command");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_exec", "Execute a shell command and return stdout, stderr, and exit code",
-    _exec_props(), c_req), &_exec_handler));
+        mcp_tool_def("szal_exec", "Execute a shell command and return stdout, stderr, and exit code",
+          _exec_props(), c_req), &_exec_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_pid", "Get the current process ID", vec_new(), vec_new()), &_pid_handler));
+        mcp_tool_def("szal_pid", "Get the current process ID", vec_new(), vec_new()), &_pid_handler));
 
     var w_req = vec_new();
     vec_push(w_req, "command");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_which", "Check if a command exists on PATH", _which_props(), w_req),
-    &_which_handler));
+        mcp_tool_def("szal_which", "Check if a command exists on PATH", _which_props(), w_req),
+        &_which_handler));
     return tools;
 }

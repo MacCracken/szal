@@ -161,15 +161,15 @@ fn _step_create_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("name", "{ \"type\": \"string\", \"description\": \"Step name\" }"));
     vec_push(v, schema_prop_new("description",
-    "{ \"type\": \"string\", \"description\": \"Step description\" }"));
+        "{ \"type\": \"string\", \"description\": \"Step description\" }"));
     vec_push(v, schema_prop_new("timeout_ms",
-    "{ \"type\": \"integer\", \"description\": \"Timeout in milliseconds (default: 30000)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Timeout in milliseconds (default: 30000)\" }"));
     vec_push(v, schema_prop_new("max_retries",
-    "{ \"type\": \"integer\", \"description\": \"Max retry attempts (default: 0)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Max retry attempts (default: 0)\" }"));
     vec_push(v, schema_prop_new("retry_delay_ms",
-    "{ \"type\": \"integer\", \"description\": \"Delay between retries in ms (default: 1000)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Delay between retries in ms (default: 1000)\" }"));
     vec_push(v, schema_prop_new("rollbackable",
-    "{ \"type\": \"boolean\", \"description\": \"Whether step supports rollback (default: false)\" }"));
+        "{ \"type\": \"boolean\", \"description\": \"Whether step supports rollback (default: false)\" }"));
     var db = str_builder_new();
     str_builder_add_cstr(db, "{ \"type\": \"array\", \"items\": { \"type\": \"string\" }, ");
     str_builder_add_cstr(db, "\"description\": \"UUIDs of steps this depends on\" }");
@@ -181,7 +181,7 @@ fn _step_create_props() {
 fn _step_json_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("step_json",
-    "{ \"type\": \"string\", \"description\": \"Step definition as JSON string\" }"));
+        "{ \"type\": \"string\", \"description\": \"Step definition as JSON string\" }"));
     return v;
 }
 
@@ -191,19 +191,19 @@ fn step_tools() {
     var c_req = vec_new();
     vec_push(c_req, "name");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_step_create", "Create a workflow step definition with timeout, retry, and rollback config",
-    _step_create_props(), c_req), &_step_create_handler));
+        mcp_tool_def("szal_step_create", "Create a workflow step definition with timeout, retry, and rollback config",
+          _step_create_props(), c_req), &_step_create_handler));
 
     var v_req = vec_new();
     vec_push(v_req, "step_json");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_step_validate", "Validate a step definition JSON, checking all fields are well-formed",
-    _step_json_props(), v_req), &_step_validate_handler));
+        mcp_tool_def("szal_step_validate", "Validate a step definition JSON, checking all fields are well-formed",
+          _step_json_props(), v_req), &_step_validate_handler));
 
     var i_req = vec_new();
     vec_push(i_req, "step_json");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_step_inspect", "Inspect a step definition, returning its configuration details",
-    _step_json_props(), i_req), &_step_inspect_handler));
+        mcp_tool_def("szal_step_inspect", "Inspect a step definition, returning its configuration details",
+          _step_json_props(), i_req), &_step_inspect_handler));
     return tools;
 }

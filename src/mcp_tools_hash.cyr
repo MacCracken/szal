@@ -116,9 +116,9 @@ fn _random_token_handler(args, claims) {
 fn _sha256_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("input",
-    "{ \"type\": \"string\", \"description\": \"String to hash (mutually exclusive with file)\" }"));
+        "{ \"type\": \"string\", \"description\": \"String to hash (mutually exclusive with file)\" }"));
     vec_push(v, schema_prop_new("file",
-    "{ \"type\": \"string\", \"description\": \"File path to hash (mutually exclusive with input)\" }"));
+        "{ \"type\": \"string\", \"description\": \"File path to hash (mutually exclusive with input)\" }"));
     return v;
 }
 
@@ -142,17 +142,17 @@ fn _random_token_props() {
 fn hash_tools() {
     var tools = vec_new();
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_sha256", "Compute SHA-256 hash of a string or file contents",
-    _sha256_props(), vec_new()), &_sha256_handler));
+        mcp_tool_def("szal_sha256", "Compute SHA-256 hash of a string or file contents",
+          _sha256_props(), vec_new()), &_sha256_handler));
 
     var md5_req = vec_new();
     vec_push(md5_req, "input");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_md5", "Compute MD5 hash of a string (for checksums, not security)",
-    _md5_props(), md5_req), &_md5_handler));
+        mcp_tool_def("szal_md5", "Compute MD5 hash of a string (for checksums, not security)",
+          _md5_props(), md5_req), &_md5_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_random_token", "Generate a cryptographically random hex token",
-    _random_token_props(), vec_new()), &_random_token_handler));
+        mcp_tool_def("szal_random_token", "Generate a cryptographically random hex token",
+          _random_token_props(), vec_new()), &_random_token_handler));
     return tools;
 }

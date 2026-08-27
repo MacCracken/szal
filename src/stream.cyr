@@ -79,9 +79,9 @@ fn hub_sink(h) {
 fn _step_progress_to_json(sp) {
     var o = bayan_json_v_obj_new();
     bayan_json_v_obj_set(o, str_from("step_name"),
-    bayan_json_v_str_new(step_progress_step_name(sp)));
+      bayan_json_v_str_new(step_progress_step_name(sp)));
     bayan_json_v_obj_set(o, str_from("step_id"),
-    bayan_json_v_str_new(step_progress_step_id(sp)));
+      bayan_json_v_str_new(step_progress_step_id(sp)));
     bayan_json_v_obj_set(o, str_from("data"), step_progress_data(sp));
     return bayan_json_v_build(o);
 }

@@ -18,7 +18,7 @@ fn _hier_skip_step_and_children(step, reason, ctx, results) {
     var sid = uuid_to_str(step_id_hi(step), step_id_lo(step));
     emit(exec_ctx_event_sink(ctx), event_step_skipped(name, sid, str_from(reason)));
     var sr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_SKIPPED,
-    bayan_json_v_null(), 0, 0);
+      bayan_json_v_null(), 0, 0);
     step_result_set_error(sr, str_from(reason));
     vec_push(results, sr);
     _hier_skip_children(step, reason, ctx, results);

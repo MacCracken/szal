@@ -70,7 +70,7 @@ fn _net_is_safe(url) {
     var lo = _net_lower(host);
 
     if (str_eq_cstr(lo, "169.254.169.254") == 1 || str_eq_cstr(lo, "metadata.google.internal") == 1
-    || str_eq_cstr(lo, "metadata.goog") == 1) {
+      || str_eq_cstr(lo, "metadata.goog") == 1) {
         var mb = str_builder_new();
         str_builder_add_cstr(mb, "requests to ");
         str_builder_add(mb, host);
@@ -80,7 +80,7 @@ fn _net_is_safe(url) {
 
     var priv = 0;
     if (str_eq_cstr(lo, "localhost") == 1 || str_eq_cstr(lo, "127.0.0.1") == 1
-    || str_eq_cstr(lo, "::1") == 1 || str_eq_cstr(lo, "0.0.0.0") == 1) { priv = 1; }
+      || str_eq_cstr(lo, "::1") == 1 || str_eq_cstr(lo, "0.0.0.0") == 1) { priv = 1; }
     if (str_starts_with(lo, str_from("10.")) == 1) { priv = 1; }
     if (str_starts_with(lo, str_from("192.168.")) == 1) { priv = 1; }
     if (str_starts_with(lo, str_from("172.")) == 1) {
@@ -508,11 +508,11 @@ fn _http_props() {
     str_builder_add_cstr(mb, "\"DELETE\", \"PATCH\", \"HEAD\"], \"description\": \"HTTP method (default: GET)\" }");
     vec_push(v, schema_prop_new("method", str_cstr(str_builder_build(mb))));
     vec_push(v, schema_prop_new("headers",
-    "{ \"type\": \"object\", \"description\": \"Request headers as key-value pairs\" }"));
+        "{ \"type\": \"object\", \"description\": \"Request headers as key-value pairs\" }"));
     vec_push(v, schema_prop_new("body",
-    "{ \"type\": \"string\", \"description\": \"Request body (for POST/PUT/PATCH)\" }"));
+        "{ \"type\": \"string\", \"description\": \"Request body (for POST/PUT/PATCH)\" }"));
     vec_push(v, schema_prop_new("timeout_secs",
-    "{ \"type\": \"integer\", \"description\": \"Timeout in seconds (default: 30)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Timeout in seconds (default: 30)\" }"));
     return v;
 }
 
@@ -525,10 +525,10 @@ fn _dns_props() {
 fn _port_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("host",
-    "{ \"type\": \"string\", \"description\": \"Host to check (default: 127.0.0.1)\" }"));
+        "{ \"type\": \"string\", \"description\": \"Host to check (default: 127.0.0.1)\" }"));
     vec_push(v, schema_prop_new("port", "{ \"type\": \"integer\", \"description\": \"TCP port number\" }"));
     vec_push(v, schema_prop_new("timeout_ms",
-    "{ \"type\": \"integer\", \"description\": \"Connection timeout in ms (default: 3000)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Connection timeout in ms (default: 3000)\" }"));
     return v;
 }
 
@@ -548,26 +548,26 @@ fn net_tools() {
     var u_req = vec_new();
     vec_push(u_req, "url");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_http", "Make an HTTP request via curl and return status, headers, and body",
-    _http_props(), u_req), &_http_handler));
+        mcp_tool_def("szal_http", "Make an HTTP request via curl and return status, headers, and body",
+          _http_props(), u_req), &_http_handler));
 
     var h_req = vec_new();
     vec_push(h_req, "hostname");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_dns_lookup", "Perform a DNS lookup for a hostname", _dns_props(), h_req),
-    &_dns_handler));
+        mcp_tool_def("szal_dns_lookup", "Perform a DNS lookup for a hostname", _dns_props(), h_req),
+        &_dns_handler));
 
     var p_req = vec_new();
     vec_push(p_req, "port");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_port_check", "Check if a TCP port is open on a host", _port_props(), p_req),
-    &_port_check_handler));
+        mcp_tool_def("szal_port_check", "Check if a TCP port is open on a host", _port_props(), p_req),
+        &_port_check_handler));
 
     var i_req = vec_new();
     vec_push(i_req, "input");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_url_encode", "URL encode or decode a string", _url_props(), i_req),
-    &_url_encode_handler));
+        mcp_tool_def("szal_url_encode", "URL encode or decode a string", _url_props(), i_req),
+        &_url_encode_handler));
     return tools;
 }
 

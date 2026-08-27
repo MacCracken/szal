@@ -149,7 +149,7 @@ fn _timestamp_handler(args, claims) {
 fn _env_get_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("name",
-    "{ \"type\": \"string\", \"description\": \"Environment variable name\" }"));
+        "{ \"type\": \"string\", \"description\": \"Environment variable name\" }"));
     return v;
 }
 
@@ -157,18 +157,18 @@ fn _env_get_props() {
 fn system_tools() {
     var tools = vec_new();
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_system_info", "Get system hostname, OS, architecture, CPU count, and uptime",
-    vec_new(), vec_new()), &_system_info_handler));
+        mcp_tool_def("szal_system_info", "Get system hostname, OS, architecture, CPU count, and uptime",
+          vec_new(), vec_new()), &_system_info_handler));
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_cwd", "Get the current working directory", vec_new(), vec_new()),
-    &_cwd_handler));
+        mcp_tool_def("szal_cwd", "Get the current working directory", vec_new(), vec_new()),
+        &_cwd_handler));
     var env_req = vec_new();
     vec_push(env_req, "name");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_env_get", "Get the value of an environment variable", _env_get_props(), env_req),
-    &_env_get_handler));
+        mcp_tool_def("szal_env_get", "Get the value of an environment variable", _env_get_props(), env_req),
+        &_env_get_handler));
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_timestamp", "Get the current timestamp in ISO 8601 and Unix epoch formats",
-    vec_new(), vec_new()), &_timestamp_handler));
+        mcp_tool_def("szal_timestamp", "Get the current timestamp in ISO 8601 and Unix epoch formats",
+          vec_new(), vec_new()), &_timestamp_handler));
     return tools;
 }

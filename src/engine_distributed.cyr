@@ -164,7 +164,7 @@ fn run_distributed_dag(steps, fleet, timeout_ms, start_ms, token, ctx) {
             var di = 0;
             while (di < dn) {
                 var dep_ord = _dag_lookup(id_map, step_depends_on_hi(step, di),
-                step_depends_on_lo(step, di));
+                  step_depends_on_lo(step, di));
                 if (dep_ord >= 0) {
                     if (load64(failed + dep_ord * 8) == 1) { dep_failed = 1; }
                 }
@@ -193,7 +193,7 @@ fn run_distributed_dag(steps, fleet, timeout_ms, start_ms, token, ctx) {
                     } else {
                         # No node could accept the step (distributed.rs 192-204).
                         var fr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
-                        bayan_json_v_null(), 0, 0);
+                          bayan_json_v_null(), 0, 0);
                         step_result_set_error(fr, str_from("no fleet node available"));
                         vec_push(results, fr);
                         store64(failed + ord * 8, 1);
@@ -204,9 +204,9 @@ fn run_distributed_dag(steps, fleet, timeout_ms, start_ms, token, ctx) {
         }
 
         if (vec_len(results) >= total) { return _dist_finish(results, steps, total, id_map,
-            event_sink, token, timeout_ms, start_ms, done, workers); }
+              event_sink, token, timeout_ms, start_ms, done, workers); }
         if (in_flight == 0) { return _dist_finish(results, steps, total, id_map, event_sink, token,
-            timeout_ms, start_ms, done, workers); }
+              timeout_ms, start_ms, done, workers); }
 
         var cancelled = 0;
         if (token != 0) {
@@ -216,7 +216,7 @@ fn run_distributed_dag(steps, fleet, timeout_ms, start_ms, token, ctx) {
         if (clock_now_ms() - start_ms > timeout_ms) { timed_out = 1; }
         if (cancelled == 1 || timed_out == 1) {
             return _dist_finish(results, steps, total, id_map, event_sink, token, timeout_ms,
-            start_ms, done, workers);
+              start_ms, done, workers);
         }
 
         # Wait for the next completion, the flow timeout, or cancellation (distributed.rs 219-224).
@@ -244,20 +244,20 @@ fn run_distributed_dag(steps, fleet, timeout_ms, start_ms, token, ctx) {
             if (cstop == 1) {
                 # timeout / cancellation: stop the coordinator (distributed.rs 238).
                 return _dist_finish(results, steps, total, id_map, event_sink, token, timeout_ms,
-                start_ms, done, workers);
+                  start_ms, done, workers);
             }
             sleep_ms(1);
         }
     }
     return _dist_finish(results, steps, total, id_map, event_sink, token, timeout_ms, start_ms, done,
-    workers);
+      workers);
 }
 
 # Post-loop finalize (distributed.rs 242-268): Skip every step that never got a result, signal the
 # worker shutdown token, and join the workers. Reason mirrors the Rust ordering: cancelled first,
 # then flow-timeout, else "not scheduled". Returns `results`.
 fn _dist_finish(results, steps, total, id_map, event_sink, token, timeout_ms, start_ms, done,
-workers) {
+  workers) {
     if (vec_len(results) < total) {
         # seen[ordinal] = 1 for every result already collected.
         var seen = alloc(total * 8);

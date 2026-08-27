@@ -53,7 +53,7 @@ fn _mev_valid_chars(s) {
         var ok = 0;
         if (c >= 48 && c <= 57) { ok = 1; }
         if (c == 32 || c == 43 || c == 45 || c == 42 || c == 47 || c == 46 || c == 37
-        || c == 40 || c == 41) { ok = 1; }
+          || c == 40 || c == 41) { ok = 1; }
         if (ok == 0) { return 0; }
         i = i + 1;
     }
@@ -112,7 +112,7 @@ fn _mev_tokenize(ec, expr) {
             if (vec_len(tokens) == 0) { is_unary = 1; } else {
                 var lt = _mev_tok_type(vec_get(tokens, vec_len(tokens) - 1));
                 if (lt == TOK_PLUS || lt == TOK_MINUS || lt == TOK_MUL || lt == TOK_DIV
-                || lt == TOK_MOD || lt == TOK_LPAREN) { is_unary = 1; }
+                  || lt == TOK_MOD || lt == TOK_LPAREN) { is_unary = 1; }
             }
             i = i + 1;
             if (is_unary == 1) {
@@ -288,7 +288,7 @@ fn _math_eval_handler(args, claims) {
 
     if (_mev_valid_chars(expr) == 0) {
         var ic = result_error_typed(MCP_VALIDATION,
-        str_from("expression contains invalid characters — only digits, +, -, *, /, %, (, ), . allowed"));
+          str_from("expression contains invalid characters — only digits, +, -, *, /, %, (, ), . allowed"));
         return str_data(ic);
     }
 
@@ -301,7 +301,7 @@ fn _math_eval_handler(args, claims) {
     var val = load64(ec + 24);
     var out = str_from("");
     if (f64_eq(f64_fract(val), f64_from(0)) == 1
-    && f64_lt(f64_abs(val), f64_from(9223372036854775807)) == 1) {
+      && f64_lt(f64_abs(val), f64_from(9223372036854775807)) == 1) {
         var iv = f64_to(val);
         out = str_from_int(iv);
     } else {
@@ -327,7 +327,7 @@ fn math_tools() {
     var req = vec_new();
     vec_push(req, "expression");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_math_eval", "Evaluate a basic math expression (+, -, *, /, %, ^)",
-    _math_eval_props(), req), &_math_eval_handler));
+        mcp_tool_def("szal_math_eval", "Evaluate a basic math expression (+, -, *, /, %, ^)",
+          _math_eval_props(), req), &_math_eval_handler));
     return tools;
 }

@@ -17,14 +17,14 @@ this table is the as-written-at-M0 record):
 
 | Thing | Value | Source |
 |---|---|---|
-| Toolchain | Cyrius **6.1.33** at M0 → now pinned **6.5.2** | `cyrius.cyml`, `state.md` |
+| Toolchain | Cyrius **6.1.33** at M0 → now pinned **6.5.35** | `cyrius.cyml`, `state.md` |
 | szal (Rust) | **1.2.0**, 13,127–13,172 LOC, 42 src files, AGPL-3.0-only in Cargo.toml | `/home/macro/Repos/szal` |
-| szal (Cyrius port) | **2.1.0**, 11,572 LOC across 44 `src/*.cyr` (excl. `src/vendor/`) | `VERSION`, `src/` |
-| bote (Cyrius) | **3.1.4** (vendored `src/vendor/bote-core.cyr`; 2.7.3 at M0) | `/home/macro/Repos/bote` |
-| majra (Cyrius) | **2.5.3** (vendored `src/vendor/majra.cyr`; 2.4.5 at M0) | `/home/macro/Repos/majra`, `majra-vendoring.md` |
-| ai-hwaccel (Cyrius) | **2.3.15** (vendored `src/vendor/ai-hwaccel.cyr`; 2.3.9 at M0) | `/home/macro/Repos/ai-hwaccel` |
+| szal (Cyrius port) | **2.1.1**, 11643 LOC across 44 `src/*.cyr` (excl. `src/vendor/`) | `VERSION`, `src/` |
+| bote (Cyrius) | **3.3.7** (vendored `src/vendor/bote-core.cyr`; 2.7.3 at M0) | `/home/macro/Repos/bote` |
+| majra (Cyrius) | **2.7.0** (vendored `src/vendor/majra.cyr`; 2.4.5 at M0) | `/home/macro/Repos/majra`, `majra-vendoring.md` |
+| ai-hwaccel (Cyrius) | **2.3.19** (vendored `src/vendor/ai-hwaccel.cyr`; 2.3.9 at M0) | `/home/macro/Repos/ai-hwaccel` |
 | patra (SQL) | **1.12.12**, consumed via the cyrius stdlib as `lib/patra.cyr` | `/home/macro/Repos/patra` |
-| Stdlib | **99** modules in the 6.5.2 snapshot; `cyrius lib sync` provisions the **53** named in `[deps].stdlib` (json/toml/csv/base64/bigint/u128/matrix/linalg carved out → bayan/ganita) | `ls ~/.cyrius/versions/6.5.2/lib/*.cyr` |
+| Stdlib | **101** modules in the 6.5.35 snapshot; `cyrius lib sync` provisions the **55** named in `[deps].stdlib` (json/toml/csv/base64/bigint/u128/matrix/linalg carved out → bayan/ganita) | `ls ~/.cyrius/versions/6.5.35/lib/*.cyr` |
 | Git deps | **none** — all three third-party libs are vendored under `src/vendor/`, so no `cyrius deps` / `cyrius.lock` | `cyrius.cyml` |
 
 Primary references for the engineers:

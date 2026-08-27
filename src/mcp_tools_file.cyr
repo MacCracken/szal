@@ -317,7 +317,7 @@ fn _file_read_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("path", "{ \"type\": \"string\", \"description\": \"File path to read\" }"));
     vec_push(v, schema_prop_new("max_bytes",
-    "{ \"type\": \"integer\", \"description\": \"Max bytes to read (default: 1MB)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Max bytes to read (default: 1MB)\" }"));
     return v;
 }
 
@@ -326,18 +326,18 @@ fn _file_write_props() {
     vec_push(v, schema_prop_new("path", "{ \"type\": \"string\", \"description\": \"File path to write\" }"));
     vec_push(v, schema_prop_new("content", "{ \"type\": \"string\", \"description\": \"Content to write\" }"));
     vec_push(v, schema_prop_new("append",
-    "{ \"type\": \"boolean\", \"description\": \"Append instead of overwrite (default: false)\" }"));
+        "{ \"type\": \"boolean\", \"description\": \"Append instead of overwrite (default: false)\" }"));
     return v;
 }
 
 fn _dir_list_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("path",
-    "{ \"type\": \"string\", \"description\": \"Directory path (default: current dir)\" }"));
+        "{ \"type\": \"string\", \"description\": \"Directory path (default: current dir)\" }"));
     vec_push(v, schema_prop_new("recursive",
-    "{ \"type\": \"boolean\", \"description\": \"Recurse into subdirectories (default: false)\" }"));
+        "{ \"type\": \"boolean\", \"description\": \"Recurse into subdirectories (default: false)\" }"));
     vec_push(v, schema_prop_new("max_entries",
-    "{ \"type\": \"integer\", \"description\": \"Max entries to return (default: 500)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Max entries to return (default: 500)\" }"));
     return v;
 }
 
@@ -359,30 +359,30 @@ fn file_tools() {
     vec_push(p_req, "path");
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_file_read", "Read a file's contents as text", _file_read_props(), p_req),
-    &_file_read_handler));
+        mcp_tool_def("szal_file_read", "Read a file's contents as text", _file_read_props(), p_req),
+        &_file_read_handler));
 
     var w_req = vec_new();
     vec_push(w_req, "path");
     vec_push(w_req, "content");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_file_write", "Write text content to a file (creates or overwrites)",
-    _file_write_props(), w_req), &_file_write_handler));
+        mcp_tool_def("szal_file_write", "Write text content to a file (creates or overwrites)",
+          _file_write_props(), w_req), &_file_write_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_dir_list", "List files and directories in a path", _dir_list_props(), vec_new()),
-    &_dir_list_handler));
+        mcp_tool_def("szal_dir_list", "List files and directories in a path", _dir_list_props(), vec_new()),
+        &_dir_list_handler));
 
     var s_req = vec_new();
     vec_push(s_req, "path");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_file_stat", "Get metadata for a file or directory (size, permissions, timestamps)",
-    _path_props(", \"description\": \"File or directory path\""), s_req), &_file_stat_handler));
+        mcp_tool_def("szal_file_stat", "Get metadata for a file or directory (size, permissions, timestamps)",
+          _path_props(", \"description\": \"File or directory path\""), s_req), &_file_stat_handler));
 
     var e_req = vec_new();
     vec_push(e_req, "path");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_path_exists", "Check if a file or directory exists", _path_props(""), e_req),
-    &_path_exists_handler));
+        mcp_tool_def("szal_path_exists", "Check if a file or directory exists", _path_props(""), e_req),
+        &_path_exists_handler));
     return tools;
 }

@@ -109,7 +109,7 @@ enum ExecCtxL {
 # Build an ExecCtx. handler is a callback pair (required); flow is a FlowCtx*; condition_cache is
 # a ConditionCache*; the rest are callback pairs / vtables or 0 (None). Returns 0 on OOM.
 fn exec_ctx_new(handler, event_sink, flow, metrics_vt, step_type_metrics, progress_sink,
-condition_cache) {
+  condition_cache) {
     var ec = alloc(EC_SIZE);
     if (ec == 0) { return 0; }
     store64(ec + EC_HANDLER, handler);

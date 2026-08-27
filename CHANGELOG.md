@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] — 2026-08-26
+
+Toolchain and vendored-dependency refresh: Cyrius 6.5.2 → 6.5.35, majra 2.5.3 → 2.7.0, bote-core
+3.1.4 → 3.3.7, ai-hwaccel 2.3.15 → 2.3.19 — every dependency now at its latest release, and szal
+still has **zero git deps**. The bump surfaced a live Cyrius codegen regression that silently broke
+step timeouts, and a cross-arch symbol collision that no previous scan could see. Full suite:
+**1,437 assertions across 46 test files, 5 fuzz harnesses, 15 benchmarks, 0 failures.**
+`rust-old/` parity oracle untouched.
+
+### Fixed
+- **Step timeouts silently inverted under Cyrius ≥ 6.5.31** — `cycc` sign-extends enum-constant
+  initialisers from **bit 62**, so `enum StepSat { STEP_I64_MAX = 0x7FFFFFFFFFFFFFFF; }`
+  (`src/step.cyr`) folded to **-1**. Because Cyrius `>`/`>=` are signed, that inverted two guards
+  at once: `engine_step_exec.cyr`'s `timeout_ms >= STEP_I64_MAX` sent **every** step down the
+  synchronous no-timeout path, and `engine_runner.cyr`'s unbounded-flow sentinel made the deadline
+  check `elapsed > timeout_ms` **always true**, so every step was skipped as "flow timeout
+  exceeded". `STEP_I64_MAX` is now a `var`, whose initialisers are immune to the bad fold; it is
+  only ever used as a value, so the kind change is behaviour-preserving. Five suites
+  (`engine_runner`, `engine_subflow`, `engine_step_exec`, `engine_hardware`,
+  `engine_parallel_stress`) and `fuzz/step_json` failed on this and are green again. Upstream bug
+  + minimal repro:
+  [`docs/development/issues/2026-08-26-cycc-enum-bit62-sign-extension.md`](docs/development/issues/2026-08-26-cycc-enum-bit62-sign-extension.md).
+  **Do not convert `STEP_I64_MAX` back to an enum until cycc is fixed.**
+
+- **`SYS_GETRANDOM` cross-kind collision (latent, non-x86_64)** — vendored majra declares
+  `var SYS_GETRANDOM = 318`, an x86_64-hardcoded literal, while the stdlib declares the same name
+  as an **arch-conditional enum constant** (318 x86_64-linux/macos, 278 aarch64-linux, 45 agnos).
+  `main.cyr` includes `lib/syscalls.cyr` before `src/vendor/majra.cyr`, so last-definition-wins
+  handed majra's 318 to the whole program — including `lib/patra.cyr` and `lib/sigil.cyr`, both of
+  which szal reaches through `sql_store.cyr`. Harmless on x86_64 (318 == 318), the wrong syscall
+  anywhere else. Now renamed `MJ_SYS_GETRANDOM` by `scripts/sync-majra.sh`, so the stdlib's
+  arch-correct constant survives. This is a `var`-vs-enum-constant collision whose values *match*
+  on the CI arch — a class `cyrius build --strict` reports nothing for.
+
+### Added
+- **`scripts/scan-collisions.sh`** — a cross-kind global-symbol collision scanner, with a
+  `--check` mode for CI. Cyrius resolves fns, top-level `var`s/`const`s and enum constants in one
+  flat namespace (last-definition-wins), but `--strict` is blind to most of that: `fn` vs `var`,
+  `fn` vs enum-constant, `struct` vs `struct`, enum-type vs enum-type, and *every* value conflict
+  whose prior definition sits past var-table index 1024 — which is over half of szal's globals.
+  The `fn` vs data class is not merely unreported but **miscompiles**: `&X` binds to the data
+  symbol, so a function pointer taken on that name jumps into `.bss`, and szal dispatches 54 MCP
+  tools through function pointers. The scanner is validated against ground truth (its symbol
+  counts match `grep` exactly) and against a positive control (it flags `SYS_GETRANDOM` with the
+  rename reverted). Current state: **3 intersections, all intentional or verified-benign**
+  (`REQ_NONE`, the deliberately shared szal × ai-hwaccel hardware-requirement API; and the
+  `StepStatus` / `TriggerMode` enum *type* names, which Cyrius does not place in the flat symbol
+  table).
+
+### Changed
+- **Cyrius pin 6.5.2 → 6.5.35** (`cyrius.cyml [package].cyrius`). `lib/` re-provisioned from the
+  new snapshot (`rm -rf lib && cyrius lib sync`, 55 modules). Static data in the main binary
+  dropped **13,414,112 → 806,176 bytes**.
+- **majra 2.5.3 → 2.7.0** (`src/vendor/majra.cyr`, 3,289 → 4,840 lines). All 25 symbols szal links
+  are signature-identical. ⚠️ **One live behavioural change: rate limiting starts working.**
+  majra ≤ 2.5.3 keyed its buckets on the *caller's key pointer*; 2.7.0 stores an owned copy. Every
+  szal call site passes a freshly allocated cstr per request (`mcp_tools_net.cyr`'s host/DNS/port
+  checks, `mcp_tenant.cyr`'s tenant check), so each call previously got a brand-new full-burst
+  bucket and **never refused** — szal's HTTP 10/s·50, DNS 100/s·200, port 50/s·100 and tenant
+  100/s·500 limits were no-ops in production. They now enforce, which restores Rust parity. The
+  test suite is unaffected (it uses string literals, one pooled address per call site). Also
+  fixes an i64-overflow fail-open, fractional-credit starvation, and a `ratelimit_evict_stale`
+  leak; `mq_dequeue`/`fleet_rebalance` gained correctness fixes szal benefits from.
+- **bote-core 3.1.4 → 3.3.7** (`src/vendor/bote-core.cyr`, 2,612 → 2,881 lines). All 13 symbols
+  szal uses are signature-identical; no function removals, no JSON-shape changes. The two
+  declared-breaking changes in that range do not reach szal: 3.3.5's `cancel_token_*` prefixing is
+  in `stream.cyr` (not in the `[lib.core]` cut szal vendors), and 3.3.0's `Dispatcher` 72 → 88 byte
+  growth appends fields szal never offsets into. `compiled_compile` remains the only rename needed.
+- **ai-hwaccel 2.3.15 → 2.3.19** (`src/vendor/ai-hwaccel.cyr`, 6,348 → 6,401 lines). Still no
+  renames. The `REQ_*` / `FAMILY_*` value table is **byte-identical**, so szal's hardware gating is
+  unchanged. 2.3.19 moved its JSON calls to bayan's canonical `bayan_json_v_*` names, which
+  **clears the long-standing `json_v_parse_str` undefined-function warning** — down from six such
+  warnings to five (`argc`/`argv` from ai-hwaccel's unreachable arg helper, and
+  `_keccak_absorb`/`_keccak_f1600`/`shake256`, which are stdlib `lib/sigil.cyr` references to a
+  `lib/keccak.cyr` szal does not include; all five remain unreachable from szal).
+- `src/*.cyr` reformatted for the 6.5.35 formatter (continuation-line indent — 468 lines across 30
+  files, whitespace-only, verified with `diff -w -B`). Same class of change as the 6.5.2 reformat
+  at 2.1.0.
+
 ## [2.1.0] — 2026-07-29
 
 Toolchain and vendored-dependency refresh for the Cyrius port, plus the first real fuzz and

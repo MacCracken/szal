@@ -286,18 +286,18 @@ fn _text_join_handler(args, claims) {
 fn _tpl_render_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("template",
-    "{ \"type\": \"string\", \"description\": \"Template string with {{var}} placeholders\" }"));
+        "{ \"type\": \"string\", \"description\": \"Template string with {{var}} placeholders\" }"));
     vec_push(v, schema_prop_new("variables",
-    "{ \"type\": \"object\", \"description\": \"Key-value pairs for substitution\" }"));
+        "{ \"type\": \"object\", \"description\": \"Key-value pairs for substitution\" }"));
     return v;
 }
 
 fn _wc_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("text",
-    "{ \"type\": \"string\", \"description\": \"Text to count (mutually exclusive with file)\" }"));
+        "{ \"type\": \"string\", \"description\": \"Text to count (mutually exclusive with file)\" }"));
     vec_push(v, schema_prop_new("file",
-    "{ \"type\": \"string\", \"description\": \"File path to count (mutually exclusive with text)\" }"));
+        "{ \"type\": \"string\", \"description\": \"File path to count (mutually exclusive with text)\" }"));
     return v;
 }
 
@@ -318,7 +318,7 @@ fn _text_split_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("text", "{ \"type\": \"string\", \"description\": \"Text to split\" }"));
     vec_push(v, schema_prop_new("delimiter",
-    "{ \"type\": \"string\", \"description\": \"Delimiter (default: newline)\" }"));
+        "{ \"type\": \"string\", \"description\": \"Delimiter (default: newline)\" }"));
     return v;
 }
 
@@ -330,7 +330,7 @@ fn _text_join_props() {
     var parts_c = str_cstr(str_builder_build(pb));
     vec_push(v, schema_prop_new("parts", parts_c));
     vec_push(v, schema_prop_new("separator",
-    "{ \"type\": \"string\", \"description\": \"Separator (default: newline)\" }"));
+        "{ \"type\": \"string\", \"description\": \"Separator (default: newline)\" }"));
     return v;
 }
 
@@ -355,23 +355,23 @@ fn template_tools() {
     vec_push(tr_req, "template");
     vec_push(tr_req, "variables");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_template_render", "Render a mustache-style template with {{variable}} substitution",
-    _tpl_render_props(), tr_req), &_template_render_handler));
+        mcp_tool_def("szal_template_render", "Render a mustache-style template with {{variable}} substitution",
+          _tpl_render_props(), tr_req), &_template_render_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_wc", "Count lines, words, and characters in text", _wc_props(), vec_new()),
-    &_wc_handler));
+        mcp_tool_def("szal_wc", "Count lines, words, and characters in text", _wc_props(), vec_new()),
+        &_wc_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_text_replace", "Search and replace text in a string",
-    _text_replace_props(), _req3("text", "search", "replace")), &_text_replace_handler));
+        mcp_tool_def("szal_text_replace", "Search and replace text in a string",
+          _text_replace_props(), _req3("text", "search", "replace")), &_text_replace_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_text_split", "Split text by a delimiter and return as JSON array",
-    _text_split_props(), _req1("text")), &_text_split_handler));
+        mcp_tool_def("szal_text_split", "Split text by a delimiter and return as JSON array",
+          _text_split_props(), _req1("text")), &_text_split_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_text_join", "Join array elements into a single string with a separator",
-    _text_join_props(), _req1("parts")), &_text_join_handler));
+        mcp_tool_def("szal_text_join", "Join array elements into a single string with a separator",
+          _text_join_props(), _req1("parts")), &_text_join_handler));
     return tools;
 }

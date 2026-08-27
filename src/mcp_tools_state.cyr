@@ -130,19 +130,19 @@ fn state_tools() {
     var c_req = vec_new();
     vec_push(c_req, "state");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_state_check", "Check if a workflow state is terminal and list its valid transitions",
-    _state_check_props(), c_req), &_state_check_handler));
+        mcp_tool_def("szal_state_check", "Check if a workflow state is terminal and list its valid transitions",
+          _state_check_props(), c_req), &_state_check_handler));
 
     var t_req = vec_new();
     vec_push(t_req, "from");
     vec_push(t_req, "to");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_state_transition", "Check if a state transition from one state to another is valid",
-    _state_transition_props(), t_req), &_state_transition_handler));
+        mcp_tool_def("szal_state_transition", "Check if a state transition from one state to another is valid",
+          _state_transition_props(), t_req), &_state_transition_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_state_lifecycle",
-    "Show the complete workflow state machine — all states, transitions, and terminal states",
-    vec_new(), vec_new()), &_state_lifecycle_handler));
+        mcp_tool_def("szal_state_lifecycle",
+          "Show the complete workflow state machine — all states, transitions, and terminal states",
+          vec_new(), vec_new()), &_state_lifecycle_handler));
     return tools;
 }

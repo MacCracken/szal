@@ -307,7 +307,7 @@ fn _flow_check_cycles(f) {
         var j = 0;
         while (j < dn) {
             var dkey = str_cstr(uuid_to_str(step_depends_on_hi(step3, j),
-            step_depends_on_lo(step3, j)));
+                step_depends_on_lo(step3, j)));
             if (map_has(id_set, dkey) == 0) {
                 var sb = str_builder_new();
                 str_builder_add_cstr(sb, "step '");
@@ -335,7 +335,7 @@ fn _flow_dfs(node_key, deps_map, visited, in_stack) {
         var k = 0;
         while (k < dn) {
             var nkey = str_cstr(uuid_to_str(step_depends_on_hi(step, k),
-            step_depends_on_lo(step, k)));
+                step_depends_on_lo(step, k)));
             if (map_has(visited, nkey) == 0) {
                 if (_flow_dfs(nkey, deps_map, visited, in_stack) == 1) {
                     return 1;
@@ -360,12 +360,12 @@ fn _flow_dfs(node_key, deps_map, visited, in_stack) {
 fn flow_to_json(f) {
     var o = bayan_json_v_obj_new();
     bayan_json_v_obj_set(o, str_from("id"),
-    bayan_json_v_str_new(uuid_to_str(flow_id_hi(f), flow_id_lo(f))));
+      bayan_json_v_str_new(uuid_to_str(flow_id_hi(f), flow_id_lo(f))));
     bayan_json_v_obj_set(o, str_from("name"), bayan_json_v_str_new(flow_name(f)));
     bayan_json_v_obj_set(o, str_from("description"),
-    bayan_json_v_str_new(flow_description(f)));
+      bayan_json_v_str_new(flow_description(f)));
     bayan_json_v_obj_set(o, str_from("mode"),
-    bayan_json_v_str_new(str_from(flow_mode_serde_name(flow_mode(f)))));
+      bayan_json_v_str_new(str_from(flow_mode_serde_name(flow_mode(f)))));
     var steps = bayan_json_v_arr_new();
     var n = flow_steps_len(f);
     var i = 0;
@@ -375,15 +375,15 @@ fn flow_to_json(f) {
     }
     bayan_json_v_obj_set(o, str_from("steps"), steps);
     bayan_json_v_obj_set(o, str_from("rollback_on_failure"),
-    bayan_json_v_bool_new(flow_rollback_on_failure(f)));
+      bayan_json_v_bool_new(flow_rollback_on_failure(f)));
     if (flow_timeout_present(f) == 1) {
         bayan_json_v_obj_set(o, str_from("timeout_ms"),
-        bayan_json_v_int_new(flow_timeout_ms(f)));
+          bayan_json_v_int_new(flow_timeout_ms(f)));
     } else {
         bayan_json_v_obj_set(o, str_from("timeout_ms"), bayan_json_v_null());
     }
     bayan_json_v_obj_set(o, str_from("version"),
-    bayan_json_v_int_new(flow_version(f)));
+      bayan_json_v_int_new(flow_version(f)));
     return bayan_json_v_build(o);
 }
 

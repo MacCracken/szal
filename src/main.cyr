@@ -37,7 +37,7 @@ include "lib/fs.cyr"
 include "lib/process.cyr"
 include "src/vendor/ai-hwaccel.cyr"
 
-# --- vendored deps (hoosh pattern). Full majra 2.5.3 dist with szal-collision renames applied
+# --- vendored deps (hoosh pattern). Full majra 2.7.0 dist with szal-collision renames applied
 # (MJ_ERR_/MJ_STEP_/MJ_TRIGGER_ + majra_uuid_generate/majra_step_result_new) — synced by
 # scripts/sync-majra.sh. See docs/development/majra-vendoring.md. ---
 include "src/vendor/majra.cyr"

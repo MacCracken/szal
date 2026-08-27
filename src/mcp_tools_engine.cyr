@@ -135,7 +135,7 @@ fn _step_status_list_handler(args, claims) {
     bayan_json_v_arr_push(arr, _eng_kv2("status", "failed", "description", "Step execution failed"));
     bayan_json_v_arr_push(arr, _eng_kv2("status", "skipped", "description", "Step was skipped"));
     bayan_json_v_arr_push(arr, _eng_kv2("status", "rolled_back", "description",
-    "Step was rolled back after failure"));
+        "Step was rolled back after failure"));
     var r = result_ok_json(arr);
     return str_data(r);
 }
@@ -144,15 +144,15 @@ fn _step_status_list_handler(args, claims) {
 fn _error_list_handler(args, claims) {
     var arr = bayan_json_v_arr_new();
     bayan_json_v_arr_push(arr, _eng_kv2("error", "StepFailed", "description",
-    "A step failed with a specific reason"));
+        "A step failed with a specific reason"));
     bayan_json_v_arr_push(arr, _eng_kv2("error", "StepTimeout", "description",
-    "A step exceeded its timeout"));
+        "A step exceeded its timeout"));
     bayan_json_v_arr_push(arr, _eng_kv2("error", "InvalidFlow", "description",
-    "Flow configuration is invalid"));
+        "Flow configuration is invalid"));
     bayan_json_v_arr_push(arr, _eng_kv2("error", "RetryExhausted", "description",
-    "All retry attempts failed"));
+        "All retry attempts failed"));
     bayan_json_v_arr_push(arr, _eng_kv2("error", "RollbackFailed", "description",
-    "Rollback operation failed"));
+        "Rollback operation failed"));
     bayan_json_v_arr_push(arr, _eng_kv2("error", "CycleDetected", "description", "DAG contains a cycle"));
     var r = result_ok_json(arr);
     return str_data(r);
@@ -180,7 +180,7 @@ fn _server_info_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("name"), bayan_json_v_str_new(str_from("szal")));
     bayan_json_v_obj_set(out, str_from("version"), bayan_json_v_str_new(str_from("2.0.0")));
     bayan_json_v_obj_set(out, str_from("description"),
-    bayan_json_v_str_new(str_from("Workflow orchestration engine")));
+      bayan_json_v_str_new(str_from("Workflow orchestration engine")));
     bayan_json_v_obj_set(out, str_from("mcp_backend"), bayan_json_v_str_new(str_from("bote")));
     bayan_json_v_obj_set(out, str_from("capabilities"), caps);
     var r = result_ok_json(out);
@@ -206,25 +206,26 @@ fn _result_json_props() {
 fn engine_tools() {
     var tools = vec_new();
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_engine_create", "Create an engine configuration with concurrency and timeout settings",
-    _engine_create_props(), vec_new()), &_engine_create_handler));
+        mcp_tool_def("szal_engine_create", "Create an engine configuration with concurrency and timeout settings",
+          _engine_create_props(), vec_new()), &_engine_create_handler));
 
     var ri_req = vec_new();
     vec_push(ri_req, "result_json");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_result_inspect", "Inspect a flow execution result — step counts, duration, success/failure",
-    _result_json_props(), ri_req), &_result_inspect_handler));
+        mcp_tool_def("szal_result_inspect",
+          "Inspect a flow execution result — step counts, duration, success/failure",
+          _result_json_props(), ri_req), &_result_inspect_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_step_status_list", "List all possible step execution statuses",
-    vec_new(), vec_new()), &_step_status_list_handler));
+        mcp_tool_def("szal_step_status_list", "List all possible step execution statuses",
+          vec_new(), vec_new()), &_step_status_list_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_error_list", "List all workflow error types with descriptions",
-    vec_new(), vec_new()), &_error_list_handler));
+        mcp_tool_def("szal_error_list", "List all workflow error types with descriptions",
+          vec_new(), vec_new()), &_error_list_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_server_info", "Show szal server info — version, capabilities",
-    vec_new(), vec_new()), &_server_info_handler));
+        mcp_tool_def("szal_server_info", "Show szal server info — version, capabilities",
+          vec_new(), vec_new()), &_server_info_handler));
     return tools;
 }

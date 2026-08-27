@@ -194,7 +194,7 @@ fn execute_step_with_handler(step, ctx) {
             metric_step_finished(metrics_vt, fname, name, str_from("completed"), dur);
             emit_step_type_metric(stm, _step_type_cstr(step), "completed", dur);
             return step_result_new(step_id_hi(step), step_id_lo(step), STATUS_COMPLETED, output,
-            dur, attempt);
+              dur, attempt);
         } else {
             # Handler error: emit step_retry if more attempts remain; record last_error; backoff.
             var e = err_code_of(r);
@@ -222,7 +222,7 @@ fn execute_step_with_handler(step, ctx) {
     emit_step_type_metric(stm, _step_type_cstr(step), "failed", total_dur);
 
     var res = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
-    bayan_json_v_null(), total_dur, max_attempts);
+      bayan_json_v_null(), total_dur, max_attempts);
     step_result_set_error(res, error);
     return res;
 }

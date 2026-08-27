@@ -5,7 +5,7 @@ description = "szal — workflow engine: step/flow execution with branching, ret
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/szal"
 language = "cyrius"
-cyrius = "6.5.2"
+cyrius = "6.5.35"
 
 [build]
 entry = "src/main.cyr"
@@ -24,28 +24,33 @@ stdlib = ["string", "fmt", "alloc", "freelist", "vec", "str", "syscalls", "io", 
           "thread", "sync", "async", "atomic", "process", "net", "random", "log",
           "sakshi", "patra", "sigil", "bayan", "bench"]
 
-# bote-core + majra are VENDORED at src/vendor/ (hoosh pattern): a [deps.bote] block would
-# make `cyrius deps` recurse into bote's own [deps.libro]/[deps.majra] git blocks (lib/ bloat
-# + last-definition-wins symbol collisions). Pins: bote 3.1.4 dist/bote-core.cyr,
-# majra 2.5.3 dist/majra.cyr -- re-synced by scripts/sync-bote.sh / sync-majra.sh.
+# bote-core + majra + ai-hwaccel are ALL VENDORED at src/vendor/ (hoosh pattern). A [deps.X] block
+# would make `cyrius deps` recurse into each dep's own git sub-deps (lib/ bloat + last-definition-
+# wins symbol collisions), and for ai-hwaccel specifically, declaring it as a git dep puts the build
+# on the FULL-DEPS path, which on x86_64 mis-resolves szal's `var buf[ENUM_CONST]` idiom (error.cyr).
 #
-# FULL majra dist is VENDORED at src/vendor/majra.cyr (majra 2.5.3, synced by scripts/sync-majra.sh
-# with the szal-collision rename: MJ_ERR_/MJ_STEP_/MJ_TRIGGER_ + majra_uuid_generate/
-# majra_step_result_new). main.cyr includes it after lib/thread.cyr (its only extra stdlib dep).
-# bote-core 3.1.4 vendored at src/vendor/bote-core.cyr (M3 MCP; its registry_new→tool_registry_new
-# rename dissolved the Q9 ai-hwaccel collision). Full rationale: docs/development/majra-vendoring.md.
+# Pins at 2.1.1 — every one at its latest upstream release:
+#   majra       2.7.0   dist/majra.cyr        -> scripts/sync-majra.sh       (6 collision renames)
+#   bote-core   3.3.7   dist/bote-core.cyr    -> scripts/sync-bote.sh        (1 collision rename)
+#   ai-hwaccel  2.3.19  dist/ai-hwaccel.cyr   -> scripts/sync-ai-hwaccel.sh  (no renames)
 #
-# ai-hwaccel 2.3.15 is ALSO VENDORED at src/vendor/ai-hwaccel.cyr (scripts/sync-ai-hwaccel.sh) — the
-# former [deps.ai-hwaccel] block was removed: as a git dep, `cyrius build` resolves it on the
-# full-deps path, which on x86_64 mis-resolves szal's `var buf[ENUM_CONST]` idiom (error.cyr). With
-# all three (majra/bote-core/ai-hwaccel) vendored, szal has ZERO git deps -> CI is `cyrius lib sync`
-# (stdlib only) + `cyrius build --strict --no-deps` (the project build recipe). No `cyrius deps` /
-# cyrius.lock needed.
+# With all three vendored, szal has ZERO git deps -> CI is `cyrius lib sync` (stdlib only) +
+# `cyrius build --strict --no-deps` (the project build recipe). No `cyrius deps` / cyrius.lock.
+# Full rationale: docs/development/majra-vendoring.md.
 #
-# Collision status at 2.1.0 (full fn/const/var scan of szal x majra x bote x hw x stdlib): the ONLY
-# remaining intersection anywhere is REQ_NONE, part of the REQ_*/FAMILY_* hardware-requirement API
-# that ai-hwaccel SHARES with src/step.cyr by design. The old ERR_NONE / ERR_PARSE /
-# ERR_TOOL_NOT_FOUND / ERR_TIMEOUT / BYTES_PER_GB duplicate-symbol warnings are all gone: szal
-# prefixed its own codes SZAL_ERR_* + SZAL_BYTES_PER_* at 2.1.0, and bote 3.1.4 / ai-hwaccel 2.3.15 /
-# sigil 6.5.2 independently prefixed theirs BOTE_ERR_* / HWA_ERR_* / SIGIL_ERR_*. `cyrius build
-# --strict --no-deps src/main.cyr` now reports ZERO duplicate symbols.
+# COLLISION STATUS at 2.1.1 — run `scripts/scan-collisions.sh` to reproduce; it is the authority,
+# NOT the compiler. `cyrius build --strict --no-deps src/main.cyr` reports zero duplicate symbols,
+# but that is much weaker than it reads: cycc is blind to fn-vs-var, fn-vs-enum-constant,
+# struct-vs-struct and enum-type-vs-enum-type collisions entirely, and to EVERY value conflict whose
+# prior definition sits past var-table index 1024 (over half of szal's globals). The scanner covers
+# all kinds, cross-kind, across szal x majra x bote x ai-hwaccel x the provisioned stdlib.
+#
+# Three intersections remain, all intentional or verified-benign:
+#   REQ_NONE                  szal src/step.cyr:48 x ai-hwaccel — the SHARED hardware-requirement
+#                             API, both = 0, deliberately one symbol.
+#   StepStatus / TriggerMode  enum TYPE names, szal src/step.cyr:26,35 x majra. Cyrius does not put
+#                             enum type names in the flat symbol table, and neither is used as a
+#                             type annotation in szal.
+# NEW at 2.1.1: SYS_GETRANDOM (majra `var` 318, x86-hardcoded, vs the stdlib's ARCH-CONDITIONAL enum
+# constant 318/278/45) is now renamed MJ_SYS_GETRANDOM by sync-majra.sh. It was invisible to every
+# previous scan — cross-kind, and value-identical on the CI arch, so cycc said nothing.

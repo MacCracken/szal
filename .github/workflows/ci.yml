@@ -83,6 +83,21 @@ jobs:
           cyrius build --strict --no-deps src/main.cyr "build/${{ github.event.repository.name }}"
           "./build/${{ github.event.repository.name }}"
 
+      - name: Symbol collisions
+        # Cross-kind global-symbol collision gate. This is NOT redundant with the build above:
+        # Cyrius resolves fns, top-level vars/consts and enum constants in ONE flat namespace
+        # (last-definition-wins), but `cyrius build --strict` is SILENT on fn-vs-var,
+        # fn-vs-enum-constant, struct-vs-struct and enum-type-vs-enum-type collisions, silent
+        # whenever the colliding values happen to match, and its value-conflict warning is
+        # hard-capped at var-table index 1024 — while szal's var_table is >2000, so over half of
+        # szal's globals sit where that warning cannot fire at all. The fn-vs-data class also
+        # MISCOMPILES (&X binds to the data symbol), and szal dispatches 54 MCP tools via fn
+        # pointers. See docs/development/state.md "Dependencies".
+        #
+        # Intentional/verified-benign intersections are allow-listed inside the script; a new
+        # collision fails the job. Re-run it locally after every vendored-dep or toolchain bump.
+        run: ./scripts/scan-collisions.sh --check
+
       - name: Lint
         # Hard gate: any cyrlint `warn` line fails CI. Only szal-authored src/*.cyr
         # are linted (src/vendor/* are upstream dists, exempt).

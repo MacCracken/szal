@@ -98,7 +98,7 @@ fn _base64_handler(args, claims) {
 fn _uuid_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("count",
-    "{ \"type\": \"integer\", \"description\": \"Number of UUIDs to generate (default: 1, max: 100)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Number of UUIDs to generate (default: 1, max: 100)\" }"));
     return v;
 }
 
@@ -119,12 +119,12 @@ fn _base64_props() {
 fn encoding_tools() {
     var tools = vec_new();
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_uuid", "Generate one or more UUID v4 identifiers", _uuid_props(), vec_new()),
-    &_uuid_handler));
+        mcp_tool_def("szal_uuid", "Generate one or more UUID v4 identifiers", _uuid_props(), vec_new()),
+        &_uuid_handler));
     var b64_req = vec_new();
     vec_push(b64_req, "input");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_base64", "Encode or decode a string using base64", _base64_props(), b64_req),
-    &_base64_handler));
+        mcp_tool_def("szal_base64", "Encode or decode a string using base64", _base64_props(), b64_req),
+        &_base64_handler));
     return tools;
 }

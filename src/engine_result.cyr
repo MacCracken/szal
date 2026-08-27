@@ -112,22 +112,22 @@ fn flow_result_skipped_count(fr) {
 fn flow_result_to_json(fr) {
     var o = bayan_json_v_obj_new();
     bayan_json_v_obj_set(o, str_from("flow_name"),
-    bayan_json_v_str_new(flow_result_flow_name(fr)));
+      bayan_json_v_str_new(flow_result_flow_name(fr)));
     var steps = bayan_json_v_arr_new();
     var n = flow_result_steps_len(fr);
     var i = 0;
     while (i < n) {
         bayan_json_v_arr_push(steps,
-        bayan_json_v_parse(step_result_to_json(flow_result_step_at(fr, i))));
+          bayan_json_v_parse(step_result_to_json(flow_result_step_at(fr, i))));
         i = i + 1;
     }
     bayan_json_v_obj_set(o, str_from("steps"), steps);
     bayan_json_v_obj_set(o, str_from("total_duration_ms"),
-    bayan_json_v_int_new(flow_result_total_duration_ms(fr)));
+      bayan_json_v_int_new(flow_result_total_duration_ms(fr)));
     bayan_json_v_obj_set(o, str_from("success"),
-    bayan_json_v_bool_new(flow_result_success(fr)));
+      bayan_json_v_bool_new(flow_result_success(fr)));
     bayan_json_v_obj_set(o, str_from("rolled_back"),
-    bayan_json_v_bool_new(flow_result_rolled_back(fr)));
+      bayan_json_v_bool_new(flow_result_rolled_back(fr)));
     return bayan_json_v_build(o);
 }
 

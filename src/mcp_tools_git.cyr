@@ -389,7 +389,7 @@ fn _git_blame_handler(args, claims) {
 
 fn _git_path_prop() {
     return schema_prop_new("path",
-    "{ \"type\": \"string\", \"description\": \"Repository path (default: current dir)\" }");
+      "{ \"type\": \"string\", \"description\": \"Repository path (default: current dir)\" }");
 }
 
 fn _git_status_props() {
@@ -402,7 +402,7 @@ fn _git_log_props() {
     var v = vec_new();
     vec_push(v, _git_path_prop());
     vec_push(v, schema_prop_new("count",
-    "{ \"type\": \"integer\", \"description\": \"Number of commits (default: 10, max: 100)\" }"));
+        "{ \"type\": \"integer\", \"description\": \"Number of commits (default: 10, max: 100)\" }"));
     return v;
 }
 
@@ -410,7 +410,7 @@ fn _git_diff_props() {
     var v = vec_new();
     vec_push(v, _git_path_prop());
     vec_push(v, schema_prop_new("staged",
-    "{ \"type\": \"boolean\", \"description\": \"Show staged changes (default: false)\" }"));
+        "{ \"type\": \"boolean\", \"description\": \"Show staged changes (default: false)\" }"));
     vec_push(v, schema_prop_new("ref1", "{ \"type\": \"string\", \"description\": \"First ref for comparison\" }"));
     vec_push(v, schema_prop_new("ref2", "{ \"type\": \"string\", \"description\": \"Second ref for comparison\" }"));
     var sb = str_builder_new();
@@ -425,7 +425,7 @@ fn _git_branch_props() {
     var v = vec_new();
     vec_push(v, _git_path_prop());
     vec_push(v, schema_prop_new("all",
-    "{ \"type\": \"boolean\", \"description\": \"Include remote branches (default: false)\" }"));
+        "{ \"type\": \"boolean\", \"description\": \"Include remote branches (default: false)\" }"));
     return v;
 }
 
@@ -440,25 +440,25 @@ fn _git_blame_props() {
 fn git_tools() {
     var tools = vec_new();
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_git_status", "Get git status (branch, modified/staged/untracked files)",
-    _git_status_props(), vec_new()), &_git_status_handler));
+        mcp_tool_def("szal_git_status", "Get git status (branch, modified/staged/untracked files)",
+          _git_status_props(), vec_new()), &_git_status_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_git_log", "Get recent git commits", _git_log_props(), vec_new()),
-    &_git_log_handler));
+        mcp_tool_def("szal_git_log", "Get recent git commits", _git_log_props(), vec_new()),
+        &_git_log_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_git_diff", "Get git diff (staged, unstaged, or between refs)",
-    _git_diff_props(), vec_new()), &_git_diff_handler));
+        mcp_tool_def("szal_git_diff", "Get git diff (staged, unstaged, or between refs)",
+          _git_diff_props(), vec_new()), &_git_diff_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_git_branch", "List git branches and show current branch",
-    _git_branch_props(), vec_new()), &_git_branch_handler));
+        mcp_tool_def("szal_git_branch", "List git branches and show current branch",
+          _git_branch_props(), vec_new()), &_git_branch_handler));
 
     var bl_req = vec_new();
     vec_push(bl_req, "file");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_git_blame", "Show git blame for a file (who last modified each line)",
-    _git_blame_props(), bl_req), &_git_blame_handler));
+        mcp_tool_def("szal_git_blame", "Show git blame for a file (who last modified each line)",
+          _git_blame_props(), bl_req), &_git_blame_handler));
     return tools;
 }

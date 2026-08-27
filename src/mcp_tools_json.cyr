@@ -242,7 +242,7 @@ fn _json_path_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("json", "{ \"type\": \"string\", \"description\": \"JSON string\" }"));
     vec_push(v, schema_prop_new("path",
-    "{ \"type\": \"string\", \"description\": \"Dot-separated path (e.g. 'data.items.0.name')\" }"));
+        "{ \"type\": \"string\", \"description\": \"Dot-separated path (e.g. 'data.items.0.name')\" }"));
     return v;
 }
 
@@ -256,7 +256,7 @@ fn _json_diff_props() {
 fn _json_validate_props() {
     var v = vec_new();
     vec_push(v, schema_prop_new("json",
-    "{ \"type\": \"string\", \"description\": \"JSON string to validate\" }"));
+        "{ \"type\": \"string\", \"description\": \"JSON string to validate\" }"));
     return v;
 }
 
@@ -272,18 +272,19 @@ fn _req2(a, b) {
 fn json_tools() {
     var tools = vec_new();
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_json_path",
-    "Extract a value from JSON using a dot-separated path (e.g. 'a.b.c' or 'a.0.b')",
-    _json_path_props(), _req2("json", "path")), &_json_path_handler));
+        mcp_tool_def("szal_json_path",
+          "Extract a value from JSON using a dot-separated path (e.g. 'a.b.c' or 'a.0.b')",
+          _json_path_props(), _req2("json", "path")), &_json_path_handler));
 
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_json_diff", "Compare two JSON values and report differences",
-    _json_diff_props(), _req2("a", "b")), &_json_diff_handler));
+        mcp_tool_def("szal_json_diff", "Compare two JSON values and report differences",
+          _json_diff_props(), _req2("a", "b")), &_json_diff_handler));
 
     var jv_req = vec_new();
     vec_push(jv_req, "json");
     vec_push(tools, mcp_tool_new(
-    mcp_tool_def("szal_json_validate", "Validate a JSON string — check if it parses correctly and report structure",
-    _json_validate_props(), jv_req), &_json_validate_handler));
+        mcp_tool_def("szal_json_validate",
+          "Validate a JSON string — check if it parses correctly and report structure",
+          _json_validate_props(), jv_req), &_json_validate_handler));
     return tools;
 }
