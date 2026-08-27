@@ -1,6 +1,9 @@
 # cycc sign-extends enum-constant initialisers from bit 62
 
-**Status:** 🔴 OPEN upstream (cyrius). Worked around szal-side at 2.1.1.
+**Status:** 🔴 OPEN upstream. **Filed 2026-08-26** as cyrius
+`docs/development/issues/2026-08-26-enum-const-bit62-sign-extension.md` (Critical), with the repro at
+`docs/development/issues/repros/2026-08-26-enum-const-bit62-sign-extension.cyr` and the root cause
+pinned to `parse_types.cyr:436` + `common/util.cyr:57-60`. Worked around szal-side at 2.1.1.
 **Affects:** cycc **6.5.31 → 6.5.35** (at least). 6.5.2 – 6.5.30 are correct.
 **Found:** 2026-08-26, during the szal 2.1.0 → 2.1.1 toolchain bump.
 **szal impact:** 5 test suites + 1 fuzz harness failed; the engine silently ran every step
@@ -10,7 +13,7 @@ without a timeout *and* skipped every step as "flow timeout exceeded".
 
 An `enum` constant whose initialiser has **bit 62 set** is sign-extended from bit 62 instead of
 being taken as a plain 64-bit value. `var` initialisers and inline expression literals are
-unaffected — which is why this hid for four minor releases.
+unaffected — which is why this hid across five patch releases and a 282/282 compiler corpus.
 
 | initialiser | cycc 6.5.2 | cycc 6.5.35 |
 |---|---|---|
@@ -38,10 +41,11 @@ CYRIUS_HOME=$HOME/.cyrius/versions/6.5.2 $HOME/.cyrius/versions/6.5.2/bin/cyrius
 
 ## How it broke szal
 
-szal had exactly one enum constant in the affected range:
+szal had exactly one enum constant in the affected range (it is now the `var` at
+`src/step.cyr:61`; before the fix it read):
 
 ```
-src/step.cyr:52   enum StepSat { STEP_I64_MAX = 0x7FFFFFFFFFFFFFFF; }
+src/step.cyr   enum StepSat { STEP_I64_MAX = 0x7FFFFFFFFFFFFFFF; }
 ```
 
 It is the **"no timeout" sentinel** for the whole engine, and Cyrius `>` / `>=` are **signed**, so
@@ -100,15 +104,31 @@ CYRIUS_HOME=$HOME/.cyrius/versions/<pin> $HOME/.cyrius/versions/<pin>/bin/cyrius
 `STEP_I64_MAX` is only ever used as a *value* (never as an array size), so the kind change is
 behaviour-preserving. **Do not convert it back to an enum until this is fixed upstream.**
 
-A `scripts/scan-collisions.sh`-style guard is not enough here — this is a codegen bug, not a
-symbol clash. The durable check is: *no enum constant anywhere in szal's include closure may have
+A `scripts/scan-collisions.sh`-style guard is not enough here — this is a constant-folding bug in
+the compiler front end, not a symbol clash. The durable check is: *no enum constant anywhere in szal's include closure may have
 bit 62 set.* As of 2.1.1 the closure — szal `src/`, all three vendored dists, `tests/`, `fuzz/`,
 `benches/`, and the whole cyrius 6.5.35 stdlib snapshot — contains **zero** such constants.
 
-## Suggested upstream fix
+## Root cause (confirmed upstream, 2026-08-26)
 
-The fold that materialises an enum member's value is sign-extending from bit 62 rather than 63
-(or is round-tripping through a 63-bit signed intermediate). `var` initialisers take a different
-path and are correct, so the two should be reconciled onto the `var` path's behaviour. Worth a
-cycc regression test over the boundary set `{2^62 - 1, 2^62, 2^63 - 2, 2^63 - 1}` in both hex and
-decimal spelling.
+Not a codegen bug — an **in-band tag in the constant-fold table**, and a genuine ambiguity rather
+than a slip:
+
+- `src/frontend/parse_types.cyr:436` stores each enum member as `(1 << 63) | val`, documenting
+  *"Bit 63 = 'is enum const' marker; low 63 bits = value"* — but `val` is a full i64.
+- `src/common/util.cyr:57-60` decodes it as
+  `if ((ecv & 0x4000000000000000) != 0) { return ecv; } return ecv & 0x7FFFFFFFFFFFFFFF;` — it
+  treats bit 62 as a proxy for *"this value was negative"* and, when set, returns the word
+  **unmasked with the marker bit still in it**. For a positive value with bit 62 set, that marker
+  is the result's sign bit.
+
+`-1` and `0x7FFFFFFFFFFFFFFF` pack to the **same stored word**, so no decoder heuristic can be
+right for both. The bisect shows the trade directly: cyrius **6.5.30 rejected negative enum
+initialisers** (`error: expected number, got '-'`) and got every positive value right; 6.5.31
+accepted negatives and lost the top quarter of the positive range.
+
+Suggested fix (in the upstream filing): take the tag out of the value word. `SVENUMID` /
+`GVENUMID` (`parse_types.cyr:444`, already used as exactly this test at `:801`) carries the
+presence bit, so `val` can be stored raw and `ENUM_CONST_VAL` deleted rather than repaired. Plus a
+regression fixture over `{2^62 - 1, 2^62, 2^63 - 2, 2^63 - 1}` in both hex and decimal spelling,
+and the negatives that motivated the encoding.

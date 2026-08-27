@@ -27,8 +27,12 @@ Cargo.toml/Cargo.lock steps were dead — there is no root Cargo manifest — an
   Worked around at 2.1.1 by making `STEP_I64_MAX` a `var` (`src/step.cyr`). **Invariant to hold:
   no enum constant anywhere in szal's include closure may have bit 62 set** — as of 2.1.1 the
   closure (szal `src/`, all three vendored dists, `tests/`, `fuzz/`, `benches/`, and the whole
-  6.5.35 stdlib snapshot) contains zero. Full analysis + minimal repro + suggested upstream fix:
+  6.5.35 stdlib snapshot) contains zero. Full analysis + minimal repro:
   [`issues/2026-08-26-cycc-enum-bit62-sign-extension.md`](issues/2026-08-26-cycc-enum-bit62-sign-extension.md).
+  **Filed upstream 2026-08-26** as cyrius `docs/development/issues/2026-08-26-enum-const-bit62-sign-extension.md`
+  (Critical, with repro + root cause at `parse_types.cyr:436` / `common/util.cyr:57-60`); it is item 0
+  in cyrius's `handoff.md` reactive queue. **Watch for it in a future cyrius release** — when it lands,
+  `STEP_I64_MAX` may go back to being an `enum`, and the bit-62 audit rule can be retired.
 
 - **⚠️ The pin does NOT select the compiler (this is the trap that hid the bug above).**
   `~/.cyrius/bin/cyrius` resolves `cycc` through `~/.cyrius/current`, **not** through
