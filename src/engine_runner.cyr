@@ -395,10 +395,10 @@ fn _engine_check_hardware(e, flow) {
 # metrics -> heartbeat -> resolve timeout -> queue path OR mode dispatch -> rollback on failure ->
 # terminal event/metric -> build FlowResult -> save final record -> stop heartbeat.
 fn engine_run(e, flow) {
-    var v = flow_validate(flow);
-    if (is_err_result(v) == 1) { return v; }
-    var hwv = _engine_check_hardware(e, flow);
-    if (is_err_result(hwv) == 1) { return hwv; }
+    var v_t, v_v = flow_validate(flow);
+    if (is_err_result(v_t) == 1) { return Err(v_v); }
+    var hwv_t, hwv_v = _engine_check_hardware(e, flow);
+    if (is_err_result(hwv_t) == 1) { return Err(hwv_v); }
     var cfg = engine_config(e);
     var rc = _engine_prepare(e, flow, 1);
     var ec = load64(rc + RC_EXEC_CTX);
@@ -425,10 +425,10 @@ fn engine_run(e, flow) {
 # reason can be "cancelled", and it NEVER persists an ExecutionRecord (start or end). No queue path.
 # Mirrors run_with_cancellation (runner.rs 523-659). Returns Ok(FlowResult*) or the validate Err.
 fn engine_run_with_cancellation(e, flow, token) {
-    var v = flow_validate(flow);
-    if (is_err_result(v) == 1) { return v; }
-    var hwv = _engine_check_hardware(e, flow);
-    if (is_err_result(hwv) == 1) { return hwv; }
+    var v_t, v_v = flow_validate(flow);
+    if (is_err_result(v_t) == 1) { return Err(v_v); }
+    var hwv_t, hwv_v = _engine_check_hardware(e, flow);
+    if (is_err_result(hwv_t) == 1) { return Err(hwv_v); }
     var cfg = engine_config(e);
     var rc = _engine_prepare(e, flow, 0);
     var ec = load64(rc + RC_EXEC_CTX);
@@ -448,16 +448,16 @@ fn engine_run_with_cancellation(e, flow, token) {
 # path with engine_run. Mirrors run_distributed + finalize (runner.rs 361-515). Returns
 # Ok(FlowResult*), or the Err from validate / the mode check.
 fn engine_run_distributed(e, flow, fleet) {
-    var v = flow_validate(flow);
-    if (is_err_result(v) == 1) { return v; }
+    var v_t, v_v = flow_validate(flow);
+    if (is_err_result(v_t) == 1) { return Err(v_v); }
     if (flow_mode(flow) != FLOW_DAG) {
         var sb = str_builder_new();
         str_builder_add_cstr(sb, "run_distributed requires Dag mode, got ");
         str_builder_add_cstr(sb, flow_mode_display(flow_mode(flow)));
         return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sb));
     }
-    var hwv = _engine_check_hardware(e, flow);
-    if (is_err_result(hwv) == 1) { return hwv; }
+    var hwv_t, hwv_v = _engine_check_hardware(e, flow);
+    if (is_err_result(hwv_t) == 1) { return Err(hwv_v); }
     var cfg = engine_config(e);
     var rc = _engine_prepare(e, flow, 1);
     var ec = load64(rc + RC_EXEC_CTX);

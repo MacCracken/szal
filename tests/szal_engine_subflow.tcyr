@@ -84,7 +84,8 @@ fn t_subflow_exec() {
     flow_add_step(flow, _subflow_step("infra", "deploy-infra"));
     flow_add_step(flow, step_new(str_from("smoke-test")));
 
-    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), handler), flow));
+    var _fr_t, _fr_v = engine_run(engine_new(engine_config_default(), handler), flow);
+    var fr = result_unwrap(_fr_t, _fr_v);
     assert_eq(flow_result_success(fr), 1, "pipeline success");
     assert_eq(flow_result_completed_count(fr), 3, "pipeline completed 3");
 
@@ -106,7 +107,8 @@ fn t_subflow_delegates() {
     flow_add_step(flow, step_new(str_from("a")));
     flow_add_step(flow, step_new(str_from("b")));
     var handler = sub_flow_handler(storage, cb_new(&_h_ok, 0));
-    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), handler), flow));
+    var _fr_t, _fr_v = engine_run(engine_new(engine_config_default(), handler), flow);
+    var fr = result_unwrap(_fr_t, _fr_v);
     assert_eq(flow_result_success(fr), 1, "plain flow success via inner handler");
     assert_eq(flow_result_completed_count(fr), 2, "plain completed 2");
     return 0;
@@ -118,7 +120,8 @@ fn t_subflow_missing_name() {
     var handler = sub_flow_handler(storage, cb_new(&_h_ok, 0));
     var flow = flow_new(str_from("bad"), FLOW_SEQUENTIAL);
     flow_add_step(flow, _subflow_step("no-config", 0));
-    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), handler), flow));
+    var _fr_t, _fr_v = engine_run(engine_new(engine_config_default(), handler), flow);
+    var fr = result_unwrap(_fr_t, _fr_v);
     assert_eq(flow_result_success(fr), 0, "missing flow_name not success");
     var err = step_result_error(flow_result_step_at(fr, 0));
     assert(err != 0, "step has an error");
@@ -132,7 +135,8 @@ fn t_subflow_not_found() {
     var handler = sub_flow_handler(storage, cb_new(&_h_ok, 0));
     var flow = flow_new(str_from("bad"), FLOW_SEQUENTIAL);
     flow_add_step(flow, _subflow_step("missing", "nonexistent"));
-    var fr = result_unwrap(engine_run(engine_new(engine_config_default(), handler), flow));
+    var _fr_t, _fr_v = engine_run(engine_new(engine_config_default(), handler), flow);
+    var fr = result_unwrap(_fr_t, _fr_v);
     assert_eq(flow_result_success(fr), 0, "unknown flow not success");
     var err = step_result_error(flow_result_step_at(fr, 0));
     assert(err != 0, "step has an error");

@@ -213,12 +213,12 @@ fn _exec_handler(args, claims) {
     var cwd_c = 0;
     var cwv = bayan_json_v_obj_get(o, "cwd");
     if (bayan_json_v_is_str(cwv) == 1) {
-        var vr = validate_path(bayan_json_v_str(cwv));
-        if (is_err_result(vr) == 1) {
-            var ec = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr));
+        var vr_t, vr_v = validate_path(bayan_json_v_str(cwv));
+        if (is_err_result(vr_t) == 1) {
+            var ec = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr_t, vr_v));
             return str_data(ec);
         }
-        cwd_c = str_cstr(result_unwrap(vr));
+        cwd_c = str_cstr(result_unwrap(vr_t, vr_v));
     }
 
     var res = _proc_run(argv, cwd_c);

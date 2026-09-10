@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.2] — 2026-09-10
+
+**Migrated to the cyrius 6.6.x value form.** 46/46 test files pass.
+
+### Changed — cyrius pin 6.5.35 → **6.6.2**
+
+19 declarations split across 14 `src/` modules, plus 60 sites across 13 test files.
+
+⚠ **7 were the propagation trap** — `if (is_err_result(r) == 1) { return r; }` returns the payload
+alone under the value form, so an `Err` reaches the caller as `is_err_result == 0`. Six in
+`engine_runner.cyr`, one in `migration.cyr`. All re-wrapped as `return Err(r_v);`.
+
+### Fixed — the step-timeout path lost the handler's payload and aliased success
+
+`_run_attempt` ran the handler on a worker thread and passed the result back through a one-slot
+channel, then signalled a timeout with a bare `0`. Both halves broke under the value form:
+
+- `chan_send(chan, r)` after a single-variable bind sent the **tag** and silently dropped the
+  payload — every timed-out-capable step lost its output.
+- `0` as the timeout sentinel became **indistinguishable from `Ok`**, whose tag is `0` (measured).
+  `if (r == 0)` would have read every success as a timeout.
+
+Fixed by restoring the pre-flip contract explicitly: `_run_attempt` returns a **boxed** Result
+(`boxed_new`) or `0`, which is exactly the shape the callers already assumed when a Result was a
+pointer. `0` is unambiguous again regardless of payload — including a legitimate `Ok(0)`.
+
+### Fixed — `callptr` cannot be multi-value destructured
+
+`var t, v = callptr(...)` is rejected (*"multi-value destructure needs a call on the right-hand
+side"*), so `migration.cyr`'s migration-hook call recovers the pair with **`rethi()`**, the
+documented intrinsic that reads `rdx` from the last call. Verified on both the Ok and Err arms.
+
+### Fixed — `sigil` was declared without `ct` / `keccak`
+
+The vendored `lib/sigil.cyr` references `ct_*`, `shake256` and `_keccak_*` **30 times and defines
+none**, but neither module was in `[deps] stdlib`. Pre-existing — it only surfaced when one call
+became reachable and turned a warning into `refusing to emit binary with 1 reachable undefined
+function(s)`, failing **43 of 46** test binaries while the main build stayed green.
+
 ## [2.1.1] — 2026-08-26
 
 Toolchain and vendored-dependency refresh: Cyrius 6.5.2 → 6.5.35, majra 2.5.3 → 2.7.0, bote-core

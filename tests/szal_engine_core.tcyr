@@ -86,9 +86,9 @@ fn main() {
     var h = cb_new(&_echo_handler, 99);
     assert_eq(cb_fp(h) != 0, 1, "cb_fp set");
     assert_eq(cb_ctx(h), 99, "cb_ctx set");
-    var hr = handler_invoke(h, 0);
-    assert(is_ok(hr) == 1, "handler returns Ok");
-    assert_eq(bayan_json_v_int(result_unwrap(hr)), 99, "handler echoed its ctx (99)");
+    var hr_t, hr_v = handler_invoke(h, 0);
+    assert(is_ok(hr_t) == 1, "handler returns Ok");
+    assert_eq(bayan_json_v_int(result_unwrap(hr_t, hr_v)), 99, "handler echoed its ctx (99)");
 
     # --- emit: None-guard + dispatch ---
     test_group("emit");
@@ -116,9 +116,9 @@ fn main() {
     test_group("check_condition");
     var cache = cache_new();
     var noc = step_new(str_from("noc"));
-    var rno = check_condition(noc, vec_new(), vec_new(), cache);
-    assert(is_ok(rno) == 1, "no-condition is Ok");
-    assert_eq(result_unwrap(rno), 1, "no-condition is true");
+    var rno_t, rno_v = check_condition(noc, vec_new(), vec_new(), cache);
+    assert(is_ok(rno_t) == 1, "no-condition is Ok");
+    assert_eq(result_unwrap(rno_t, rno_v), 1, "no-condition is true");
 
     # build a context: a completed "build" step + a "deploy" step gated on its status
     var build = step_new(str_from("build"));
@@ -130,21 +130,21 @@ fn main() {
     var results = vec_new();
     vec_push(results, step_result_new(step_id_hi(build), step_id_lo(build), STATUS_COMPLETED,
     bayan_json_v_null(), 10, 1));
-    var rmet = check_condition(deploy, results, steps, cache);
-    assert(is_ok(rmet) == 1, "met condition is Ok");
-    assert_eq(result_unwrap(rmet), 1, "build completed -> condition true");
+    var rmet_t, rmet_v = check_condition(deploy, results, steps, cache);
+    assert(is_ok(rmet_t) == 1, "met condition is Ok");
+    assert_eq(result_unwrap(rmet_t, rmet_v), 1, "build completed -> condition true");
 
     # not met: gate on 'failed'
     var deploy2 = step_with_condition(step_new(str_from("deploy2")),
     str_from("steps.build.status == 'failed'"));
-    var rnot = check_condition(deploy2, results, steps, cache);
-    assert(is_ok(rnot) == 1, "not-met condition still Ok");
-    assert_eq(result_unwrap(rnot), 0, "build not failed -> condition false");
+    var rnot_t, rnot_v = check_condition(deploy2, results, steps, cache);
+    assert(is_ok(rnot_t) == 1, "not-met condition still Ok");
+    assert_eq(result_unwrap(rnot_t, rnot_v), 0, "build not failed -> condition false");
 
     # parse error -> Err (the caller warns + runs anyway; check_condition just surfaces it)
     var bad = step_with_condition(step_new(str_from("bad")), str_from("== bad"));
-    var rbad = check_condition(bad, results, steps, cache);
-    assert(is_err_result(rbad) == 1, "malformed condition is Err");
+    var rbad_t, rbad_v = check_condition(bad, results, steps, cache);
+    assert(is_err_result(rbad_t) == 1, "malformed condition is Err");
 
     # --- FlowCtx + ExecCtx accessors ---
     test_group("FlowCtx + ExecCtx");

@@ -65,9 +65,9 @@ fn main() {
     var broken = flow_new(str_from("broken"), FLOW_DAG);
     flow_add_step(broken, ca);
     flow_add_step(broken, cb);
-    var cyc = flow_validate(broken);
-    assert(is_err_result(cyc), "cyclic dag is Err");
-    assert_eq(err_code_of(cyc), SZAL_ERR_CYCLE, "cycle Err code is SZAL_ERR_CYCLE");
+    var cyc_t, cyc_v = flow_validate(broken);
+    assert(is_err_result(cyc_t), "cyclic dag is Err");
+    assert_eq(err_code_of(cyc_t, cyc_v), SZAL_ERR_CYCLE, "cycle Err code is SZAL_ERR_CYCLE");
     assert(str_eq_cstr(szal_get_err_msg(), "broken"), "cycle detail is the flow name");
 
     test_group("flow_dag_unknown_dep: dep on non-existent step is invalid");
@@ -77,9 +77,9 @@ fn main() {
     var ghost = step_new(str_from("ghost"));
     step_depends_on_add(only, step_id_hi(ghost), step_id_lo(ghost));
     flow_add_step(ud, only);
-    var udr = flow_validate(ud);
-    assert(is_err_result(udr), "unknown-dep dag is Err");
-    assert_eq(err_code_of(udr), SZAL_ERR_FLOW_INVALID, "unknown-dep code is SZAL_ERR_FLOW_INVALID");
+    var udr_t, udr_v = flow_validate(ud);
+    assert(is_err_result(udr_t), "unknown-dep dag is Err");
+    assert_eq(err_code_of(udr_t, udr_v), SZAL_ERR_FLOW_INVALID, "unknown-dep code is SZAL_ERR_FLOW_INVALID");
     assert(str_eq_cstr(szal_get_err_msg(), "step 'only' depends on non-existent step"),
         "unknown-dep detail message");
 
@@ -90,9 +90,9 @@ fn main() {
     var seqbad = flow_new(str_from("bad"), FLOW_SEQUENTIAL);
     flow_add_step(seqbad, sa);
     flow_add_step(seqbad, sb);
-    var seqr = flow_validate(seqbad);
-    assert(is_err_result(seqr), "sequential-with-deps is Err");
-    assert_eq(err_code_of(seqr), SZAL_ERR_FLOW_INVALID, "sequential-with-deps code");
+    var seqr_t, seqr_v = flow_validate(seqbad);
+    assert(is_err_result(seqr_t), "sequential-with-deps is Err");
+    assert_eq(err_code_of(seqr_t, seqr_v), SZAL_ERR_FLOW_INVALID, "sequential-with-deps code");
     assert(str_eq_cstr(szal_get_err_msg(),
         "steps have dependencies but flow mode is sequential (use dag mode for dependencies)"),
         "non-dag-with-deps detail (lowercase mode interpolated)");
@@ -122,9 +122,9 @@ fn main() {
     step_with_sub_step(mgr2, dep_leaf);
     var hbad = flow_new(str_from("hbad"), FLOW_HIERARCHICAL);
     flow_add_step(hbad, mgr2);
-    var hbadr = flow_validate(hbad);
-    assert(is_err_result(hbadr), "hierarchical nested dep is Err");
-    assert_eq(err_code_of(hbadr), SZAL_ERR_FLOW_INVALID, "hierarchical nested dep code");
+    var hbadr_t, hbadr_v = flow_validate(hbad);
+    assert(is_err_result(hbadr_t), "hierarchical nested dep is Err");
+    assert_eq(err_code_of(hbadr_t, hbadr_v), SZAL_ERR_FLOW_INVALID, "hierarchical nested dep code");
     assert(str_eq_cstr(szal_get_err_msg(),
         "step 'dep_leaf' has depends_on in hierarchical mode (use sub_steps for nesting)"),
         "hierarchical nested dep detail");
@@ -134,9 +134,9 @@ fn main() {
     var anystep = step_new(str_from("orphan"));
     step_with_trigger_mode(anystep, TRIGGER_ANY);
     flow_add_step(anyflow, anystep);
-    var anyr = flow_validate(anyflow);
-    assert(is_err_result(anyr), "Any + empty deps is Err");
-    assert_eq(err_code_of(anyr), SZAL_ERR_FLOW_INVALID, "Any + empty deps code");
+    var anyr_t, anyr_v = flow_validate(anyflow);
+    assert(is_err_result(anyr_t), "Any + empty deps is Err");
+    assert_eq(err_code_of(anyr_t, anyr_v), SZAL_ERR_FLOW_INVALID, "Any + empty deps code");
     assert(str_eq_cstr(szal_get_err_msg(),
         "step 'orphan' has trigger_mode Any but no dependencies"),
         "Any + empty deps detail");

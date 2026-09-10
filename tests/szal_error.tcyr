@@ -55,9 +55,9 @@ fn main() {
     assert_eq(str_len(szal_get_err_msg()), 0, "cleared again");
 
     test_group("szal_err constructor returns Err(code)");
-    var r = szal_err(SZAL_ERR_CYCLE, str_from("cycle in dag 'x'"));
-    assert(is_err_result(r), "szal_err returns an Err");
-    assert_eq(err_code_of(r), SZAL_ERR_CYCLE, "szal_err carries the code");
+    var r_t, r_v = szal_err(SZAL_ERR_CYCLE, str_from("cycle in dag 'x'"));
+    assert(is_err_result(r_t), "szal_err returns an Err");
+    assert_eq(err_code_of(r_t, r_v), SZAL_ERR_CYCLE, "szal_err carries the code");
     assert(str_eq_cstr(szal_get_err_msg(), "cycle in dag 'x'"), "szal_err set the detail");
 
     var rc = assert_summary();

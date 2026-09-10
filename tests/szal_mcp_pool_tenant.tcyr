@@ -218,9 +218,9 @@ fn t_tool_listed() {
 # an unlisted tool is rejected with a descriptive message. (tenant.rs 250-260)
 fn t_tool_unlisted() {
     tenant_register(tenant_registry(), _ctx("tool-denied", 10, _tools1("szal_http")));
-    var r = check_tenant_tool_access(str_from("tool-denied"), str_from("szal_port_check"));
-    assert_eq(is_ok(r), 0, "unlisted tool rejected");
-    var msg = err_code_of(r);
+    var r_t, r_v = check_tenant_tool_access(str_from("tool-denied"), str_from("szal_port_check"));
+    assert_eq(is_ok(r_t), 0, "unlisted tool rejected");
+    var msg = err_code_of(r_t, r_v);
     assert(str_contains(msg, str_from("not permitted")), "msg says not permitted");
     assert(str_contains(msg, str_from("tool-denied")), "msg names tenant");
     assert(str_contains(msg, str_from("szal_port_check")), "msg names tool");

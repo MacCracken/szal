@@ -163,12 +163,12 @@ fn _wc_handler(args, claims) {
         var fv = bayan_json_v_obj_get(o, "file");
         if (bayan_json_v_is_str(fv) == 1) {
             var path = bayan_json_v_str(fv);
-            var vr = validate_path(path);
-            if (is_err_result(vr) == 1) {
-                var e = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr));
+            var vr_t, vr_v = validate_path(path);
+            if (is_err_result(vr_t) == 1) {
+                var e = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr_t, vr_v));
                 return str_data(e);
             }
-            var vpath = result_unwrap(vr);
+            var vpath = result_unwrap(vr_t, vr_v);
             var pc = str_cstr(vpath);
             var buf = alloc(WC_FILE_CAP);
             var n = file_read_all(pc, buf, WC_FILE_CAP);

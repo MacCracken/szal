@@ -174,9 +174,9 @@ fn run_dag(steps, max_concurrency, timeout_ms, start_ms, token, ctx) {
                     var skip_cond = 0;
                     var cond = step_condition(step);
                     if (cond != 0) {
-                        var cr = check_condition(step, results, steps, cache);
-                        if (is_ok(cr) == 1) {
-                            if (result_unwrap(cr) == 0) { skip_cond = 1; }
+                        var cr_t, cr_v = check_condition(step, results, steps, cache);
+                        if (is_ok(cr_t) == 1) {
+                            if (result_unwrap(cr_t, cr_v) == 0) { skip_cond = 1; }
                         }
                     }
                     if (skip_cond == 1) {

@@ -751,13 +751,13 @@ fn _cache_compiled(cache, expr) {
     }
     var entry = alloc(CACHE_ENTRY_SIZE);
     if (entry == 0) { return 0; }
-    var r = compiled_compile(expr);
-    if (is_err_result(r) == 1) {
+    var r_t, r_v = compiled_compile(expr);
+    if (is_err_result(r_t) == 1) {
         store64(entry + CE_IS_ERR, 1);
         store64(entry + CE_PAYLOAD, szal_get_err_msg());
     } else {
         store64(entry + CE_IS_ERR, 0);
-        store64(entry + CE_PAYLOAD, result_unwrap(r));
+        store64(entry + CE_PAYLOAD, result_unwrap(r_t, r_v));
     }
     map_set(m, key, entry);
     return entry;

@@ -401,9 +401,9 @@ fn _port_check_handler(args, claims) {
     var open = 0;
     var addr = _net_parse_ipv4(host);
     if (addr != (0 - 1)) {
-        var sr = tcp_socket();
-        if (is_ok(sr) == 1) {
-            var fd = result_unwrap(sr);
+        var sr_t, sr_v = tcp_socket();
+        if (is_ok(sr_t) == 1) {
+            var fd = result_unwrap(sr_t, sr_v);
             if (net_connect_nb(fd, addr, port, timeout_ms) == _NET_CONN_NB_OK) { open = 1; }
             sock_close(fd);
         }

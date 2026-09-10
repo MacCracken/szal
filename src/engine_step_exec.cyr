@@ -82,9 +82,16 @@ enum StepWorkerL {
 
 # Worker thread body: invoke the handler and send its Result down the channel. The Result is a
 # heap blob (Ok(json_v) / Err(message_Str)) on the shared heap, valid for the main thread to read.
+# ⚠ THE PAIR IS BOXED ACROSS THE CHANNEL, DELIBERATELY (cyrius 6.6.0 value form).
+# A `: stack` Result is two registers (tag in rax, payload in rdx) and a chan slot holds ONE i64,
+# so `chan_send(chan, r)` after a single-var bind sent the TAG and silently dropped the payload.
+# `boxed_new` puts both halves back in one heap cell — which is exactly the shape this code
+# already assumed when a Result WAS a pointer, so the contract is unchanged, not redesigned.
+# A non-zero box also keeps `0` usable as the distinct "nothing yet / timed out" sentinel below;
+# under the value form a bare 0 is indistinguishable from Ok, whose tag IS 0 (measured).
 fn _step_worker(arg) {
-    var r = handler_invoke(load64(arg + SW_HANDLER), load64(arg + SW_STEP));
-    chan_send(load64(arg + SW_CHAN), r);
+    var rt, rv = handler_invoke(load64(arg + SW_HANDLER), load64(arg + SW_STEP));
+    chan_send(load64(arg + SW_CHAN), boxed_new(rt, rv));
     return 0;
 }
 
@@ -92,9 +99,17 @@ fn _step_worker(arg) {
 # (Ok(json_v)/Err(message_Str)), or 0 to signal a timeout. timeout_ms == STEP_I64_MAX means "no
 # timeout" (Rust's u64::MAX) and runs the handler synchronously on the calling thread. Mirrors the
 # `if step.timeout_ms < u64::MAX { timeout(...) } else { fut.await }` branch (step_exec.rs 35-60).
+# ⚠ RETURNS A BOXED Result (`boxed_new`), OR 0 FOR TIMEOUT — not a bare `: stack` pair.
+# That is the PRE-FLIP contract restored verbatim: this function's callers have always
+# distinguished "timed out" from "handler answered" by testing the result against 0, which worked
+# while a Result was a pointer. Under the 6.6.0 value form a Result is two registers and `Ok`'s
+# tag is 0 (measured), so a bare pair cannot carry that distinction and a one-slot channel cannot
+# carry the pair at all. Boxing gives back a single non-zero cell, so `0` stays unambiguously
+# "timeout" REGARDLESS of what payload a handler returns — including a legitimate `Ok(0)`.
 fn _run_attempt(handler, step, timeout_ms) {
     if (timeout_ms >= STEP_I64_MAX) {
-        return handler_invoke(handler, step);
+        var ht, hv = handler_invoke(handler, step);
+        return boxed_new(ht, hv);
     }
     var chan = chan_new(1);
     var arg = alloc(SW_SIZE);
@@ -104,10 +119,10 @@ fn _run_attempt(handler, step, timeout_ms) {
     var t = thread_create(&_step_worker, arg);
     var deadline = clock_now_ms() + timeout_ms;
     while (1 == 1) {
-        var r = chan_try_recv(chan);
-        if (r != 0) {
+        var b = chan_try_recv(chan);
+        if (b != 0) {
             szal_thread_join(t);
-            return r;
+            return b;
         }
         if (clock_now_ms() >= deadline) {
             return 0;
@@ -172,10 +187,10 @@ fn execute_step_with_handler(step, ctx) {
     var attempt = 1;
     while (attempt <= max_attempts) {
         var step_start = clock_now_ms();
-        var r = _run_attempt(handler, step, timeout_ms);
+        var rbox = _run_attempt(handler, step, timeout_ms);
         var dur = clock_now_ms() - step_start;
 
-        if (r == 0) {
+        if (rbox == 0) {
             # Timeout: emit step_failed WITH the per-attempt duration (step_exec.rs 45-54), then
             # treat as a failed attempt for the retry/backoff logic.
             var terr = _step_timeout_msg(name, timeout_ms);
@@ -187,9 +202,9 @@ fn execute_step_with_handler(step, ctx) {
                 emit(event_sink, event_step_retry(name, sid, attempt));
                 sleep_ms(step_backoff_delay_ms(step_backoff(step), step_retry_delay_ms(step), attempt));
             }
-        } elif (is_ok(r) == 1) {
+        } elif (boxed_tag(rbox) == Ok) {
             # Success: Completed, per-attempt duration, attempts = this attempt.
-            var output = result_unwrap(r);
+            var output = boxed_payload(rbox);
             emit(event_sink, event_step_completed(name, sid, dur, attempt));
             metric_step_finished(metrics_vt, fname, name, str_from("completed"), dur);
             emit_step_type_metric(stm, _step_type_cstr(step), "completed", dur);
@@ -197,7 +212,7 @@ fn execute_step_with_handler(step, ctx) {
               dur, attempt);
         } else {
             # Handler error: emit step_retry if more attempts remain; record last_error; backoff.
-            var e = err_code_of(r);
+            var e = boxed_payload(rbox);
             if (attempt < max_attempts) {
                 emit(event_sink, event_step_retry(name, sid, attempt));
             }

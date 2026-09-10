@@ -54,10 +54,10 @@ fn run_sequential(steps, timeout_ms, start_ms, token, ctx) {
         } else {
             var cond = step_condition(step);
             if (cond != 0) {
-                var cr = check_condition(step, results, steps, exec_ctx_condition_cache(ctx));
+                var cr_t, cr_v = check_condition(step, results, steps, exec_ctx_condition_cache(ctx));
                 # Ok(false) -> "condition not met"; Ok(true) -> run; Err -> warn + run anyway.
-                if (is_ok(cr) == 1) {
-                    if (result_unwrap(cr) == 0) { reason = "condition not met"; }
+                if (is_ok(cr_t) == 1) {
+                    if (result_unwrap(cr_t, cr_v) == 0) { reason = "condition not met"; }
                 }
             }
         }

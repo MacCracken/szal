@@ -110,9 +110,9 @@ fn main() {
     var broken = flow_new(str_from("broken"), FLOW_DAG);
     flow_add_step(broken, ca);
     flow_add_step(broken, cb);
-    var cyc = flow_validate(broken);
-    assert(is_err_result(cyc), "cyclic dag is Err");
-    assert_eq(err_code_of(cyc), SZAL_ERR_CYCLE, "cycle code is SZAL_ERR_CYCLE");
+    var cyc_t, cyc_v = flow_validate(broken);
+    assert(is_err_result(cyc_t), "cyclic dag is Err");
+    assert_eq(err_code_of(cyc_t, cyc_v), SZAL_ERR_CYCLE, "cycle code is SZAL_ERR_CYCLE");
     assert(str_eq_cstr(szal_get_err_msg(), "broken"), "cycle detail is the flow name");
 
     # --- condition + step + uuid: build a JSON step-context, then evaluate against it ---
@@ -133,13 +133,13 @@ fn main() {
     vec_push(results, rt);
     var bctx = cond_build_step_context(results, steps);
     # cond_evaluate (Ok) sees the status written by step_result_new
-    var ev1 = cond_evaluate(str_from("steps.build.status == 'completed'"), bctx);
-    assert(is_ok(ev1), "cond_evaluate is Ok");
-    assert_eq(result_unwrap(ev1), 1, "build completed condition is true");
-    var ev2 = cond_evaluate(str_from("steps.test.status == 'failed'"), bctx);
-    assert_eq(result_unwrap(ev2), 1, "test failed condition is true");
-    var ev3 = cond_evaluate(str_from("steps.test.status == 'completed'"), bctx);
-    assert_eq(result_unwrap(ev3), 0, "test-not-completed condition is false");
+    var ev1_t, ev1_v = cond_evaluate(str_from("steps.build.status == 'completed'"), bctx);
+    assert(is_ok(ev1_t), "cond_evaluate is Ok");
+    assert_eq(result_unwrap(ev1_t, ev1_v), 1, "build completed condition is true");
+    var ev2_t, ev2_v = cond_evaluate(str_from("steps.test.status == 'failed'"), bctx);
+    assert_eq(result_unwrap(ev2_t, ev2_v), 1, "test failed condition is true");
+    var ev3_t, ev3_v = cond_evaluate(str_from("steps.test.status == 'completed'"), bctx);
+    assert_eq(result_unwrap(ev3_t, ev3_v), 0, "test-not-completed condition is false");
 
     # --- bus: build an event and event_to_json round-trip (field presence) ---
     test_group("bus: event_to_json field presence");
@@ -162,9 +162,9 @@ fn main() {
     var src = flow_new(str_from("pipeline"), FLOW_SEQUENTIAL);
     flow_with_version(src, 1);
     flow_add_step(src, step_new(str_from("deploy")));
-    var out = migrate_to(reg, src, 2);
-    assert(is_ok(out), "migrate_to is Ok");
-    assert_eq(flow_version(result_unwrap(out)), 2, "version stamped to 2");
+    var out_t, out_v = migrate_to(reg, src, 2);
+    assert(is_ok(out_t), "migrate_to is Ok");
+    assert_eq(flow_version(result_unwrap(out_t, out_v)), 2, "version stamped to 2");
 
     var rc = assert_summary();
     return rc;

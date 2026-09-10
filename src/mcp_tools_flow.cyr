@@ -85,8 +85,8 @@ fn _flow_validate_handler(args, claims) {
         return str_data(ej);
     }
 
-    var vr = flow_validate(flow);
-    if (is_ok(vr) == 1) {
+    var vr_t, vr_v = flow_validate(flow);
+    if (is_ok(vr_t) == 1) {
         var vb = str_builder_new();
         str_builder_add_cstr(vb, "valid: flow '");
         str_builder_add(vb, flow_name(flow));

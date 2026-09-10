@@ -235,11 +235,16 @@ fn migrate_to(reg, flow, target) {
         }
         # Apply the migration transform: callptr(fp, flow) -> Result. Propagate an Err from the
         # migration fn unchanged (migration.rs 186: `flow = migration.migrate(flow)?;`).
-        var res = callptr(flow_migration_fn(m), flow);
-        if (is_err_result(res) == 1) {
-            return res;
+        # ⚠ callptr CANNOT be multi-value destructured — `var t, v = callptr(...)` is rejected
+        # ("multi-value destructure needs a call on the right-hand side"), so the 6.6.0 value-form
+        # pair is recovered with `rethi()`, which reads rdx from the last call. Verified against a
+        # probe on both the Ok and Err arms.
+        var res_t = callptr(flow_migration_fn(m), flow);
+        var res_v = rethi();
+        if (is_err_result(res_t) == 1) {
+            return Err(res_v);
         }
-        flow = result_unwrap(res);
+        flow = result_unwrap(res_t, res_v);
         # STAMP the hop's to_version (migration.rs 187: `flow.version = to;`).
         flow_with_version(flow, to);
     }

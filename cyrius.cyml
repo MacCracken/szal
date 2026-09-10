@@ -5,7 +5,7 @@ description = "szal — workflow engine: step/flow execution with branching, ret
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/szal"
 language = "cyrius"
-cyrius = "6.5.35"
+cyrius = "6.6.2"
 
 [build]
 entry = "src/main.cyr"
@@ -22,7 +22,7 @@ output = "build/szal"
 stdlib = ["string", "fmt", "alloc", "freelist", "vec", "str", "syscalls", "io", "fs",
           "args", "assert", "test", "hashmap", "tagged", "result", "fnptr", "chrono",
           "thread", "sync", "async", "atomic", "process", "net", "random", "log",
-          "sakshi", "patra", "sigil", "bayan", "bench"]
+          "sakshi", "patra", "sigil", "ct", "keccak", "bayan", "bench"]
 
 # bote-core + majra + ai-hwaccel are ALL VENDORED at src/vendor/ (hoosh pattern). A [deps.X] block
 # would make `cyrius deps` recurse into each dep's own git sub-deps (lib/ bloat + last-definition-

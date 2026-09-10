@@ -69,9 +69,9 @@ fn t_errcode() {
 }
 fn t_validate_path() {
     assert_eq(is_ok(validate_path(str_from("."))), 1, "'.' resolves under cwd");
-    var r2 = validate_path(str_from("/etc/passwd"));
-    assert_eq(is_err_result(r2), 1, "absolute /etc/passwd rejected");
-    assert(str_contains(err_code_of(r2), str_from("outside working directory")), "outside-cwd message");
+    var r2_t, r2_v = validate_path(str_from("/etc/passwd"));
+    assert_eq(is_err_result(r2_t), 1, "absolute /etc/passwd rejected");
+    assert(str_contains(err_code_of(r2_t, r2_v), str_from("outside working directory")), "outside-cwd message");
     assert_eq(is_err_result(validate_path(str_from("../../etc/passwd"))), 1, "traversal rejected");
     assert_eq(is_ok(validate_path(str_from("newfile.txt"))), 1, "new file in cwd ok");
     assert_eq(is_ok(validate_path(str_from("sub/dir/x.txt"))), 1, "nested new file in cwd ok");

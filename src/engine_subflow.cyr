@@ -70,8 +70,8 @@ fn _sub_flow_dispatch(step, ctx) {
 
     # Run the sub-flow on a fresh default-config child engine with the same inner handler.
     var child = engine_new(engine_config_default(), inner);
-    var rr = engine_run(child, flow);
-    if (is_err_result(rr) == 1) {
+    var rr_t, rr_v = engine_run(child, flow);
+    if (is_err_result(rr_t) == 1) {
         var eb = str_builder_new();
         str_builder_add_cstr(eb, "sub-flow '");
         str_builder_add(eb, flow_name);
@@ -81,7 +81,7 @@ fn _sub_flow_dispatch(step, ctx) {
         return Err(emsg);
     }
 
-    var result = result_unwrap(rr);
+    var result = result_unwrap(rr_t, rr_v);
     if (flow_result_success(result) == 1) {
         var json = flow_result_to_json(result);
         var v = bayan_json_v_parse(json);

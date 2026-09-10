@@ -82,8 +82,8 @@ fn _eng_hw() {
 fn t_check_none_passes() {
     var ctx = hw_detect();
     var steps = _vec_of(step_new(str_from("cpu-work")), 0, 0);
-    var r = hw_check_requirements(ctx, steps);
-    assert_eq(is_ok(r), 1, "REQ_NONE check passes");
+    var r_t, r_v = hw_check_requirements(ctx, steps);
+    assert_eq(is_ok(r_t), 1, "REQ_NONE check passes");
     return 0;
 }
 
@@ -93,14 +93,14 @@ fn t_check_gpu() {
     var ctx = hw_detect();
     var reg = hw_registry(ctx);
     var steps = _vec_of(step_with_hardware(step_new(str_from("train")), REQ_GPU), 0, 0);
-    var r = hw_check_requirements(ctx, steps);
+    var r_t, r_v = hw_check_requirements(ctx, steps);
     if (reg_has_accelerator(reg) == 0) {
-        assert_eq(is_ok(r), 0, "GPU check fails without accelerator");
+        assert_eq(is_ok(r_t), 0, "GPU check fails without accelerator");
         var msg = szal_get_err_msg();
         assert(str_contains(msg, str_from("hardware unavailable")), "msg mentions hardware unavailable");
         assert(str_contains(msg, str_from("train")), "msg names the step");
     } else {
-        assert_eq(is_ok(r), 1, "GPU check passes with accelerator present");
+        assert_eq(is_ok(r_t), 1, "GPU check passes with accelerator present");
     }
     return 0;
 }
@@ -152,9 +152,9 @@ fn t_runner_hw_pass() {
     var f = flow_new(str_from("hw-pass"), FLOW_SEQUENTIAL);
     flow_add_step(f, step_new(str_from("a")));
     flow_add_step(f, step_new(str_from("b")));
-    var r = engine_run(_eng_hw(), f);
-    assert_eq(is_ok(r), 1, "hw engine runs CPU flow");
-    assert_eq(flow_result_completed_count(result_unwrap(r)), 2, "both steps completed");
+    var r_t, r_v = engine_run(_eng_hw(), f);
+    assert_eq(is_ok(r_t), 1, "hw engine runs CPU flow");
+    assert_eq(flow_result_completed_count(result_unwrap(r_t, r_v)), 2, "both steps completed");
     return 0;
 }
 
@@ -164,8 +164,8 @@ fn t_runner_hw_fail() {
     if (reg_has_accelerator(reg) == 0) {
         var f = flow_new(str_from("hw-fail"), FLOW_SEQUENTIAL);
         flow_add_step(f, step_with_hardware(step_new(str_from("train")), REQ_GPU));
-        var r = engine_run(_eng_hw(), f);
-        assert_eq(is_ok(r), 0, "hw engine rejects unsatisfiable GPU flow");
+        var r_t, r_v = engine_run(_eng_hw(), f);
+        assert_eq(is_ok(r_t), 0, "hw engine rejects unsatisfiable GPU flow");
         assert(str_contains(szal_get_err_msg(), str_from("hardware unavailable")),
         "runner surfaces hardware-unavailable detail");
     } else {
@@ -180,8 +180,8 @@ fn t_runner_no_ctx_noop() {
     flow_add_step(f, step_with_hardware(step_new(str_from("train")), REQ_GPU));
     # engine_config_default() leaves hardware = 0 -> the check never runs.
     var e = engine_new(engine_config_default(), cb_new(&_h_ok, 0));
-    var r = engine_run(e, f);
-    assert_eq(is_ok(r), 1, "no hardware ctx -> requirement check skipped");
+    var r_t, r_v = engine_run(e, f);
+    assert_eq(is_ok(r_t), 1, "no hardware ctx -> requirement check skipped");
     return 0;
 }
 

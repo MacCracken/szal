@@ -193,11 +193,11 @@ fn main() {
             flow_add_step(f, step_new(str_from("s")));
             s = s + 1;
         }
-        var r = engine_run(eng, f);
-        if (is_ok(r) == 0) {
+        var r_t, r_v = engine_run(eng, f);
+        if (is_ok(r_t) == 0) {
             bad_a = bad_a + 1;
         } else {
-            var fr = result_unwrap(r);
+            var fr = result_unwrap(r_t, r_v);
             if (flow_result_completed_count(fr) != STRESS_STEPS) { bad_a = bad_a + 1; }
         }
         i = i + 1;

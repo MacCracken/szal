@@ -114,7 +114,8 @@ fn t_engine_sink(db) {
     flow_add_step(flow, step_new(str_from("a")));
     var exec_id = uuid_to_str(flow_id_hi(flow), flow_id_lo(flow));
     var e = engine_with_execution_store(engine_new(engine_config_default(), cb_new(&_h_ok, 0)), sink);
-    var fr = result_unwrap(engine_run(e, flow));
+    var _fr_t, _fr_v = engine_run(e, flow);
+    var fr = result_unwrap(_fr_t, _fr_v);
     assert_eq(flow_result_success(fr), 1, "engine_sink run success");
     # Synchronous writes -> already persisted, no poll needed.
     var rec = sqlite_store_get(db, exec_id);

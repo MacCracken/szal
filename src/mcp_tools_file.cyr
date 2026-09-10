@@ -57,13 +57,13 @@ fn _fs_kind(mode) {
 # Validate `path` (a Str); returns the normalized path Str on success, or writes a PermissionDenied
 # result cstr to *out_err and returns 0.
 fn _fs_validate(path, out_err) {
-    var vr = validate_path(path);
-    if (is_err_result(vr) == 1) {
-        var e = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr));
+    var vr_t, vr_v = validate_path(path);
+    if (is_err_result(vr_t) == 1) {
+        var e = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr_t, vr_v));
         store64(out_err, str_data(e));
         return 0;
     }
-    return result_unwrap(vr);
+    return result_unwrap(vr_t, vr_v);
 }
 
 # szal_file_read: read up to max_bytes of a validated path. Mirrors FileRead::call (file_tools.rs 37-79).
