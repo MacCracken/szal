@@ -318,26 +318,26 @@ fn bench_build_fixtures() {
 fn bench_precheck() {
     test_group("precheck: every benchmarked path does real work");
     # Engine paths: the run must succeed AND complete every step.
-    var r10 = engine_run(_b_eng, _bf_seq10);
-    assert(is_ok(r10), "sequential 10 runs Ok");
-    assert_eq(flow_result_completed_count(result_unwrap(r10)), 10, "sequential 10 completes 10");
-    var rnt = engine_run(_b_eng, _bf_seq10_nt);
-    assert_eq(flow_result_completed_count(result_unwrap(rnt)), 10,
+    var r10_t, r10_v = engine_run(_b_eng, _bf_seq10);
+    assert(is_ok(r10_t), "sequential 10 runs Ok");
+    assert_eq(flow_result_completed_count(result_unwrap(r10_t, r10_v)), 10, "sequential 10 completes 10");
+    var rnt_t, rnt_v = engine_run(_b_eng, _bf_seq10_nt);
+    assert_eq(flow_result_completed_count(result_unwrap(rnt_t, rnt_v)), 10,
         "sequential 10 (no timeout) completes 10");
     assert_eq(step_timeout_ms(flow_step_at(_bf_seq10_nt, 0)), STEP_I64_MAX,
         "the no-timeout fixture really has no timeout");
     assert(step_timeout_ms(flow_step_at(_bf_seq10, 0)) < STEP_I64_MAX,
         "the default fixture really has a timeout");
-    var r100 = engine_run(_b_eng, _bf_seq100);
-    assert_eq(flow_result_completed_count(result_unwrap(r100)), 100, "sequential 100 completes 100");
-    var p10 = engine_run(_b_eng, _bf_par10);
-    assert_eq(flow_result_completed_count(result_unwrap(p10)), 10, "parallel 10 completes 10");
-    var p100 = engine_run(_b_eng, _bf_par100);
-    assert_eq(flow_result_completed_count(result_unwrap(p100)), 100, "parallel 100 completes 100");
-    var dd = engine_run(_b_eng, _bf_diamond);
-    assert_eq(flow_result_completed_count(result_unwrap(dd)), 4, "diamond completes 4");
-    var dl = engine_run(_b_eng, _bf_dag_linear);
-    assert_eq(flow_result_completed_count(result_unwrap(dl)), SZ_CHAIN, "dag chain completes 100");
+    var r100_t, r100_v = engine_run(_b_eng, _bf_seq100);
+    assert_eq(flow_result_completed_count(result_unwrap(r100_t, r100_v)), 100, "sequential 100 completes 100");
+    var p10_t, p10_v = engine_run(_b_eng, _bf_par10);
+    assert_eq(flow_result_completed_count(result_unwrap(p10_t, p10_v)), 10, "parallel 10 completes 10");
+    var p100_t, p100_v = engine_run(_b_eng, _bf_par100);
+    assert_eq(flow_result_completed_count(result_unwrap(p100_t, p100_v)), 100, "parallel 100 completes 100");
+    var dd_t, dd_v = engine_run(_b_eng, _bf_diamond);
+    assert_eq(flow_result_completed_count(result_unwrap(dd_t, dd_v)), 4, "diamond completes 4");
+    var dl_t, dl_v = engine_run(_b_eng, _bf_dag_linear);
+    assert_eq(flow_result_completed_count(result_unwrap(dl_t, dl_v)), SZ_CHAIN, "dag chain completes 100");
     # A flow that fails validation would return early and be timed as a no-op.
     assert(is_ok(flow_validate(_bf_wide100)), "wide 100 validates");
     assert(is_ok(flow_validate(_bf_chain100)), "chain 100 validates");

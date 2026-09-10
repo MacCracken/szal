@@ -275,16 +275,16 @@ fn fz_gen_expr(depth) {
 
 # Evaluate `e` (cstr). Returns 1 (true), 0 (false), or (0 - 1) if it failed to compile.
 fn fz_eval(e) {
-    var r = cond_evaluate(str_from(e), _fz_ctx);
-    if (is_ok(r) == 0) { return (0 - 1); }
-    return result_unwrap(r);
+    var r_t, r_v = cond_evaluate(str_from(e), _fz_ctx);
+    if (is_ok(r_t) == 0) { return (0 - 1); }
+    return result_unwrap(r_t, r_v);
 }
 
 # Evaluate `e` (cstr) through a cache. Same encoding as fz_eval.
 fn fz_eval_cached(cache, e) {
-    var r = cache_evaluate(cache, str_from(e), _fz_ctx);
-    if (is_ok(r) == 0) { return (0 - 1); }
-    return result_unwrap(r);
+    var r_t, r_v = cache_evaluate(cache, str_from(e), _fz_ctx);
+    if (is_ok(r_t) == 0) { return (0 - 1); }
+    return result_unwrap(r_t, r_v);
 }
 
 # Compile `e` (cstr) and return the raw Result, for the error-discipline checks.
@@ -302,16 +302,16 @@ fn fz_render(t) {
 # Called on every input the harness produces, from every generator. `expect_ok` is 1 when the
 # input is known-valid by construction, 0 when nothing is claimed.
 fn fz_check_total(e, expect_ok) {
-    var r = fz_compile(e);
-    var ok = is_ok(r);
-    var err = is_err_result(r);
+    var r_t, r_v = fz_compile(e);
+    var ok = is_ok(r_t);
+    var err = is_err_result(r_t);
     # (1) Exactly one of Ok/Err. A Result that is neither (or both) means the tagged-union
     # discipline broke, and every `?` in the module is then reading a corrupt tag.
     fz_check((ok + err) == 1, "compile returns exactly one of Ok/Err", e);
     if (err == 1) {
         # (2) A parse failure must be reportable. An empty message means the engine surfaces
         # "condition invalid" with no reason, which is the failure mode operators actually hit.
-        fz_check(err_code_of(r) == SZAL_ERR_FLOW_INVALID, "parse error is SZAL_ERR_FLOW_INVALID", e);
+        fz_check(err_code_of(r_t, r_v) == SZAL_ERR_FLOW_INVALID, "parse error is SZAL_ERR_FLOW_INVALID", e);
         fz_check(str_len(szal_get_err_msg()) > 0, "parse error carries a message", e);
         fz_check(expect_ok == 0, "a grammar-valid sentence must compile", e);
         return (0 - 1);
@@ -486,9 +486,9 @@ fn fz_structural() {
     fz_check(fz_eval("") == 1, "\"\" is vacuously true", "");
     fz_check(fz_eval("   ") == 1, "whitespace-only is vacuously true", "   ");
     fz_check(fz_eval("\t\n\r") == 1, "exotic whitespace is vacuously true", 0);
-    var ce = fz_compile("");
-    fz_check(is_ok(ce) == 1, "empty compiles Ok", "");
-    fz_check(str_len(compiled_source(result_unwrap(ce))) == 0, "empty compiles to empty source", "");
+    var ce_t, ce_v = fz_compile("");
+    fz_check(is_ok(ce_t) == 1, "empty compiles Ok", "");
+    fz_check(str_len(compiled_source(result_unwrap(ce_t, ce_v))) == 0, "empty compiles to empty source", "");
     var i = 0;
     while (i < 1500) {
         var base = fz_gen_expr(2);
@@ -507,22 +507,22 @@ fn fz_structural() {
         #   "base)"        trailing close paren       -> unexpected trailing token
         #   "(base) (base)" two juxtaposed sentences  -> unexpected trailing token
         var unbalanced = fz_cat("(", base);
-        var ru = fz_compile(unbalanced);
-        fz_check(is_err_result(ru) == 1, "unbalanced open paren is rejected", unbalanced);
+        var ru_t, ru_v = fz_compile(unbalanced);
+        fz_check(is_err_result(ru_t) == 1, "unbalanced open paren is rejected", unbalanced);
         var trailing = fz_cat(base, ")");
-        var rt = fz_compile(trailing);
-        fz_check(is_err_result(rt) == 1, "trailing close paren is rejected", trailing);
+        var rt_t, rt_v = fz_compile(trailing);
+        fz_check(is_err_result(rt_t) == 1, "trailing close paren is rejected", trailing);
         var juxt = fz_cat3(fz_paren(base), " ", fz_paren(base));
-        var rj = fz_compile(juxt);
-        fz_check(is_err_result(rj) == 1, "two juxtaposed sentences are rejected", juxt);
+        var rj_t, rj_v = fz_compile(juxt);
+        fz_check(is_err_result(rj_t) == 1, "two juxtaposed sentences are rejected", juxt);
         # A dangling binary operator can never complete.
         var dangling = fz_cat(fz_paren(base), " && ");
-        var rd = fz_compile(dangling);
-        fz_check(is_err_result(rd) == 1, "dangling && is rejected", dangling);
+        var rd_t, rd_v = fz_compile(dangling);
+        fz_check(is_err_result(rd_t) == 1, "dangling && is rejected", dangling);
         # An unterminated string literal cannot close.
         var openstr = fz_cat(fz_paren(base), " == 'unterminated");
-        var ro = fz_compile(openstr);
-        fz_check(is_err_result(ro) == 1, "unterminated string literal is rejected", openstr);
+        var ro_t, ro_v = fz_compile(openstr);
+        fz_check(is_err_result(ro_t) == 1, "unterminated string literal is rejected", openstr);
         i = i + 1;
     }
     return 0;
@@ -655,15 +655,15 @@ fn fz_step_context() {
             var want = step_status_display(vec_get(statuses, k));
             # steps.<name>.status == '<display>'
             var e = fz_cat5("steps.", nm2, ".status == '", want, "'");
-            var rr = cond_evaluate(str_from(e), ctx);
-            if (fz_check(is_ok(rr) == 1, "the generated context path compiles", e) == 1) {
-                fz_check(result_unwrap(rr) == 1, "the result's status is readable by name", e);
+            var rr_t, rr_v = cond_evaluate(str_from(e), ctx);
+            if (fz_check(is_ok(rr_t) == 1, "the generated context path compiles", e) == 1) {
+                fz_check(result_unwrap(rr_t, rr_v) == 1, "the result's status is readable by name", e);
             }
             # A name that is NOT in the flow must resolve to null, hence compare false.
             var missing = fz_cat3("steps.", nm2, "zz.status == 'completed'");
-            var rm = cond_evaluate(str_from(missing), ctx);
-            if (fz_check(is_ok(rm) == 1, "an absent step path still compiles", missing) == 1) {
-                fz_check(result_unwrap(rm) == 0, "an absent step compares false", missing);
+            var rm_t, rm_v = cond_evaluate(str_from(missing), ctx);
+            if (fz_check(is_ok(rm_t) == 1, "an absent step path still compiles", missing) == 1) {
+                fz_check(result_unwrap(rm_t, rm_v) == 0, "an absent step compares false", missing);
             }
             k = k + 1;
         }
