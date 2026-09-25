@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`cyrius doc --check` reported 34 undocumented public fns** — 33 in `src/engine_core.cyr` and
+  `main` in `src/main.cyr`, present since at least 2.1.2 and carried as a known gap in state.md.
+  cyrdoc counts a fn as documented only when a `#` comment sits on the line directly above it, so a
+  shared group comment (`# Accessors.`) covered just the first fn under it. Every `cb_*`,
+  `flow_ctx_*`, `exec_ctx_*`, `engine_config_*` and `step_progress_*` accessor and setter, and
+  `main`, now has its own one-line doc comment (cyrdoc renders only that line). Comment-only: the
+  `build/szal` binary is byte-identical before and after.
+
+### Added
+- **CI**: `Format` (`cyrius fmt <file> --check`) and `Doc coverage` (`cyrius doc --check`) steps
+  over `src/*.cyr`, after Lint — the two M1 exit gates CI never ran. Doc coverage matches cyrdoc's
+  summary line as well as its exit code; both fail if the glob matches nothing.
+
 ## [2.2.0] — 2026-09-25
 
 Toolchain and dependency refresh — cyrius 6.6.2 → **6.6.6**; majra 2.7.0 → **2.9.1**, bote-core

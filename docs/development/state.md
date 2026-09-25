@@ -470,8 +470,9 @@ szal has zero git deps (all three libraries vendored at `src/vendor/`), so `cyri
 `--no-deps` is complete; `cyrius deps` has nothing to resolve and writes no `cyrius.lock` here.
 **CI (`.github/workflows/ci.yml`)**: harness manifest → install the pin → verify toolchain == pin →
 `cyrius lib sync` → build → collision scan → consumer bundle (regenerate + no drift + generic
-consumer scan) → lint `src/*.cyr` → the 47 suites (`timeout 300` each) → fuzz → benchmarks
-`--dry-run`; a docs job checks `VERSION` = `cyrius.cyml` = `SZAL_VERSION`.
+consumer scan) → lint, `fmt --check` and `doc --check` over `src/*.cyr` → the 47 suites
+(`timeout 300` each) → fuzz → benchmarks `--dry-run`; a docs job checks `VERSION` =
+`cyrius.cyml` = `SZAL_VERSION`.
 
 ## Dependencies
 
@@ -517,11 +518,9 @@ cyrius 6.6.6; `rust-old/` untouched. No open issues (`docs/development/issues/` 
 2. **M5 — distribution:** the full `dist/szal.cyr` / `dist/szal-core.cyr`. Their engine modules name
    majra's and ai-hwaccel's enum constants, which `cyrius distlib`'s standalone compile check refuses
    while those libraries are vendored rather than declared — decide that before adding `[lib]`.
-3. **`cyrius doc --check` gaps** (pre-existing, not a CI gate): `src/engine_core.cyr` 33
-   undocumented accessors, `src/main.cyr`'s `main`.
-4. **Open parity item:** majra 2.7.0+ ships `PUBSUB_LAG_*`, which could retire parity-notes §9
+3. **Open parity item:** majra 2.7.0+ ships `PUBSUB_LAG_*`, which could retire parity-notes §9
    (ProgressHub blocks instead of dropping the oldest) — a behavioural change for its own release.
-5. **Open perf finding:** `engine_sequential_10` costs ~11.5 ms vs ~116 µs without a timeout — the
+4. **Open perf finding:** `engine_sequential_10` costs ~11.5 ms vs ~116 µs without a timeout — the
    `sleep_ms(1)` poll in `_run_attempt` (`engine_step_exec.cyr`) dominates per-step cost.
 
 See [`roadmap.md`](roadmap.md), [`port-plan.md`](port-plan.md) (per-module spec),
