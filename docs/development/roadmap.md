@@ -126,3 +126,74 @@ Foundation modules (no engine, no MCP — pure data + algorithms):
 - **AgnosAI**: consumes the Rust crate until its own port — no Cyrius contract yet.
 - **sutra**, **samay**: planned consumers of `dist/szal.cyr`.
 - **secureyeoman** (stays Rust): pins `szal = "1.0"` — the Rust repo/tags must remain intact.
+
+---
+
+## Moving the cyrius pin to 6.6.6
+
+**Current pin:** `cyrius = "6.6.2"` (`cyrius.cyml`).
+
+No source change needed. Three things are worth knowing.
+
+### 1. The MCP file-write tool is the Windows-shaped site
+
+`src/mcp_tools_file.cyr:133` — the `append: true` branch of the MCP `file_write`
+tool — opens `file_open(pc, O_WRONLY | O_CREAT | O_APPEND, 0x1A4)`. Before 6.6.6
+a PE build's `O_APPEND` **did not append; it wrote from offset 0**, so an agent
+appending to a log or a journal through this tool would have overwritten it from
+the top each time. The `else` branch calls `file_write_all`, which opens
+`O_WRONLY|O_CREAT|O_TRUNC` (`lib/io.cyr:546`) and carried the matching half of the
+bug: on PE the old tail survived a shorter rewrite.
+
+This is **latent, not live**. szal's own `src/*.cyr` has **zero `CYRIUS_TARGET_WIN`
+guards** and no szal doc claims a PE target; the only Windows arms in the tree are
+inside the vendored `src/vendor/ai-hwaccel.cyr` (5 sites), which is a fold of
+someone else's target support, not szal's own. So nothing is corrupting data
+today. But "a model-driven append to a user's file" is the exact shape the bug
+destroys, so pin 6.6.6 before any Windows target work rather than after.
+
+### 2. The pair-return check passes, and the fix would not be szal's if it didn't
+
+6.6.6 makes a pair-return fn that returns anything but a same-shaped pair a
+compile error. szal touches that machinery in two places:
+
+- `src/migration.cyr:243` — a bare `rethi()` read, no `ret2`, so nothing to check.
+- `src/vendor/majra.cyr:284` and `:291` — `ret2(0, 0)` and `ret2(hi, lo)`, both
+  same-shaped two-scalar pairs on every return path of the same function. Passes.
+
+⚠ If a future majra fold ever *did* trip this, the fix belongs in the **majra
+source repo** — patch upstream, version-bump, regen dist, re-vendor. A fix applied
+to `src/vendor/majra.cyr` evaporates at the next re-vendor.
+
+### 3. `cyrius.lock` is missing and 6.6.6 stops being quiet about it
+
+`.gitignore:25` says "cyrius.lock is committed (NOT ignored) per the dist
+contract", but there is no `cyrius.lock` in the tree. 6.6.6 makes `cyrius deps`
+and `cyrius publish` **fail** when the lock cannot be written or a `lib/*.cyr`
+cannot be hashed, where they used to carry on. Run `cyrius deps` once after the
+bump and confirm the lock lands and gets committed. (`lib/` holds no symlinks, so
+there is no dangling-link case to clear first.)
+
+### Checked and clear
+
+- **16 structs but 0 struct-typed `var` declarations**, so neither the new
+  different-struct-copy error nor the by-value >8 B deep-copy change has a site.
+- 0 `async fn`, 0 `operator` fns, no SIMD intrinsics, no `: cstring` params.
+- **23 globals, none redeclared**, so 6.6.6's "a later redeclaration now wins
+  everywhere" flip and the new different-type-co-linked-global error change
+  nothing.
+- **No `var` inside a top-level block** — the `src/engine_core.cyr:113` and
+  `src/engine_distributed.cyr:263` candidates are bodies of `fn`s whose signatures
+  wrap across two lines.
+- `fn vec_has_name` at `tests/szal_storage.tcyr:52` is **not** a stdlib `vec_*`
+  name at any arity, so `assert.cyr`'s new transitive `vec.cyr` include does not
+  collide with it — and szal has 95 assert call sites, so that was worth checking.
+- No raw `SYS_STATFS`. `lib/regression.cyr` is not vendored, so its new exec
+  deadline and `PR_SET_PDEATHSIG` behaviour does not reach szal.
+
+### Verify after bumping
+
+1. `cyrius deps` → confirm `cyrius.lock` is written and committed.
+2. `cyrius test` plus the `tests/*.tcyr` suite.
+3. Regenerate both dist profiles (`dist/szal.cyr` and `dist/szal-core.cyr`) and
+   re-run the core-only drift smoke.
