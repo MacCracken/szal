@@ -132,6 +132,41 @@ jobs:
           done
           [ $fail -eq 0 ] || { echo "lint: warnings present"; exit 1; }
 
+      - name: Format
+        # M1 exit gate (roadmap.md): `cyrius fmt --check` clean. --check never rewrites (plain
+        # `cyrius fmt <file>` rewrites in place — run that locally, then commit). It exits 1 on a
+        # file that is not canonically formatted, naming the first differing line, and on an
+        # unreadable path, so an empty glob fails too. Same scope as Lint: szal-authored src/*.cyr
+        # only (src/vendor/* are upstream dists, exempt).
+        run: |
+          fail=0; n=0
+          for f in src/*.cyr; do
+            n=$((n+1))
+            cyrius fmt "$f" --check || { echo "fmt: $f is not fmt-clean"; fail=1; }
+          done
+          [ $fail -eq 0 ] || { echo "fmt: unformatted files present"; exit 1; }
+          echo "fmt: $n src/*.cyr files canonically formatted"
+
+      - name: Doc coverage
+        # M1 exit gate (roadmap.md): `cyrius doc --check` clean. cyrdoc counts a public fn as
+        # documented only when a `#` comment sits on the line DIRECTLY above it (a shared group
+        # comment covers just the first fn under it); `_`-prefixed internals are exempt. Same scope
+        # as Lint: szal-authored src/*.cyr only (src/vendor/* are upstream dists, exempt). The
+        # summary line is matched as well as the exit code (the undocumented count), so a changed
+        # exit convention fails closed; an empty glob fails too (cyrdoc exits 1 on an unreadable path).
+        run: |
+          ok='^[0-9]+ documented, 0 undocumented \([0-9]+ total\)$'
+          fail=0; n=0
+          for f in src/*.cyr; do
+            n=$((n+1))
+            rc=0; out=$(cyrius doc --check "$f" 2>&1) || rc=$?
+            if [ "$rc" -ne 0 ] || ! grep -qE "$ok" <<< "$out"; then
+              echo "doc: $f is not doc-clean"; echo "$out"; fail=1
+            fi
+          done
+          [ $fail -eq 0 ] || { echo "doc: add a # comment on the line directly above each fn listed"; exit 1; }
+          echo "doc: $n src/*.cyr files, every public fn documented"
+
       - name: Test suite
         # Each tests/szal_*.tcyr is a self-contained --no-deps suite (the project
         # recipe). Build + run each; any compile or assertion failure fails CI.
