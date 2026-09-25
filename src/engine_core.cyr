@@ -44,7 +44,9 @@ fn cb_new(fp, ctx) {
 }
 
 # Accessors.
+# Get the fn pointer (called with the ctx as its last argument).
 fn cb_fp(c) { return load64(c + CB_FP); }
+# Get the captured-state ctx pointer (0 if the callback needs no state).
 fn cb_ctx(c) { return load64(c + CB_CTX); }
 
 # Invoke a StepHandler / RollbackHandler callback: fp(step, ctx) -> Result. The caller guarantees
@@ -79,8 +81,11 @@ fn flow_ctx_of(flow) {
     return flow_ctx_new(flow_name(flow), flow_id_hi(flow), flow_id_lo(flow));
 }
 
+# Get the flow name (Str).
 fn flow_ctx_name(fc) { return load64(fc + FLC_NAME); }
+# Get the flow id high half (i64).
 fn flow_ctx_id_hi(fc) { return load64(fc + FLC_ID_HI); }
+# Get the flow id low half (i64).
 fn flow_ctx_id_lo(fc) { return load64(fc + FLC_ID_LO); }
 
 # ===========================================================================
@@ -122,12 +127,19 @@ fn exec_ctx_new(handler, event_sink, flow, metrics_vt, step_type_metrics, progre
     return ec;
 }
 
+# Get the StepHandler callback pair (never 0).
 fn exec_ctx_handler(ec) { return load64(ec + EC_HANDLER); }
+# Get the EventSink callback pair (0 = None).
 fn exec_ctx_event_sink(ec) { return load64(ec + EC_EVENT_SINK); }
+# Get the FlowCtx* (the running flow's name + id).
 fn exec_ctx_flow(ec) { return load64(ec + EC_FLOW); }
+# Get the majra metrics vtable (0 = None).
 fn exec_ctx_metrics_vt(ec) { return load64(ec + EC_METRICS_VT); }
+# Get the StepTypeMetricsFn callback pair (0 = None).
 fn exec_ctx_step_type_metrics(ec) { return load64(ec + EC_STEP_TYPE_METRICS); }
+# Get the ProgressSink callback pair (0 = None).
 fn exec_ctx_progress_sink(ec) { return load64(ec + EC_PROGRESS_SINK); }
+# Get the ConditionCache* (memoizes compiled conditions across runs).
 fn exec_ctx_condition_cache(ec) { return load64(ec + EC_CONDITION_CACHE); }
 
 # ===========================================================================
@@ -172,33 +184,54 @@ fn engine_config_default() {
 }
 
 # Accessors.
+# Get max_concurrency, the parallel/DAG concurrent-step cap (i64; default 16).
 fn engine_config_max_concurrency(c) { return load64(c + ENG_MAX_CONCURRENCY); }
+# Is the global timeout override set (Option::is_some)? 1/0.
 fn engine_config_timeout_present(c) { return load64(c + ENG_TIMEOUT_PRESENT); }
+# Get the global timeout override in ms (i64; only meaningful when timeout_present == 1).
 fn engine_config_timeout_ms(c) { return load64(c + ENG_TIMEOUT_MS); }
+# Get the WorkflowStorage trait-object vtable (sub-flow resolution; 0 = None).
 fn engine_config_storage_vt(c) { return load64(c + ENG_STORAGE_VT); }
+# Get the HardwareContext (the ai-hwaccel CachedRegistry handle; 0 = None).
 fn engine_config_hardware_ctx(c) { return load64(c + ENG_HARDWARE_CTX); }
+# Get the majra metrics vtable (0 = None).
 fn engine_config_metrics_vt(c) { return load64(c + ENG_METRICS_VT); }
+# Get the majra ConcurrentHeartbeatTracker* (0 = None).
 fn engine_config_heartbeat(c) { return load64(c + ENG_HEARTBEAT); }
+# Get the majra ManagedQueue* (non-zero selects the queue-backed run path; 0 = None).
 fn engine_config_queue(c) { return load64(c + ENG_QUEUE); }
+# Get the StepTypeMetricsFn callback pair (0 = None).
 fn engine_config_step_type_metrics(c) { return load64(c + ENG_STEP_TYPE_METRICS); }
+# Get the ProgressSink callback pair (0 = None).
 fn engine_config_progress_sink(c) { return load64(c + ENG_PROGRESS_SINK); }
+# Get the ExecutionStore trait-object vtable (durable execution tracking; 0 = None).
 fn engine_config_execution_store_vt(c) { return load64(c + ENG_EXECUTION_STORE_VT); }
 
 # Setters (the Engine builders in row 20 mutate config fields; struct-literal fields in Rust).
 # Each returns c for chaining.
+# Set max_concurrency (i64). Returns c.
 fn engine_config_set_max_concurrency(c, n) { store64(c + ENG_MAX_CONCURRENCY, n); return c; }
+# Set the global timeout override to Some(ms) (marks it present; Some(0) is legal). Returns c.
 fn engine_config_set_timeout_ms(c, ms) {
     store64(c + ENG_TIMEOUT_PRESENT, 1);
     store64(c + ENG_TIMEOUT_MS, ms);
     return c;
 }
+# Set the WorkflowStorage trait-object vtable (0 = None). Returns c.
 fn engine_config_set_storage_vt(c, vt) { store64(c + ENG_STORAGE_VT, vt); return c; }
+# Set the HardwareContext (the ai-hwaccel CachedRegistry handle; 0 = None). Returns c.
 fn engine_config_set_hardware_ctx(c, h) { store64(c + ENG_HARDWARE_CTX, h); return c; }
+# Set the majra metrics vtable (0 = None). Returns c.
 fn engine_config_set_metrics_vt(c, vt) { store64(c + ENG_METRICS_VT, vt); return c; }
+# Set the majra ConcurrentHeartbeatTracker* (0 = None). Returns c.
 fn engine_config_set_heartbeat(c, h) { store64(c + ENG_HEARTBEAT, h); return c; }
+# Set the majra ManagedQueue* (0 = None). Returns c.
 fn engine_config_set_queue(c, q) { store64(c + ENG_QUEUE, q); return c; }
+# Set the StepTypeMetricsFn callback pair (0 = None). Returns c.
 fn engine_config_set_step_type_metrics(c, cb) { store64(c + ENG_STEP_TYPE_METRICS, cb); return c; }
+# Set the ProgressSink callback pair (0 = None). Returns c.
 fn engine_config_set_progress_sink(c, cb) { store64(c + ENG_PROGRESS_SINK, cb); return c; }
+# Set the ExecutionStore trait-object vtable (0 = None). Returns c.
 fn engine_config_set_execution_store_vt(c, vt) { store64(c + ENG_EXECUTION_STORE_VT, vt); return c; }
 
 # ===========================================================================
@@ -223,8 +256,11 @@ fn step_progress_new(step_name, step_id, data) {
     return sp;
 }
 
+# Get the step name (Str).
 fn step_progress_step_name(sp) { return load64(sp + SP_STEP_NAME); }
+# Get the step id (Str).
 fn step_progress_step_id(sp) { return load64(sp + SP_STEP_ID); }
+# Get the progress data (an arbitrary json_v payload).
 fn step_progress_data(sp) { return load64(sp + SP_DATA); }
 
 # Handle passed to step handlers for reporting progress mid-execution (mod.rs 147-167).

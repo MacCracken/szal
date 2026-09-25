@@ -102,6 +102,7 @@ include "src/mcp_tools_git.cyr"
 include "lib/net.cyr"
 include "src/mcp_tools_net.cyr"
 
+# Entry point: smoke the foundation + MCP surfaces, print "szal ready". Returns the exit status.
 fn main() {
     alloc_init();
     # Route sakshi to its ring buffer so otel sink / log output never pollutes stdout.
