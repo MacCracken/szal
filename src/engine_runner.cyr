@@ -33,7 +33,7 @@
 # Requires: src/engine_core.cyr, src/engine_{sequential,parallel,dag,hierarchical,queue_runner,
 #   distributed}.cyr, src/storage.cyr (ExecutionRecord/ExecutionStore), src/metrics.cyr,
 #   src/engine_result.cyr (FlowResult), src/flow.cyr, src/state.cyr, src/bus.cyr, src/step.cyr,
-#   src/uuid.cyr, src/condition.cyr (cache_new), src/vendor/majra.cyr (chb_*),
+#   src/uuid.cyr, src/condition.cyr (szal_condition_cache_new), src/vendor/majra.cyr (chb_*),
 #   lib/result.cyr (Ok/is_err_result), lib/chrono.cyr (clock_now_ms/iso8601_now),
 #   lib/bayan.cyr (heartbeat metadata), lib/str.cyr, lib/vec.cyr, lib/async.cyr (cancel_token_check).
 # Naming: public symbols are engine_-prefixed; internal helpers use _engine_.
@@ -67,7 +67,7 @@ fn engine_new(config, handler) {
     store64(e + EN_HANDLER, handler);
     store64(e + EN_ROLLBACK, 0);
     store64(e + EN_EVENT_SINK, 0);
-    store64(e + EN_CONDITION_CACHE, cache_new());
+    store64(e + EN_CONDITION_CACHE, szal_condition_cache_new());
     return e;
 }
 

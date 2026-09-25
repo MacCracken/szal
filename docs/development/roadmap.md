@@ -13,7 +13,7 @@
 ## Target
 
 **Rust 1.2.0 → Cyrius 2.0.0.** Plain SemVer from 2.0.0 onward (majra is the precedent).
-Toolchain pinned at `cyrius = "6.1.35"` (was 6.1.33 at M0). `VERSION` is the single source of truth.
+Toolchain pinned in `cyrius.cyml` (`cyrius = "6.6.6"` at 2.2.0; 6.1.33 at M0 — history in [`state.md`](state.md)). `VERSION` is the single source of truth.
 
 ## Pre-port decisions
 
@@ -25,7 +25,7 @@ Toolchain pinned at `cyrius = "6.1.35"` (was 6.1.33 at M0). `VERSION` is the sin
 | UUID | `{hi, lo}` i64 pair internal, RFC-4122 string only at JSON/MCP boundaries | ✅ decided |
 | SQL store | patra (stdlib) only; **postgres deferred**, prometheus passthrough dropped | ✅ decided |
 | Version | 2.0.0; keep `rust-old/` as parity oracle, retire in a 2.0.x patch | ✅ decided |
-| `registry_new` collision (bote-core × ai-hwaccel) | resolved bote-side: bote 2.7.5 renamed its tool-registry ctor `registry_new`→`tool_registry_new` (dissolves the clash — bote no longer owns the symbol). filed [`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md) | ✅ **RESOLVED** (2026-06-13) — re-synced bote, updated `mcp.cyr` caller, ported row 17 `engine_hardware`; collision scan clean |
+| `registry_new` collision (bote-core × ai-hwaccel) | resolved bote-side: bote 2.7.5 renamed its tool-registry ctor `registry_new`→`tool_registry_new` (dissolves the clash — bote no longer owns the symbol). filed [`issues/archive/2026-06-11-registry-new-collision.md`](issues/archive/2026-06-11-registry-new-collision.md) | ✅ **RESOLVED** (2026-06-13) — re-synced bote, updated `mcp.cyr` caller, ported row 17 `engine_hardware`; collision scan clean |
 | Engine concurrency model | threads + permit-channel (bounded `chan`) + cancel tokens; cooperative cancel replaces `JoinHandle::abort()` (observable timeout/cancel delta) | ✅ decided + implemented (parallel/dag/queue verified; see parity-notes §8) |
 | Logging under threads | szal's own emit/metric/log calls stay on the MAIN thread (workers only run handlers), so sakshi is never touched cross-thread — no logging thread needed | ✅ decided + implemented |
 | Pub/sub lag semantics | majra bounded-chan drop-newest vs tokio broadcast drop-oldest — contract change | ⏳ open (M3 stream/bus) |
@@ -72,7 +72,7 @@ Foundation modules (no engine, no MCP — pure data + algorithms):
 - [x] `src/engine_parallel.cyr` — thread fan-out + permit-channel semaphore + cancel tokens ✅ (alloc thread-safe; cooperative-cancel §8)
 - [x] `src/engine_dag.cyr` — Kahn wavefront, `unlock_dependents`, transitive failure propagation ✅ (ordinal-indexed arenas; reuses the parallel worker/semaphore)
 - [x] `src/engine_hierarchical.cyr` — recursive tree walk ✅
-- [x] `src/engine_hardware.cyr` — `HardwareContext` over ai-hwaccel cached registry ✅ (2026-06-13) — wired into `engine_runner` at all three entry points (`_engine_check_hardware`, no-op when `config.hardware==0`). The `registry_new` collision (Q9) was **resolved** by the bote 2.7.5 re-sync (`registry_new`→`tool_registry_new`) — [`issues/2026-06-11-registry-new-collision.md`](issues/2026-06-11-registry-new-collision.md). 2 accepted divergences (parity-notes §11). **M2 fully closed.**
+- [x] `src/engine_hardware.cyr` — `HardwareContext` over ai-hwaccel cached registry ✅ (2026-06-13) — wired into `engine_runner` at all three entry points (`_engine_check_hardware`, no-op when `config.hardware==0`). The `registry_new` collision (Q9) was **resolved** by the bote 2.7.5 re-sync (`registry_new`→`tool_registry_new`) — [`issues/archive/2026-06-11-registry-new-collision.md`](issues/archive/2026-06-11-registry-new-collision.md). 2 accepted divergences (parity-notes §11). **M2 fully closed.**
 - [x] `src/engine_queue_runner.cyr` — majra `mq_*` (ResourcePool param dropped) ✅ first functional majra-queue use
 - [x] `src/engine_distributed.cyr` — fleet workers + coordinator, reuses `unlock_dependents` ✅ (poll-loop translation of `select!{biased}`; result-chan cap = total+1 ⇒ no deadlock)
 - [x] `src/engine_runner.cyr` — `Engine`, `run`/`run_with_cancellation`/`run_distributed`, rollback, heartbeat guard, persistence ✅ (queue-path + heartbeat-ticker + hw-check divergences documented in-module)
@@ -103,9 +103,9 @@ Foundation modules (no engine, no MCP — pure data + algorithms):
 
 - [ ] README, CLAUDE.md, CHANGELOG (2.0.0 crossover entry), CONTRIBUTING, SECURITY rewritten for Cyrius
 - [ ] `docs/architecture/overview.md`, `docs/guides/getting-started.md`, 5 examples ported
-- [ ] NEW: `docs/adr/0002-port-from-rust-to-cyrius.md`, `DEPS-PATTERN.md`, `docs/development/semver.md`, `docs/cyrius-feedback.md`
+- [ ] NEW: `docs/adr/0003-port-from-rust-to-cyrius.md` (0002 went to the 2.2.0 namespace decision), `DEPS-PATTERN.md`, `docs/development/semver.md`, `docs/cyrius-feedback.md`
 - [ ] `.github/workflows/{ci,release}.yml` (bote/majra 6.x model); `Makefile`/`scripts` → cyrius CLI
-- [ ] `dist/szal.cyr` + `dist/szal-core.cyr` committed; `cyrius.lock` committed
+- [ ] `dist/szal.cyr` + `dist/szal-core.cyr` committed (the consumer profile `dist/szal-mcp.cyr` shipped at 2.2.0; the full profiles need majra / ai-hwaccel declared, because the engine names their enum constants and `cyrius distlib`'s standalone compile check refuses undefined constants). `cyrius.lock`: `cyrius deps` writes none for szal's zero-git-dep tree (checked at 6.6.6)
 - [ ] zugot `marketplace/szal.cyml` rewritten on the Cyrius shape
 - [ ] Tag `2.0.0` (release workflow asserts tag == VERSION)
 
@@ -122,78 +122,10 @@ Foundation modules (no engine, no MCP — pure data + algorithms):
 
 ## Consumer contract
 
-- **daimon** (Cyrius): no szal dep today — the port defines the contract. Must **not** export bare `mcp_*` symbols (daimon owns that prefix); prefix everything `szal_`/`flow_`/`step_`.
+- **The rule (ADR 0002):** szal owns its namespace. Anything a consumer links is `szal_`/`SZAL_`-prefixed or checked by `scripts/scan-collisions.sh --consumer`, and the libraries szal vendors stay byte-identical to their releases — so szal compiles against the same files its consumers vendor. Never export bare `mcp_*` (daimon owns that prefix).
+- **hoosh** (Cyrius gateway): **`dist/szal-mcp.cyr`** (2.2.0) was built for it — the 54 MCP tools, registered into hoosh's own dispatcher with `szal_register_into`; acceptance passes against hoosh 2.7.1 (`scripts/consumer-check.sh ../hoosh`). Vendoring it and calling `szal_register_into` from `mcp_init` is hoosh's side, on its roadmap.
+- **daimon** (Cyrius): no szal dep today; `dist/szal-mcp.cyr` is the same shape it would take.
 - **AgnosAI**: consumes the Rust crate until its own port — no Cyrius contract yet.
-- **sutra**, **samay**: planned consumers of `dist/szal.cyr`.
+- **sutra**, **samay**: planned consumers of `dist/szal.cyr` (the full engine bundle, M5).
 - **secureyeoman** (stays Rust): pins `szal = "1.0"` — the Rust repo/tags must remain intact.
 
----
-
-## Moving the cyrius pin to 6.6.6
-
-**Current pin:** `cyrius = "6.6.2"` (`cyrius.cyml`).
-
-No source change needed. Three things are worth knowing.
-
-### 1. The MCP file-write tool is the Windows-shaped site
-
-`src/mcp_tools_file.cyr:133` — the `append: true` branch of the MCP `file_write`
-tool — opens `file_open(pc, O_WRONLY | O_CREAT | O_APPEND, 0x1A4)`. Before 6.6.6
-a PE build's `O_APPEND` **did not append; it wrote from offset 0**, so an agent
-appending to a log or a journal through this tool would have overwritten it from
-the top each time. The `else` branch calls `file_write_all`, which opens
-`O_WRONLY|O_CREAT|O_TRUNC` (`lib/io.cyr:546`) and carried the matching half of the
-bug: on PE the old tail survived a shorter rewrite.
-
-This is **latent, not live**. szal's own `src/*.cyr` has **zero `CYRIUS_TARGET_WIN`
-guards** and no szal doc claims a PE target; the only Windows arms in the tree are
-inside the vendored `src/vendor/ai-hwaccel.cyr` (5 sites), which is a fold of
-someone else's target support, not szal's own. So nothing is corrupting data
-today. But "a model-driven append to a user's file" is the exact shape the bug
-destroys, so pin 6.6.6 before any Windows target work rather than after.
-
-### 2. The pair-return check passes, and the fix would not be szal's if it didn't
-
-6.6.6 makes a pair-return fn that returns anything but a same-shaped pair a
-compile error. szal touches that machinery in two places:
-
-- `src/migration.cyr:243` — a bare `rethi()` read, no `ret2`, so nothing to check.
-- `src/vendor/majra.cyr:284` and `:291` — `ret2(0, 0)` and `ret2(hi, lo)`, both
-  same-shaped two-scalar pairs on every return path of the same function. Passes.
-
-⚠ If a future majra fold ever *did* trip this, the fix belongs in the **majra
-source repo** — patch upstream, version-bump, regen dist, re-vendor. A fix applied
-to `src/vendor/majra.cyr` evaporates at the next re-vendor.
-
-### 3. `cyrius.lock` is missing and 6.6.6 stops being quiet about it
-
-`.gitignore:25` says "cyrius.lock is committed (NOT ignored) per the dist
-contract", but there is no `cyrius.lock` in the tree. 6.6.6 makes `cyrius deps`
-and `cyrius publish` **fail** when the lock cannot be written or a `lib/*.cyr`
-cannot be hashed, where they used to carry on. Run `cyrius deps` once after the
-bump and confirm the lock lands and gets committed. (`lib/` holds no symlinks, so
-there is no dangling-link case to clear first.)
-
-### Checked and clear
-
-- **16 structs but 0 struct-typed `var` declarations**, so neither the new
-  different-struct-copy error nor the by-value >8 B deep-copy change has a site.
-- 0 `async fn`, 0 `operator` fns, no SIMD intrinsics, no `: cstring` params.
-- **23 globals, none redeclared**, so 6.6.6's "a later redeclaration now wins
-  everywhere" flip and the new different-type-co-linked-global error change
-  nothing.
-- **No `var` inside a top-level block** — the `src/engine_core.cyr:113` and
-  `src/engine_distributed.cyr:263` candidates are bodies of `fn`s whose signatures
-  wrap across two lines.
-- `fn vec_has_name` at `tests/szal_storage.tcyr:52` is **not** a stdlib `vec_*`
-  name at any arity, so `assert.cyr`'s new transitive `vec.cyr` include does not
-  collide with it — and szal has 95 assert call sites, so that was worth checking.
-- No raw `SYS_STATFS`. `lib/regression.cyr` is not vendored, so its new exec
-  deadline and `PR_SET_PDEATHSIG` behaviour does not reach szal.
-
-### Verify after bumping
-
-1. `cyrius deps` → confirm `cyrius.lock` is written and committed.
-2. `cyrius test` plus the `tests/*.tcyr` suite.
-3. Regenerate both dist profiles (`dist/szal.cyr` and `dist/szal-core.cyr`) and
-   re-run the core-only drift smoke.

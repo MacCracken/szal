@@ -326,7 +326,7 @@ fn fz_mode_and_trigger_rules() {
         var anyflow = flow_new(str_from("anyflow"), FLOW_DAG);
         var a1 = step_new(str_from("a1"));
         var a2 = step_new(str_from("a2"));
-        step_with_trigger_mode(a2, TRIGGER_ANY);
+        step_with_trigger_mode(a2, SZAL_TRIGGER_ANY);
         flow_add_step(anyflow, a1);
         flow_add_step(anyflow, a2);
         fz_check(fz_verdict(anyflow) == 2, "TriggerMode::Any with no deps is Err", 0);
@@ -334,7 +334,7 @@ fn fz_mode_and_trigger_rules() {
         var b1 = step_new(str_from("b1"));
         var b2 = step_new(str_from("b2"));
         step_depends_on_add(b2, step_id_hi(b1), step_id_lo(b1));
-        step_with_trigger_mode(b2, TRIGGER_ANY);
+        step_with_trigger_mode(b2, SZAL_TRIGGER_ANY);
         flow_add_step(okflow, b1);
         flow_add_step(okflow, b2);
         fz_check(fz_verdict(okflow) == 0, "TriggerMode::Any with a dep validates", 0);
@@ -359,7 +359,7 @@ fn fz_unknown_dep() {
         fz_check(fz_verdict(f) == 0, "the base flow validates", name);
         # Point a random step at a UUID that is not in the flow.
         var victim = flow_step_at(f, fz_rand_below(n));
-        var ghi, glo = uuid_generate();
+        var ghi, glo = szal_uuid_generate();
         step_depends_on_add(victim, ghi, glo);
         var v = fz_verdict(f);
         fz_check(v == 2, "an unknown dependency is Err(SZAL_ERR_FLOW_INVALID)", name);

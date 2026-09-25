@@ -2,7 +2,7 @@
 #
 # Ports the #[cfg(test)] module from rust-old/src/mcp/tools/encoding_tools.rs: single/multiple UUID
 # generation, base64 encode/decode round-trip, and the missing-input validation error. Also checks
-# the group registers (encoding_tools() -> 2 Tool pairs into a dispatcher).
+# the group registers (szal_encoding_tools() -> 2 Tool pairs into a dispatcher).
 #
 #   cyrius build --strict --no-deps tests/szal_mcp_tools_encoding.tcyr build/test_mcp_tools_encoding
 #   ./build/test_mcp_tools_encoding
@@ -103,7 +103,7 @@ fn t_base64_bad_op() {
 
 # The group registers both tools into a dispatcher.
 fn t_group_registers() {
-    var d = register_tools(encoding_tools());
+    var d = szal_register_tool_vec(szal_encoding_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_uuid"), 1, "szal_uuid registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_base64"), 1, "szal_base64 registered");

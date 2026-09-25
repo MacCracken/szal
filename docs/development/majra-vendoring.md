@@ -1,26 +1,25 @@
-# Full majra vendoring — ✅ DONE (2026-06-11), majra 2.7.0 at `src/vendor/majra.cyr`
+# Vendored libraries — majra 2.9.1, bote-core 3.3.13, ai-hwaccel 2.4.0 at `src/vendor/`
 
-> **Status: COMPLETE.** The full majra dist is vendored at `src/vendor/majra.cyr` (3,289 lines,
-> collision rename applied via `scripts/sync-majra.sh`), included in `main.cyr`, and the
-> whole suite is green (1,434 assertions, 0 duplicate-symbol warnings). The interim metrics shim
-> (`src/vendor/majra_metrics.cyr`) has been **retired** and `metrics.cyr` repointed at the full dist.
+> **Status at szal 2.2.0 (2026-09-25): all three vendored BYTE-FOR-BYTE from their release tags.**
+> `scripts/sync-{majra,bote,ai-hwaccel}.sh` extract `dist/<lib>.cyr` with `git show <tag>:…`, check
+> the dist's own `# Version:` line against the tag, and copy it unmodified — the same files hoosh
+> commits (`cmp` clean). szal no longer renames anything inside a vendored copy: it renamed its OWN
+> colliding symbols instead ([ADR 0002](../adr/0002-szal-owns-its-namespace.md), §10 below), because
+> a consumer that vendors upstream majra / bote-core could not link szal's code next to them.
+> `scripts/scan-collisions.sh` reports one intersection anywhere in szal's build — `REQ_NONE`, shared
+> with ai-hwaccel on purpose and allow-listed only while both values agree.
 >
-> **Re-synced 2.5.3 → 2.7.0 at szal 2.1.1 (2026-08-26); now 4,840 lines.** All 25 majra symbols
-> szal links are signature-identical. No new SAME-KIND clashes — but the 2.1.1 rescan used the new
-> **cross-kind** scanner (`scripts/scan-collisions.sh`) and found one the old fn/const/var scan
-> structurally could not see: **`SYS_GETRANDOM`**, now rename rule 6 (§8b). Two things also changed
-> behaviourally: majra's rate limiter now owns its bucket keys, which **turns szal's rate limiting
-> on for the first time**, and 2.7.0 ships the `PUBSUB_LAG_*` policy that would close
-> `parity-notes.md` §9 (§9 here). The `MJ_ERR_` rename now rescues zero live collisions but is
-> **kept** as defence-in-depth — see §8b.
+> The file keeps its old name and its history. §3–§8b describe the rename-the-copy era
+> (2.0.0–2.1.2); read them as history, not procedure. **Procedure now:** run the sync script, then
+> `scripts/scan-collisions.sh --check`, `scripts/consumer-check.sh` (and `../hoosh` if present), and
+> the full suite; if a new upstream name collides, rename szal's side (ADR 0002) — never the copy.
 >
-> This doc is kept as the **maintenance record** for re-syncing majra and for the collision
-> rationale. The "blockers" below are annotated with how they actually resolved.
->
+> _Earlier status (2.1.1):_ the full majra dist is vendored at `src/vendor/majra.cyr` (then 4,840
+> lines, collision renames applied via `scripts/sync-majra.sh`). The interim metrics shim
+> (`src/vendor/majra_metrics.cyr`) was **retired** and `metrics.cyr` repointed at the full dist.
 > **The §3 bigint blocker was a FALSE ALARM:** the core `dist/majra.cyr` references **zero**
-> `bigint`/`tls`/`sandhi`/`patra` symbols (those were over-listed in majra's cyml hint, used only
-> by its *other* bundles). The only stdlib addition the full dist needed was **`lib/thread.cyr`**
-> (chan_/mutex_); everything else was already in `main.cyr`.
+> `bigint`/`tls`/`sandhi`/`patra` symbols. The only stdlib addition the full dist needed was
+> **`lib/thread.cyr`** (chan_/mutex_).
 
 ## 1. Why it's required (what needs full majra)
 
@@ -29,18 +28,19 @@ distributed), `pubsub_*` (EventBus → row 6 bus's deferred majra path + M3 stre
 `ratelimit_*` (M3 mcp_pool), `chb_*` (heartbeat → row 20 runner heartbeat guard), and the 22-slot
 metrics vtable (row 10 — shipped now via the shim). All but metrics need the **full** dist.
 
-## 2. The pin
+## 2. The pins
 
-- **majra 2.7.0**, `dist/majra.cyr` (165,342 bytes upstream-dist source; the renamed
-  `src/vendor/majra.cyr` is 4,840 lines with its provenance header), synced from a majra checkout's
-  `dist/`. `cyrius.cyml`, this doc and `state.md` all read 2.7.0.
+| file | release | lines | sync |
+|---|---|---|---|
+| `src/vendor/majra.cyr` | majra **2.9.1** `dist/majra.cyr` (the base bundle) | 5,984 | `scripts/sync-majra.sh` |
+| `src/vendor/bote-core.cyr` | bote **3.3.13** `dist/bote-core.cyr` (`[lib.core]`) | 2,905 | `scripts/sync-bote.sh` |
+| `src/vendor/ai-hwaccel.cyr` | ai-hwaccel **2.4.0** `dist/ai-hwaccel.cyr` | 7,514 | `scripts/sync-ai-hwaccel.sh` |
+
 - The **base** `dist/majra.cyr` is still the right cut. majra also ships `majra-admin.cyr`,
   `majra-signed.cyr` and `majra-backends.cyr`; the base bundle is a strict subset of all three, and
-  szal uses nothing from the modules they add (admin / signed_envelope / ipc_encrypted / patra_queue /
-  postgres_backend / redis_backend / ws). The base bundle is also the only one untouched by 2.6.8's
-  `base64_encode`→`majra_base64_encode` rename, which moved only `dist/majra-backends.cyr`.
-- Lands at `src/vendor/majra.cyr` (hoosh vendor pattern — a `[deps.majra]` block would make
-  `cyrius deps` recurse into majra's own git sub-deps; see `cyrius.cyml`).
+  szal uses nothing from the modules they add.
+- Vendored, not `[deps.X]` blocks: a dep block makes `cyrius deps` recurse into each library's own
+  git sub-deps (lib/ bloat, collisions), and zero git deps keeps CI at `cyrius lib sync` + `--no-deps`.
 
 ## 3. ~~BLOCKER~~ — `lib/bigint.cyr` (RESOLVED: false alarm)
 
@@ -58,7 +58,10 @@ Had it been real, the resolution options were:
 
 Do NOT start the full vendoring until this is decided.
 
-## 4. Symbol collisions (7 as of majra 2.5.3 / szal 2.1.0; was 9)
+## 4. Symbol collisions (7 as of majra 2.5.3 / szal 2.1.0; was 9) — HISTORY
+
+> **Superseded at 2.2.0:** every szal-side name in the table below was renamed on szal's side
+> (§10), and majra is vendored unmodified.
 
 Cyrius duplicate-symbol semantics = **last definition wins** (+ warning for fns; enum-const dupes
 can hard-error). Verified clashes between `dist/majra.cyr` and szal's `src/*.cyr`:
@@ -87,7 +90,11 @@ The 7 that remain:
 Full families to rename (all majra-owned, verified — no stdlib `ERR_*`/`STEP_*`/`TRIGGER_*` refs):
 majra `ERR_*` (20 consts), `STEP_*` (5: COMPLETED/FAILED/PENDING/RUNNING/SKIPPED), `TRIGGER_*` (2).
 
-## 5. Resolution — rename in the vendored copy ONLY (user-approved 2026-06-11)
+## 5. Resolution — rename in the vendored copy ONLY (user-approved 2026-06-11) — HISTORY
+
+> **Reversed at 2.2.0** ([ADR 0002](../adr/0002-szal-owns-its-namespace.md)): the recipe below
+> kept szal's build clean but made szal's code unlinkable next to upstream majra, which is what
+> every consumer vendors.
 
 Renames apply **only to `src/vendor/majra.cyr`**, never to szal's `src/*.cyr`. Because szal never
 passes its own `STEP_*`/`TRIGGER_*`/`ERR_*` values into majra's workflow surface (szal implements
@@ -234,3 +241,34 @@ a per-subscriber lag policy (`PUBSUB_LAG_BLOCK` / `PUBSUB_LAG_DROP_NEWEST` / `PU
 plus pubsub unsubscribe. Adopting it would let `src/stream.cyr` match tokio's semantics and retire
 the divergence. **Deliberately not done at 2.1.1** — that is a behavioural port change, not a
 maintenance bump, and it belongs in its own change with its own tests.
+
+## 10. 2.2.0 re-sync — the renames move to szal's side (2026-09-25)
+
+- [x] **Pins:** majra 2.7.0 → **2.9.1**, bote-core 3.3.7 → **3.3.13**, ai-hwaccel 2.3.19 → **2.4.0**,
+      each the latest release. Every fn szal calls is signature-identical (24 majra, 13 bote, 6
+      ai-hwaccel, measured over src/, tests, fuzz and benches); the `REQ_*` / `FAMILY_*` value table
+      is byte-identical.
+- [x] **Sync from the tag.** The old scripts copied the checkout's working tree and labelled it
+      with its `VERSION`. At this sync ai-hwaccel's checkout sat one unreleased commit past 2.4.0
+      (comments only), and that commit had been vendored as "2.4.0". The scripts now take
+      `git show <tag>:dist/<lib>.cyr`, refuse a missing tag, and check the dist's `# Version:` line.
+- [x] **No renames in the copies.** szal renamed its own side (ADR 0002): the `EventType` members
+      → `SZAL_FLOW_*` / `SZAL_STEP_*`; `SzalTriggerMode` / `SZAL_TRIGGER_*`; `SzalStepStatus` (so the
+      two enum TYPE names no longer need the allow-list); `szal_step_result_new`;
+      `szal_uuid_generate`; `szal_condition_*` for the compiled-condition family bote's
+      `compiled_compile` clashed with. Each rename was made while the vendored copies were still
+      renamed, so any missed reference failed as an undefined symbol instead of silently binding
+      to the upstream name.
+- [x] **`MJ_SYS_GETRANDOM` needed no successor**: majra 2.7.3 moved `uuid_generate` to
+      `sys_getrandom`, and the dist declares no `SYS_GETRANDOM` at all.
+- [x] **`MJ_ERR_*` needed no successor either**: majra 2.8.0 prefixed its own codes
+      `MAJRA_ERR_*` (keeping bare `ERR_*` as aliases until 3.0.0); the scan finds no collision
+      between those aliases and szal, bote, ai-hwaccel or the stdlib.
+- [x] **Scan:** one intersection in szal's build (`REQ_NONE`, equal values). The scanner also
+      gained an intra-szal pass — which found `TOK_LPAREN` / `TOK_RPAREN` declared by both
+      `condition.cyr` and `mcp_tools_math.cyr` with different values, a live parser bug (see
+      CHANGELOG 2.2.0) — and a `--consumer` mode for `dist/szal-mcp.cyr`.
+- [x] `cyrius build --strict --no-deps src/main.cyr` clean; 47/47 test files, 1,494 assertions;
+      5/5 fuzz; benchmarks; lint; fmt; `rust-old/` untouched.
+- [ ] Still open from §9: majra's `PUBSUB_LAG_*` policy could retire parity-notes §9 — a behavioural
+      port change for its own release.

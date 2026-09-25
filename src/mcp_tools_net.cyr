@@ -1,5 +1,6 @@
 # mcp_tools_net.cyr — MCP network tools (ports mcp/tools/net_tools.rs): szal_http, szal_dns_lookup,
-# szal_port_check, szal_url_encode. THE FINAL TOOL FILE — also defines all_tools()/szal_register_tools().
+# szal_port_check, szal_url_encode. THE FINAL TOOL FILE — also defines szal_all_tools() and the
+# registration entry points (szal_register_tools[_with], szal_register_into).
 #
 # SECURITY (SSRF + rate limits — do NOT regress):
 #  - szal_http requires http(s):// and runs `is_safe_url` (this file): blocks cloud-metadata endpoints
@@ -112,25 +113,25 @@ fn _http_handler(args, claims) {
     var o = _net_parse_args(args);
     var uv = bayan_json_v_obj_get(o, "url");
     if (bayan_json_v_is_str(uv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: url"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: url"));
         return str_data(e);
     }
     var url = bayan_json_v_str(uv);
     if (str_starts_with(url, str_from("http://")) == 0 && str_starts_with(url, str_from("https://")) == 0) {
-        var es = result_error_typed(MCP_VALIDATION, str_from("only http:// and https:// URLs are allowed"));
+        var es = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("only http:// and https:// URLs are allowed"));
         return str_data(es);
     }
     var unsafe_msg = _net_is_safe(url);
     if (unsafe_msg != 0) {
-        var ep = result_error_typed(MCP_PERMISSION_DENIED, unsafe_msg);
+        var ep = szal_result_error_typed(SZAL_MCP_PERMISSION_DENIED, unsafe_msg);
         return str_data(ep);
     }
     var host = _net_host(url);
-    if (pool_check_http(pool(), str_cstr(host)) == 0) {
+    if (szal_pool_check_http(szal_net_pool(), str_cstr(host)) == 0) {
         var rb = str_builder_new();
         str_builder_add_cstr(rb, "rate limit exceeded for host: ");
         str_builder_add(rb, host);
-        var er = result_error_typed(MCP_TIMEOUT, str_builder_build(rb));
+        var er = szal_result_error_typed(SZAL_MCP_TIMEOUT, str_builder_build(rb));
         return str_data(er);
     }
 
@@ -174,7 +175,7 @@ fn _http_handler(args, claims) {
                     str_builder_add_cstr(hb, "header '");
                     str_builder_add(hb, key);
                     str_builder_add_cstr(hb, "' contains invalid newline characters");
-                    var eh = result_error_typed(MCP_VALIDATION, str_builder_build(hb));
+                    var eh = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(hb));
                     return str_data(eh);
                 }
                 var kb = str_builder_new();
@@ -195,7 +196,7 @@ fn _http_handler(args, claims) {
 
     var res = _proc_run(argv, 0);
     if (load64(res + 24) == 0) {
-        var ef = result_error_typed(MCP_IO_ERROR, str_from("failed to execute curl"));
+        var ef = szal_result_error_typed(SZAL_MCP_IO_ERROR, str_from("failed to execute curl"));
         return str_data(ef);
     }
     # Parse: last stdout line = status code; headers up to the first blank line, then body.
@@ -232,7 +233,7 @@ fn _http_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("status_code"), bayan_json_v_int_new(status_code));
     bayan_json_v_obj_set(out, str_from("headers"), headers);
     bayan_json_v_obj_set(out, str_from("body"), bayan_json_v_str_new(str_builder_build(bodyb)));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -267,15 +268,15 @@ fn _dns_handler(args, claims) {
     var o = _net_parse_args(args);
     var hv = bayan_json_v_obj_get(o, "hostname");
     if (bayan_json_v_is_str(hv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: hostname"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: hostname"));
         return str_data(e);
     }
     var hostname = bayan_json_v_str(hv);
-    if (pool_check_dns(pool(), str_cstr(hostname)) == 0) {
+    if (szal_pool_check_dns(szal_net_pool(), str_cstr(hostname)) == 0) {
         var rb = str_builder_new();
         str_builder_add_cstr(rb, "rate limit exceeded for DNS: ");
         str_builder_add(rb, hostname);
-        var er = result_error_typed(MCP_TIMEOUT, str_builder_build(rb));
+        var er = szal_result_error_typed(SZAL_MCP_TIMEOUT, str_builder_build(rb));
         return str_data(er);
     }
 
@@ -288,7 +289,7 @@ fn _dns_handler(args, claims) {
         var eb = str_builder_new();
         str_builder_add_cstr(eb, "DNS lookup failed for ");
         str_builder_add(eb, hostname);
-        var ef = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+        var ef = szal_result_error_typed(SZAL_MCP_IO_ERROR, str_builder_build(eb));
         return str_data(ef);
     }
 
@@ -313,7 +314,7 @@ fn _dns_handler(args, claims) {
     var out = bayan_json_v_obj_new();
     bayan_json_v_obj_set(out, str_from("hostname"), bayan_json_v_str_new(hostname));
     bayan_json_v_obj_set(out, str_from("addresses"), arr);
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -369,7 +370,7 @@ fn _port_check_handler(args, claims) {
 
     var pv = bayan_json_v_obj_get(o, "port");
     if (bayan_json_v_is_int(pv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: port"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: port"));
         return str_data(e);
     }
     var port = bayan_json_v_int(pv);
@@ -378,7 +379,7 @@ fn _port_check_handler(args, claims) {
         str_builder_add_cstr(rb, "port ");
         str_builder_add_int(rb, port);
         str_builder_add_cstr(rb, " out of range (0-65535)");
-        var er = result_error_typed(MCP_VALIDATION, str_builder_build(rb));
+        var er = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(rb));
         return str_data(er);
     }
     var timeout_ms = DEFAULT_PORT_CHECK_TIMEOUT_MS;
@@ -390,11 +391,11 @@ fn _port_check_handler(args, claims) {
     str_builder_add_byte(kb, 58);
     str_builder_add_int(kb, port);
     var key = str_builder_build(kb);
-    if (pool_check_port(pool(), str_cstr(key)) == 0) {
+    if (szal_pool_check_port(szal_net_pool(), str_cstr(key)) == 0) {
         var rb2 = str_builder_new();
         str_builder_add_cstr(rb2, "rate limit exceeded for port check: ");
         str_builder_add(rb2, key);
-        var er2 = result_error_typed(MCP_TIMEOUT, str_builder_build(rb2));
+        var er2 = szal_result_error_typed(SZAL_MCP_TIMEOUT, str_builder_build(rb2));
         return str_data(er2);
     }
 
@@ -413,7 +414,7 @@ fn _port_check_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("host"), bayan_json_v_str_new(host));
     bayan_json_v_obj_set(out, str_from("port"), bayan_json_v_int_new(port));
     bayan_json_v_obj_set(out, str_from("open"), bayan_json_v_bool_new(open));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -434,7 +435,7 @@ fn _url_encode_handler(args, claims) {
     var o = _net_parse_args(args);
     var iv = bayan_json_v_obj_get(o, "input");
     if (bayan_json_v_is_str(iv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: input"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: input"));
         return str_data(e);
     }
     var input = bayan_json_v_str(iv);
@@ -459,7 +460,7 @@ fn _url_encode_handler(args, claims) {
                 str_builder_add_byte(sb, _net_hex(c & 0xF));
             }
         }
-        var re = result_ok(str_builder_build(sb));
+        var re = szal_result_ok(str_builder_build(sb));
         return str_data(re);
     }
     if (streq(op, "decode") == 1) {
@@ -487,14 +488,14 @@ fn _url_encode_handler(args, claims) {
                 i2 = i2 + 1;
             }
         }
-        var rd = result_ok(str_builder_build(sb2));
+        var rd = szal_result_ok(str_builder_build(sb2));
         return str_data(rd);
     }
 
     var sb3 = str_builder_new();
     str_builder_add_cstr(sb3, "invalid operation: ");
     str_builder_add_cstr(sb3, op);
-    var rv = result_error_typed(MCP_VALIDATION, str_builder_build(sb3));
+    var rv = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(sb3));
     return str_data(rv);
 }
 
@@ -543,30 +544,30 @@ fn _url_props() {
 }
 
 # The network tool group: szal_http, szal_dns_lookup, szal_port_check, szal_url_encode.
-fn net_tools() {
+fn szal_net_tools() {
     var tools = vec_new();
     var u_req = vec_new();
     vec_push(u_req, "url");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_http", "Make an HTTP request via curl and return status, headers, and body",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_http", "Make an HTTP request via curl and return status, headers, and body",
           _http_props(), u_req), &_http_handler));
 
     var h_req = vec_new();
     vec_push(h_req, "hostname");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_dns_lookup", "Perform a DNS lookup for a hostname", _dns_props(), h_req),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_dns_lookup", "Perform a DNS lookup for a hostname", _dns_props(), h_req),
         &_dns_handler));
 
     var p_req = vec_new();
     vec_push(p_req, "port");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_port_check", "Check if a TCP port is open on a host", _port_props(), p_req),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_port_check", "Check if a TCP port is open on a host", _port_props(), p_req),
         &_port_check_handler));
 
     var i_req = vec_new();
     vec_push(i_req, "input");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_url_encode", "URL encode or decode a string", _url_props(), i_req),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_url_encode", "URL encode or decode a string", _url_props(), i_req),
         &_url_encode_handler));
     return tools;
 }
@@ -584,30 +585,45 @@ fn _all_append(dst, src) {
     return 0;
 }
 
-# All 54 built-in szal MCP tools, in the rust-old all_tools() order. The single source of truth for
-# what register_tools wires into a dispatcher. (mcp/tools/mod.rs all_tools())
-fn all_tools() {
+# All 54 built-in szal MCP tools, in the rust-old all_tools() order: a fresh vec of Tool pairs
+# (szal_tool_def_of / szal_tool_handler_of). The single source of truth for what every
+# szal_register_* entry point wires into a dispatcher. (mcp/tools/mod.rs all_tools())
+fn szal_all_tools() {
     var t = vec_new();
-    _all_append(t, step_tools());
-    _all_append(t, flow_tools());
-    _all_append(t, state_tools());
-    _all_append(t, engine_tools());
-    _all_append(t, system_tools());
-    _all_append(t, encoding_tools());
-    _all_append(t, json_tools());
-    _all_append(t, file_tools());
-    _all_append(t, process_tools());
-    _all_append(t, hash_tools());
-    _all_append(t, template_tools());
-    _all_append(t, net_tools());
-    _all_append(t, math_tools());
-    _all_append(t, conversion_tools());
-    _all_append(t, git_tools());
+    _all_append(t, szal_step_tools());
+    _all_append(t, szal_flow_tools());
+    _all_append(t, szal_state_tools());
+    _all_append(t, szal_engine_tools());
+    _all_append(t, szal_system_tools());
+    _all_append(t, szal_encoding_tools());
+    _all_append(t, szal_json_tools());
+    _all_append(t, szal_file_tools());
+    _all_append(t, szal_process_tools());
+    _all_append(t, szal_hash_tools());
+    _all_append(t, szal_template_tools());
+    _all_append(t, szal_net_tools());
+    _all_append(t, szal_math_tools());
+    _all_append(t, szal_conversion_tools());
+    _all_append(t, szal_git_tools());
     return t;
 }
 
-# Register all built-in szal tools into a fresh dispatcher (no audit/event sinks). Mirrors the
-# register_tools(all_tools()) entry point consumers (daimon/sutra) call.
+# Register all built-in szal tools into a fresh dispatcher with no audit/event sinks. Mirrors Rust's
+# register_tools() (mcp/mod.rs 39-41). Returns the dispatcher.
 fn szal_register_tools() {
-    return register_tools(all_tools());
+    return szal_register_tool_vec(szal_all_tools());
+}
+
+# Register all built-in szal tools into a fresh dispatcher with optional audit / event sinks (0 =
+# None). Mirrors Rust's register_tools_with(audit, events) (mcp/mod.rs 47-82).
+fn szal_register_tools_with(audit, events) {
+    return szal_register_tool_vec_with(szal_all_tools(), audit, events);
+}
+
+# Add all built-in szal tools to a consumer's EXISTING bote dispatcher `d` — next to whatever it
+# already registered, under its own audit and event sinks. The entry point for a gateway that owns
+# its dispatcher (hoosh's mcp_init registers these beside bote_echo). `d` must be a live dispatcher.
+# Returns 0, or the first BoteError bote reports; see szal_register_tool_vec_into.
+fn szal_register_into(d) {
+    return szal_register_tool_vec_into(d, szal_all_tools());
 }

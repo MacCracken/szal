@@ -114,7 +114,7 @@ fn main() {
 
     # --- check_condition: no condition -> Ok(true) ---
     test_group("check_condition");
-    var cache = cache_new();
+    var cache = szal_condition_cache_new();
     var noc = step_new(str_from("noc"));
     var rno_t, rno_v = check_condition(noc, vec_new(), vec_new(), cache);
     assert(is_ok(rno_t) == 1, "no-condition is Ok");
@@ -128,7 +128,7 @@ fn main() {
     vec_push(steps, build);
     vec_push(steps, deploy);
     var results = vec_new();
-    vec_push(results, step_result_new(step_id_hi(build), step_id_lo(build), STATUS_COMPLETED,
+    vec_push(results, szal_step_result_new(step_id_hi(build), step_id_lo(build), STATUS_COMPLETED,
     bayan_json_v_null(), 10, 1));
     var rmet_t, rmet_v = check_condition(deploy, results, steps, cache);
     assert(is_ok(rmet_t) == 1, "met condition is Ok");

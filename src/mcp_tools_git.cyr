@@ -110,7 +110,7 @@ fn _git_status_handler(args, claims) {
     bayan_json_v_obj_set(info, str_from("modified"), bayan_json_v_int_new(modified));
     bayan_json_v_obj_set(info, str_from("staged"), bayan_json_v_int_new(staged));
     bayan_json_v_obj_set(info, str_from("untracked"), bayan_json_v_int_new(untracked));
-    var r = result_ok_json(info);
+    var r = szal_result_ok_json(info);
     return str_data(r);
 }
 
@@ -164,7 +164,7 @@ fn _git_log_handler(args, claims) {
     vec_push(la, "--format=%H|%h|%an|%ae|%aI|%s");
     var lg = _git_cmd(la, cwd);
     if (_git_ok(lg) == 0) {
-        var er = result_error_typed(MCP_IO_ERROR, _git_out(lg));
+        var er = szal_result_error_typed(SZAL_MCP_IO_ERROR, _git_out(lg));
         return str_data(er);
     }
 
@@ -186,7 +186,7 @@ fn _git_log_handler(args, claims) {
             bayan_json_v_arr_push(arr, c2);
         }
     }
-    var r = result_ok_json(arr);
+    var r = szal_result_ok_json(arr);
     return str_data(r);
 }
 
@@ -212,7 +212,7 @@ fn _git_diff_handler(args, claims) {
     if (bayan_json_v_is_str(r1v) == 1) {
         var r1 = bayan_json_v_str(r1v);
         if (_git_ref_bad(r1) == 1) {
-            var e = result_error_typed(MCP_PERMISSION_DENIED, _git_ref_msg(r1));
+            var e = szal_result_error_typed(SZAL_MCP_PERMISSION_DENIED, _git_ref_msg(r1));
             return str_data(e);
         }
         vec_push(da, str_cstr(r1));
@@ -220,7 +220,7 @@ fn _git_diff_handler(args, claims) {
         if (bayan_json_v_is_str(r2v) == 1) {
             var r2 = bayan_json_v_str(r2v);
             if (_git_ref_bad(r2) == 1) {
-                var e2 = result_error_typed(MCP_PERMISSION_DENIED, _git_ref_msg(r2));
+                var e2 = szal_result_error_typed(SZAL_MCP_PERMISSION_DENIED, _git_ref_msg(r2));
                 return str_data(e2);
             }
             vec_push(da, str_cstr(r2));
@@ -229,12 +229,12 @@ fn _git_diff_handler(args, claims) {
 
     var df = _git_cmd(da, cwd);
     if (_git_ok(df) == 0) {
-        var er = result_error_typed(MCP_IO_ERROR, _git_out(df));
+        var er = szal_result_error_typed(SZAL_MCP_IO_ERROR, _git_out(df));
         return str_data(er);
     }
     var diff = _git_out(df);
     if (str_len(diff) == 0) { diff = str_from("no changes"); }
-    var r = result_ok(diff);
+    var r = szal_result_ok(diff);
     return str_data(r);
 }
 
@@ -293,7 +293,7 @@ fn _git_branch_handler(args, claims) {
     bayan_json_v_obj_set(info, str_from("current"), bayan_json_v_str_new(current));
     bayan_json_v_obj_set(info, str_from("branches"), arr);
     bayan_json_v_obj_set(info, str_from("count"), bayan_json_v_int_new(listed));
-    var r = result_ok_json(info);
+    var r = szal_result_ok_json(info);
     return str_data(r);
 }
 
@@ -303,16 +303,16 @@ fn _git_blame_handler(args, claims) {
     var o = _git_parse_args(args);
     var fv = bayan_json_v_obj_get(o, "file");
     if (bayan_json_v_is_str(fv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: file"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: file"));
         return str_data(e);
     }
     var file = bayan_json_v_str(fv);
     if (_git_ref_bad(file) == 1) {
-        var ep = result_error_typed(MCP_PERMISSION_DENIED, str_from("file must not start with '-'"));
+        var ep = szal_result_error_typed(SZAL_MCP_PERMISSION_DENIED, str_from("file must not start with '-'"));
         return str_data(ep);
     }
     if (str_contains(file, str_from("..")) == 1) {
-        var ed = result_error_typed(MCP_PERMISSION_DENIED, str_from("file must not contain '..'"));
+        var ed = szal_result_error_typed(SZAL_MCP_PERMISSION_DENIED, str_from("file must not contain '..'"));
         return str_data(ed);
     }
     var cwd = _git_cwd(o);
@@ -324,7 +324,7 @@ fn _git_blame_handler(args, claims) {
     vec_push(ba, str_cstr(file));
     var bl = _git_cmd(ba, cwd);
     if (_git_ok(bl) == 0) {
-        var er = result_error_typed(MCP_IO_ERROR, _git_out(bl));
+        var er = szal_result_error_typed(SZAL_MCP_IO_ERROR, _git_out(bl));
         return str_data(er);
     }
 
@@ -381,7 +381,7 @@ fn _git_blame_handler(args, claims) {
     bayan_json_v_obj_set(info, str_from("file"), bayan_json_v_str_new(file));
     bayan_json_v_obj_set(info, str_from("total_lines"), bayan_json_v_int_new(total));
     bayan_json_v_obj_set(info, str_from("authors"), arr);
-    var r = result_ok_json(info);
+    var r = szal_result_ok_json(info);
     return str_data(r);
 }
 
@@ -437,28 +437,28 @@ fn _git_blame_props() {
 }
 
 # The git tool group: status, log, diff, branch, blame.
-fn git_tools() {
+fn szal_git_tools() {
     var tools = vec_new();
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_git_status", "Get git status (branch, modified/staged/untracked files)",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_git_status", "Get git status (branch, modified/staged/untracked files)",
           _git_status_props(), vec_new()), &_git_status_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_git_log", "Get recent git commits", _git_log_props(), vec_new()),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_git_log", "Get recent git commits", _git_log_props(), vec_new()),
         &_git_log_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_git_diff", "Get git diff (staged, unstaged, or between refs)",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_git_diff", "Get git diff (staged, unstaged, or between refs)",
           _git_diff_props(), vec_new()), &_git_diff_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_git_branch", "List git branches and show current branch",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_git_branch", "List git branches and show current branch",
           _git_branch_props(), vec_new()), &_git_branch_handler));
 
     var bl_req = vec_new();
     vec_push(bl_req, "file");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_git_blame", "Show git blame for a file (who last modified each line)",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_git_blame", "Show git blame for a file (who last modified each line)",
           _git_blame_props(), bl_req), &_git_blame_handler));
     return tools;
 }

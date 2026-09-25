@@ -127,7 +127,7 @@ fn t_validate_bad() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(json_tools());
+    var d = szal_register_tool_vec(szal_json_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_json_path"), 1, "json_path registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_json_diff"), 1, "json_diff registered");

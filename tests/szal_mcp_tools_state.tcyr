@@ -121,7 +121,7 @@ fn t_lifecycle() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(state_tools());
+    var d = szal_register_tool_vec(szal_state_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_state_check"), 1, "state_check registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_state_transition"), 1, "state_transition registered");

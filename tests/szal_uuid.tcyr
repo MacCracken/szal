@@ -69,8 +69,8 @@ fn main() {
     var zhi, zlo = uuid_parse(0);
     assert_eq(uuid_parse_ok(zhi, zlo), 0, "null pointer rejected");
 
-    test_group("uuid_generate produces a structurally valid v4 UUID");
-    var ghi2, glo2 = uuid_generate();
+    test_group("szal_uuid_generate produces a structurally valid v4 UUID");
+    var ghi2, glo2 = szal_uuid_generate();
     var gs = uuid_to_cstr(ghi2, glo2);
     assert(gs != 0, "generate did not OOM");
     assert_eq(strlen(gs), 36, "generated string is 36 chars");
@@ -84,7 +84,7 @@ fn main() {
     assert(((variant == 8) || (variant == 9)) || ((variant == 10) || (variant == 11)),
         "gen variant nibble in {8,9,a,b}");
 
-    test_group("uuid_generate -> parse -> format round-trips");
+    test_group("szal_uuid_generate -> parse -> format round-trips");
     var rhi, rlo = uuid_parse(gs);
     assert(uuid_parse_ok(rhi, rlo), "generated UUID parses ok");
     assert_eq(rhi, ghi2, "round-trip hi matches");
@@ -93,8 +93,8 @@ fn main() {
     assert_streq(rs, gs, "round-trip re-emit matches original");
 
     test_group("two generates differ");
-    var ahi, alo = uuid_generate();
-    var chi, clo = uuid_generate();
+    var ahi, alo = szal_uuid_generate();
+    var chi, clo = szal_uuid_generate();
     assert(((ahi != chi) || (alo != clo)), "two generated UUIDs differ");
 
     test_group("uuid_to_str (Str wrapper) matches cstr form");

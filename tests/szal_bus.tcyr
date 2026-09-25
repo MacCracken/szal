@@ -53,17 +53,17 @@ fn main() {
     sakshi_output_buffer();
 
     test_group("EventType display names");
-    assert_streq(event_type_name(FLOW_STARTED), "flow_started", "FlowStarted display");
-    assert_streq(event_type_name(STEP_RETRY), "step_retry", "StepRetry display");
-    assert_streq(event_type_name(FLOW_COMPLETED), "flow_completed", "FlowCompleted display");
-    assert_streq(event_type_name(FLOW_FAILED), "flow_failed", "FlowFailed display");
-    assert_streq(event_type_name(FLOW_ROLLED_BACK), "flow_rolled_back", "FlowRolledBack display");
-    assert_streq(event_type_name(STEP_STARTED), "step_started", "StepStarted display");
-    assert_streq(event_type_name(STEP_COMPLETED), "step_completed", "StepCompleted display");
-    assert_streq(event_type_name(STEP_FAILED), "step_failed", "StepFailed display");
-    assert_streq(event_type_name(STEP_ROLLBACK), "step_rollback", "StepRollback display");
-    assert_streq(event_type_name(STEP_SKIPPED), "step_skipped", "StepSkipped display");
-    assert_streq(event_type_name(STEP_TIMEOUT), "step_timeout", "StepTimeout display");
+    assert_streq(event_type_name(SZAL_FLOW_STARTED), "flow_started", "FlowStarted display");
+    assert_streq(event_type_name(SZAL_STEP_RETRY), "step_retry", "StepRetry display");
+    assert_streq(event_type_name(SZAL_FLOW_COMPLETED), "flow_completed", "FlowCompleted display");
+    assert_streq(event_type_name(SZAL_FLOW_FAILED), "flow_failed", "FlowFailed display");
+    assert_streq(event_type_name(SZAL_FLOW_ROLLED_BACK), "flow_rolled_back", "FlowRolledBack display");
+    assert_streq(event_type_name(SZAL_STEP_STARTED), "step_started", "StepStarted display");
+    assert_streq(event_type_name(SZAL_STEP_COMPLETED), "step_completed", "StepCompleted display");
+    assert_streq(event_type_name(SZAL_STEP_FAILED), "step_failed", "StepFailed display");
+    assert_streq(event_type_name(SZAL_STEP_ROLLBACK), "step_rollback", "StepRollback display");
+    assert_streq(event_type_name(SZAL_STEP_SKIPPED), "step_skipped", "StepSkipped display");
+    assert_streq(event_type_name(SZAL_STEP_TIMEOUT), "step_timeout", "StepTimeout display");
 
     test_group("event_topic — flow events");
     var ef = event_flow_started(str_from("deploy"));
@@ -90,14 +90,14 @@ fn main() {
     assert(str_eq_cstr(event_topic(erbk), "szal/step/build/step_rollback"), "step_rollback topic");
 
     test_group("event_topic — missing name -> unknown");
-    var bare_flow = _event_new(FLOW_STARTED);
+    var bare_flow = _event_new(SZAL_FLOW_STARTED);
     assert(str_eq_cstr(event_topic(bare_flow), "szal/flow/unknown/flow_started"), "missing flow_name -> unknown");
-    var bare_step = _event_new(STEP_STARTED);
+    var bare_step = _event_new(SZAL_STEP_STARTED);
     assert(str_eq_cstr(event_topic(bare_step), "szal/step/unknown/step_started"), "missing step_name -> unknown");
 
     test_group("constructor field population");
     var bf = event_flow_started(str_from("deploy"));
-    assert_eq(event_type(bf), FLOW_STARTED, "flow_started event_type");
+    assert_eq(event_type(bf), SZAL_FLOW_STARTED, "flow_started event_type");
     assert(str_eq_cstr(event_flow_name(bf), "deploy"), "flow_started flow_name");
 
     var bs = event_step_started(str_from("build"), str_from("id-1"));
@@ -117,7 +117,7 @@ fn main() {
 
     test_group("constructor chaining — step_failed");
     var bc = event_step_failed(str_from("s"), str_from("id"), str_from("e"), 2);
-    assert_eq(event_type(bc), STEP_FAILED, "step_failed event_type");
+    assert_eq(event_type(bc), SZAL_STEP_FAILED, "step_failed event_type");
     assert(str_eq_cstr(event_step_name(bc), "s"), "step_failed step_name");
     assert(str_eq_cstr(event_step_id(bc), "id"), "step_failed step_id");
     assert(str_eq_cstr(event_error(bc), "e"), "step_failed error");
@@ -155,17 +155,17 @@ fn main() {
     assert_eq(event_duration_set(jz), 1, "duration marked present after explicit 0");
 
     test_group("event_status mapping");
-    assert_streq(event_status(FLOW_COMPLETED), "ok", "status flow_completed");
-    assert_streq(event_status(STEP_COMPLETED), "ok", "status step_completed");
-    assert_streq(event_status(FLOW_FAILED), "error", "status flow_failed");
-    assert_streq(event_status(STEP_FAILED), "error", "status step_failed");
-    assert_streq(event_status(STEP_TIMEOUT), "error", "status step_timeout");
-    assert_streq(event_status(STEP_SKIPPED), "skipped", "status step_skipped");
-    assert_streq(event_status(FLOW_ROLLED_BACK), "rolled_back", "status flow_rolled_back");
-    assert_streq(event_status(STEP_ROLLBACK), "rolled_back", "status step_rollback");
-    assert_streq(event_status(FLOW_STARTED), "unset", "status flow_started");
-    assert_streq(event_status(STEP_STARTED), "unset", "status step_started");
-    assert_streq(event_status(STEP_RETRY), "unset", "status step_retry");
+    assert_streq(event_status(SZAL_FLOW_COMPLETED), "ok", "status flow_completed");
+    assert_streq(event_status(SZAL_STEP_COMPLETED), "ok", "status step_completed");
+    assert_streq(event_status(SZAL_FLOW_FAILED), "error", "status flow_failed");
+    assert_streq(event_status(SZAL_STEP_FAILED), "error", "status step_failed");
+    assert_streq(event_status(SZAL_STEP_TIMEOUT), "error", "status step_timeout");
+    assert_streq(event_status(SZAL_STEP_SKIPPED), "skipped", "status step_skipped");
+    assert_streq(event_status(SZAL_FLOW_ROLLED_BACK), "rolled_back", "status flow_rolled_back");
+    assert_streq(event_status(SZAL_STEP_ROLLBACK), "rolled_back", "status step_rollback");
+    assert_streq(event_status(SZAL_FLOW_STARTED), "unset", "status flow_started");
+    assert_streq(event_status(SZAL_STEP_STARTED), "unset", "status step_started");
+    assert_streq(event_status(SZAL_STEP_RETRY), "unset", "status step_retry");
 
     test_group("otel_event_sink — smoke");
     assert_eq(otel_event_sink(je), 0, "otel sink returns 0");

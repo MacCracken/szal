@@ -109,7 +109,7 @@ fn t_missing() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(math_tools());
+    var d = szal_register_tool_vec(szal_math_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_math_eval"), 1, "math_eval registered");
     assert_eq(registry_len(dispatcher_registry(d)), 1, "one math tool");

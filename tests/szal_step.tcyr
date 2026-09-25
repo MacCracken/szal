@@ -63,7 +63,7 @@ fn main() {
     assert_eq(step_config(d), 0, "default config None");
     assert_eq(step_condition(d), 0, "default condition None");
     assert_eq(step_depends_on_len(d), 0, "default depends_on empty");
-    assert_eq(step_trigger_mode(d), TRIGGER_ALL, "default trigger_mode All");
+    assert_eq(step_trigger_mode(d), SZAL_TRIGGER_ALL, "default trigger_mode All");
     assert_eq(step_sub_steps_len(d), 0, "default sub_steps empty");
     assert_eq(step_hardware(d), REQ_NONE, "default hardware REQ_NONE");
 
@@ -99,7 +99,7 @@ fn main() {
         "with_step_type sets http");
     assert(str_eq_cstr(step_condition(step_with_condition(e, str_from("x > 1"))), "x > 1"),
         "with_condition sets expr");
-    assert_eq(step_trigger_mode(step_with_trigger_mode(e, TRIGGER_ANY)), TRIGGER_ANY,
+    assert_eq(step_trigger_mode(step_with_trigger_mode(e, SZAL_TRIGGER_ANY)), SZAL_TRIGGER_ANY,
         "with_trigger_mode sets Any");
     assert_eq(step_hardware(step_with_hardware(e, 7)), 7, "with_hardware sets req");
     var cfg = bayan_json_v_obj_new();
@@ -132,10 +132,10 @@ fn main() {
     assert_eq(step_backoff_from_name(str_from("Exponential")), BACKOFF_EXPONENTIAL,
         "parse Exponential");
     assert_eq(step_backoff_from_name(str_from("nope")), BACKOFF_FIXED, "parse unknown -> Fixed");
-    assert_streq(step_trigger_name(TRIGGER_ALL), "All", "All name");
-    assert_streq(step_trigger_name(TRIGGER_ANY), "Any", "Any name");
-    assert_eq(step_trigger_from_name(str_from("Any")), TRIGGER_ANY, "parse Any");
-    assert_eq(step_trigger_from_name(str_from("nope")), TRIGGER_ALL, "parse unknown -> All");
+    assert_streq(step_trigger_name(SZAL_TRIGGER_ALL), "All", "All name");
+    assert_streq(step_trigger_name(SZAL_TRIGGER_ANY), "Any", "Any name");
+    assert_eq(step_trigger_from_name(str_from("Any")), SZAL_TRIGGER_ANY, "parse Any");
+    assert_eq(step_trigger_from_name(str_from("nope")), SZAL_TRIGGER_ALL, "parse unknown -> All");
 
     test_group("backoff_delay_ms — Fixed");
     assert_eq(step_backoff_delay_ms(BACKOFF_FIXED, 1000, 1), 1000, "fixed attempt 1");
@@ -153,6 +153,12 @@ fn main() {
     assert_eq(step_backoff_delay_ms(BACKOFF_EXPONENTIAL, 1000, 4), 8000, "exp attempt 4 -> 2^3");
 
     test_group("backoff_delay_ms — overflow saturation");
+    # The saturation ceiling (and the engine's "no timeout" sentinel) must BE i64::MAX. Every other
+    # assertion here compares STEP_I64_MAX with itself, which still passes when a compiler folds it
+    # wrong — cycc 6.5.31-6.5.35 made this enum constant -1. Compare against inline literals, which
+    # that fold never touched.
+    assert_eq(STEP_I64_MAX, 0x7FFFFFFFFFFFFFFF, "STEP_I64_MAX == i64::MAX");
+    assert(STEP_I64_MAX > 0x3FFFFFFFFFFFFFFF, "STEP_I64_MAX > 2^62 - 1 (signed compare)");
     # Linear: base * attempt overflows i64 -> clamps to STEP_I64_MAX (not wraps).
     assert_eq(step_backoff_delay_ms(BACKOFF_LINEAR, STEP_I64_MAX, 2), STEP_I64_MAX,
         "linear overflow saturates");
@@ -171,7 +177,7 @@ fn main() {
     test_group("StepResult");
     var ra = step_new(str_from("r"));
     var out = bayan_json_v_int_new(42);
-    var res = step_result_new(step_id_hi(ra), step_id_lo(ra), STATUS_COMPLETED, out, 1234, 2);
+    var res = szal_step_result_new(step_id_hi(ra), step_id_lo(ra), STATUS_COMPLETED, out, 1234, 2);
     assert_eq(step_result_status(res), STATUS_COMPLETED, "result status");
     assert_eq(step_result_duration_ms(res), 1234, "result duration");
     assert_eq(step_result_attempts(res), 2, "result attempts");
@@ -184,7 +190,7 @@ fn main() {
     assert_eq(contains_cstr(rjson, "\"duration_ms\":1234"), 1, "result json duration");
     assert_eq(contains_cstr(rjson, "\"attempts\":2"), 1, "result json attempts");
     assert_eq(contains_cstr(rjson, "\"error\":\"boom\""), 1, "result json error");
-    var rnull = step_result_new(0, 0, STATUS_FAILED, 0, 0, 1);
+    var rnull = szal_step_result_new(0, 0, STATUS_FAILED, 0, 0, 1);
     var rnjson = step_result_to_json(rnull);
     assert_eq(contains_cstr(rnjson, "\"error\":null"), 1, "result json error null when None");
     assert_eq(contains_cstr(rnjson, "\"output\":null"), 1, "result json output null when absent");
@@ -254,7 +260,7 @@ fn main() {
     test_group("step_to_json/from_json — full field round-trip");
     var full = step_new(str_from("full"));
     full = step_with_backoff(full, BACKOFF_LINEAR);
-    full = step_with_trigger_mode(full, TRIGGER_ANY);
+    full = step_with_trigger_mode(full, SZAL_TRIGGER_ANY);
     full = step_with_step_type(full, str_from("http"));
     full = step_with_condition(full, str_from("ctx.ok == true"));
     full = step_with_hardware(full, 3);
@@ -268,7 +274,7 @@ fn main() {
     var fback = step_from_json(step_to_json(full));
     assert(fback != 0, "full round-trip parses");
     assert_eq(step_backoff(fback), BACKOFF_LINEAR, "full backoff preserved");
-    assert_eq(step_trigger_mode(fback), TRIGGER_ANY, "full trigger_mode preserved");
+    assert_eq(step_trigger_mode(fback), SZAL_TRIGGER_ANY, "full trigger_mode preserved");
     assert(str_eq_cstr(step_step_type(fback), "http"), "full step_type preserved");
     assert(str_eq_cstr(step_condition(fback), "ctx.ok == true"), "full condition preserved");
     assert_eq(step_hardware(fback), 3, "full hardware preserved");
@@ -288,7 +294,7 @@ fn main() {
     assert_eq(step_max_retries(minimal), 0, "missing retries -> 0 default");
     assert_eq(step_retry_delay_ms(minimal), 1000, "missing delay -> 1000 default");
     assert_eq(step_backoff(minimal), BACKOFF_FIXED, "missing backoff -> Fixed default");
-    assert_eq(step_trigger_mode(minimal), TRIGGER_ALL, "missing trigger_mode -> All default");
+    assert_eq(step_trigger_mode(minimal), SZAL_TRIGGER_ALL, "missing trigger_mode -> All default");
     assert_eq(step_sub_steps_len(minimal), 0, "missing sub_steps -> empty default");
     assert_eq(step_depends_on_len(minimal), 0, "missing depends_on -> empty default");
     assert_eq(step_step_type(minimal), 0, "missing step_type -> None");
@@ -300,7 +306,7 @@ fn main() {
     test_group("step_from_json — bogus enum strings default");
     var bog = step_from_json(str_from("{\"name\":\"b\",\"backoff\":\"Nope\",\"trigger_mode\":\"Huh\"}"));
     assert_eq(step_backoff(bog), BACKOFF_FIXED, "unknown backoff -> Fixed");
-    assert_eq(step_trigger_mode(bog), TRIGGER_ALL, "unknown trigger_mode -> All");
+    assert_eq(step_trigger_mode(bog), SZAL_TRIGGER_ALL, "unknown trigger_mode -> All");
 
     test_group("step_from_json — malformed input returns 0");
     assert_eq(step_from_json(str_from("not json")), 0, "malformed json -> 0");

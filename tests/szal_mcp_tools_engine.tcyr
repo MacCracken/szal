@@ -39,6 +39,8 @@ fn _result_text(r) {
     return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
 }
 
+fn _eng_ctx(s) { return bayan_json_v_parse(s); }
+
 # --- szal_engine_create ---
 
 # Default config reports max_concurrency 16. (engine_tools.rs 212-218)
@@ -115,13 +117,29 @@ fn t_server_info() {
     assert(str_contains(text, str_from("szal")), "mentions szal");
     assert(str_contains(text, str_from("bote")), "mentions bote");
     assert(str_contains(text, str_from("dag_cycle_detection")), "lists features");
+
+    # The reported version IS the VERSION file (read at runtime from the repo root, where CI runs
+    # the suites). Rust got this from env!("CARGO_PKG_VERSION"); the port hand-kept a literal that
+    # said "2.0.0" through 2.1.2.
+    var buf = alloc(64);
+    var n = file_read_all("VERSION", buf, 63);
+    assert(n > 0, "VERSION readable from the working directory");
+    while (n > 0 && load8(buf + n - 1) <= 32) { n = n - 1; }
+    var want = str_new(buf, n);
+    var got = bayan_json_v_str(bayan_json_v_obj_get(_eng_ctx(text), "version"));
+    assert(str_eq(got, want) == 1, "server_info version == VERSION");
+    # ...and the description is the Rust crate's CARGO_PKG_DESCRIPTION (rust-old/Cargo.toml).
+    var desc = bayan_json_v_str(bayan_json_v_obj_get(_eng_ctx(text), "description"));
+    assert(str_eq_cstr(desc,
+        "Workflow engine — step/flow execution with branching, retry, rollback, and parallel stages") == 1,
+        "server_info description == the Rust crate's");
     return 0;
 }
 
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(engine_tools());
+    var d = szal_register_tool_vec(szal_engine_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_engine_create"), 1, "engine_create registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_result_inspect"), 1, "result_inspect registered");

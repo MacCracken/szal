@@ -48,8 +48,8 @@ fn contains_cstr(s, needle) {
 # Build a StepResult with a fresh id and an empty-object output. Mirrors the Rust test fixtures
 # (serde_json::json!({})).
 fn mk_result(status, duration_ms, attempts) {
-    var hi, lo = uuid_generate();
-    return step_result_new(hi, lo, status, bayan_json_v_obj_new(), duration_ms, attempts);
+    var hi, lo = szal_uuid_generate();
+    return szal_step_result_new(hi, lo, status, bayan_json_v_obj_new(), duration_ms, attempts);
 }
 
 fn main() {
@@ -90,10 +90,10 @@ fn main() {
     # Mirrors engine/mod.rs tests::flow_result_serde_roundtrip — 1 Completed step with an
     # object output, total 100, success true.
     test_group("flow_result serde round-trip");
-    var hi, lo = uuid_generate();
+    var hi, lo = szal_uuid_generate();
     var out = bayan_json_v_obj_new();
     bayan_json_v_obj_set(out, str_from("key"), bayan_json_v_str_new(str_from("value")));
-    var only = step_result_new(hi, lo, STATUS_COMPLETED, out, 100, 1);
+    var only = szal_step_result_new(hi, lo, STATUS_COMPLETED, out, 100, 1);
     var rr = flow_result_new(str_from("test"), 100, 1, 0);
     flow_result_add_step(rr, only);
     var rrjson = flow_result_to_json(rr);

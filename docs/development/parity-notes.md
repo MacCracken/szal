@@ -129,18 +129,18 @@ prescribes exactly the worker-thread + deadline-poll approach used here. Token-b
 cooperative/poll-based and maps 1:1 to `cancel_token_new/signal/check`. Only the *timeout abort*
 differs, and only for misbehaving handlers. See `src/engine_step_exec.cyr`.
 
-> **Not a divergence, but it lives with §8's machinery — `szal_thread_join`.** `lib/thread.cyr`'s
-> `thread_join` loads the tid word twice (loop condition + `FUTEX_WAIT` expected-value); a worker
-> exiting between the two loads makes the joiner park on a wake that already fired, deadlocking it
-> permanently. This is a **toolchain bug, not a Rust↔Cyrius difference** — Rust's `handle.await`
-> has no such hazard, so a hang here is a szal defect, never accepted parity. It surfaced as an
-> intermittent `run_parallel` hang (~1 per 2,000 parallel `engine_run` calls). `lib/` is
-> re-provisioned by `cyrius lib sync`, so the fix is szal-side: `szal_thread_join`
-> (`src/engine_step_exec.cyr`) loads the tid once per iteration, and **all four** szal join sites
-> use it (`engine_step_exec` / `engine_parallel` / `engine_dag` / `engine_distributed`). Never call
-> `thread_join` directly. Full analysis, evidence and the suggested upstream patch:
-> [`issues/2026-07-29-thread-join-lost-wakeup-deadlock.md`](issues/2026-07-29-thread-join-lost-wakeup-deadlock.md);
-> regression guard: `tests/szal_engine_parallel_stress.tcyr`.
+> **Not a divergence, but it lives with §8's machinery — the `thread_join` lost wakeup.** Until
+> cyrius 6.5.8, `lib/thread.cyr`'s `thread_join` loaded the tid word twice (loop condition +
+> `FUTEX_WAIT` expected-value); a worker exiting between the two loads made the joiner park on a
+> wake that had already fired, deadlocking it permanently. A **toolchain bug, not a Rust↔Cyrius
+> difference** — Rust's `handle.await` has no such hazard, so a hang here is always a defect, never
+> accepted parity. It surfaced as an intermittent `run_parallel` hang (~1 per 2,000 parallel
+> `engine_run` calls). szal 2.1.0–2.1.2 routed all four joins through its own `szal_thread_join`;
+> cyrius 6.5.8 fixed the stdlib the same way, and szal 2.2.0 retired the shim — every join site calls
+> `thread_join` again. Full analysis:
+> [`issues/archive/2026-07-29-thread-join-lost-wakeup-deadlock.md`](issues/archive/2026-07-29-thread-join-lost-wakeup-deadlock.md);
+> regression guard (mutation-checked against the old double load at 2.2.0):
+> `tests/szal_engine_parallel_stress.tcyr`.
 
 > Concurrency scope: in sequential execution the main thread only polls while a worker runs.
 > **For parallel execution (rows 14/15) both prerequisites are already satisfied:** (a) `alloc()`
@@ -220,7 +220,7 @@ row 3 (port-plan §4), dropping the enum payload.
 **Why accepted:** forced by the row-3 decision to store `hardware` as a single `REQ_*` i64 (which
 matches ai-hwaccel's own `requirement_satisfied(req, min_chips, …)` ABI). The check's observable
 verdict (which steps pass/fail) is identical for every requirement szal can represent. See
-`src/engine_hardware.cyr` and `docs/development/issues/2026-06-11-registry-new-collision.md` (the
+`src/engine_hardware.cyr` and `docs/development/issues/archive/2026-06-11-registry-new-collision.md` (the
 `registry_new` collision that gated this module, resolved by the bote 2.7.5 re-sync).
 
 ---
@@ -356,18 +356,21 @@ and the `flow_tools.rs` tests don't exercise malformed inline steps. See `src/mc
 
 ---
 
-## 20. server_info version/description hardcoded (`mcp_tools_engine.cyr`, szal_server_info)
+## 20. server_info version from `SZAL_VERSION` (`mcp_tools_engine.cyr`, szal_server_info) — no longer a divergence
 
 **What:** Rust's `szal_server_info` reads `version`/`description` from `env!("CARGO_PKG_VERSION")` /
-`env!("CARGO_PKG_DESCRIPTION")` (cargo build-time env). Cyrius has no build-time env injection, so the
-port hardcodes `version = "2.0.0"` (the current VERSION) and a static description.
+`env!("CARGO_PKG_DESCRIPTION")` (cargo build-time env). The Cyrius analog, `CYRIUS_PKG_VERSION`, is
+injected per BUILD UNIT — inside a consumer that vendors `dist/szal-mcp.cyr` it would name the
+consumer's version — so the port reports its own `var SZAL_VERSION`, and the description as a
+literal copied from `rust-old/Cargo.toml`.
 
-**Divergence:** the version string is a literal that must be kept in sync with the `VERSION` file
-(it won't auto-update on a version bump). `name`/`mcp_backend`/`capabilities` are exact.
-
-**Why accepted:** no Cyrius equivalent to cargo's compile-time env; the `server_info` test only asserts
-`"szal"`/`"bote"` are present, not the version value. A `${file:VERSION}`-style build substitution is a
-roadmap follow-up. See `src/mcp_tools_engine.cyr`.
+**Status at 2.2.0: exact.** `SZAL_VERSION` is written by `scripts/version-bump.sh`, cross-checked
+against `VERSION` by CI, and compared with `./VERSION` at runtime by
+`tests/szal_mcp_tools_engine.tcyr`; the same test pins the description to the Rust crate's.
+Through 2.1.2 both diverged: the version was a hand-kept `"2.0.0"` literal no bump updated (2.1.0–
+2.1.2 all reported 2.0.0), and the description read "Workflow orchestration engine" rather than the
+crate's "Workflow engine — step/flow execution with branching, retry, rollback, and parallel
+stages". `name`/`mcp_backend`/`capabilities` were always exact.
 
 ---
 

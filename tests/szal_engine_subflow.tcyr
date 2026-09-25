@@ -53,6 +53,8 @@ include "src/engine_runner.cyr"
 include "src/engine_subflow.cyr"
 
 fn _h_ok(step, ctx) { return Ok(bayan_json_v_int_new(1)); }
+fn _h_seven(step, ctx) { return Ok(bayan_json_v_int_new(7)); }
+fn _h_boom(step, ctx) { return Err(str_from("inner-boom")); }
 
 # config json_v with {"flow_name": <name cstr>}; pass 0 for an empty {} config.
 fn _cfg(name) {
@@ -114,6 +116,32 @@ fn t_subflow_delegates() {
     return 0;
 }
 
+# --- delegation keeps BOTH halves of the inner Result: the Ok payload and the Err message ---
+# Guards _sub_flow_delegate. The inner handler is reached through a fn pointer, so its pair only
+# survives if the dispatch re-wraps it; a dropped rdx shows up here as a wrong output / no message.
+fn t_subflow_delegate_pair() {
+    var storage = in_memory_storage_new();
+    var okf = flow_new(str_from("plain-ok"), FLOW_SEQUENTIAL);
+    flow_add_step(okf, step_new(str_from("a")));
+    var hok = sub_flow_handler(storage, cb_new(&_h_seven, 0));
+    var _o_t, _o_v = engine_run(engine_new(engine_config_default(), hok), okf);
+    var ofr = result_unwrap(_o_t, _o_v);
+    var out = step_result_output(flow_result_step_at(ofr, 0));
+    assert_eq(bayan_json_v_is_int(out), 1, "delegated Ok keeps its payload type");
+    assert_eq(bayan_json_v_int(out), 7, "delegated Ok keeps its payload value");
+
+    var errf = flow_new(str_from("plain-err"), FLOW_SEQUENTIAL);
+    flow_add_step(errf, step_new(str_from("b")));
+    var herr = sub_flow_handler(storage, cb_new(&_h_boom, 0));
+    var _e_t, _e_v = engine_run(engine_new(engine_config_default(), herr), errf);
+    var efr = result_unwrap(_e_t, _e_v);
+    assert_eq(flow_result_success(efr), 0, "delegated Err fails the flow");
+    var err = step_result_error(flow_result_step_at(efr, 0));
+    assert(err != 0, "delegated Err step has an error");
+    assert(str_contains(err, str_from("inner-boom")), "delegated Err keeps its message");
+    return 0;
+}
+
 # --- missing config.flow_name -> step fails, error mentions flow_name ---
 fn t_subflow_missing_name() {
     var storage = in_memory_storage_new();
@@ -151,6 +179,7 @@ fn main() {
     test_group("sub_flow execution + delegation");
     t_subflow_exec();
     t_subflow_delegates();
+    t_subflow_delegate_pair();
 
     test_group("sub_flow error paths");
     t_subflow_missing_name();

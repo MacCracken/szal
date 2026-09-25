@@ -668,25 +668,25 @@ fn _cond_eval(e, context) {
 # ---------------------------------------------------------------------------
 
 # CompiledCondition — heap blob {source@0 (Str), ast@8 (Expr ptr)}. Mirrors the Rust struct.
-enum CondCompiledL { COMPILED_SIZE = 16; CC_SOURCE = 0; CC_AST = 8; }
+enum CondCompiledL { SZAL_CONDITION_SIZE = 16; SZAL_CC_SOURCE = 0; SZAL_CC_AST = 8; }
 
 # Get the compiled condition's (trimmed) source Str.
-fn compiled_source(c) { return load64(c + CC_SOURCE); }
+fn szal_condition_source(c) { return load64(c + SZAL_CC_SOURCE); }
 
 # Get the compiled condition's AST Expr ptr.
-fn compiled_ast(c) { return load64(c + CC_AST); }
+fn szal_condition_ast(c) { return load64(c + SZAL_CC_AST); }
 
 # Compile a condition expression (Str) into a reusable CompiledCondition. An empty or
 # whitespace-only expression compiles to a vacuously-true literal with an empty source. Returns
 # Err(SZAL_ERR_FLOW_INVALID) (message in the szal last-error buffer) on a malformed expression or
 # trailing tokens. Mirrors Rust CompiledCondition::compile.
-fn compiled_compile(expr) {
+fn szal_condition_compile(expr) {
     var trimmed = str_trim(expr);
     if (str_len(trimmed) == 0) {
-        var c0 = alloc(COMPILED_SIZE);
+        var c0 = alloc(SZAL_CONDITION_SIZE);
         if (c0 == 0) { return szal_err(SZAL_ERR_OTHER, str_from("out of memory")); }
-        store64(c0 + CC_SOURCE, str_from(""));
-        store64(c0 + CC_AST, _expr_new(EXPR_LITERAL, bayan_json_v_bool_new(1), 0));
+        store64(c0 + SZAL_CC_SOURCE, str_from(""));
+        store64(c0 + SZAL_CC_AST, _expr_new(EXPR_LITERAL, bayan_json_v_bool_new(1), 0));
         return Ok(c0);
     }
     var tokens = _cond_tokenize(trimmed)?;
@@ -699,24 +699,24 @@ fn compiled_compile(expr) {
         str_builder_add_cstr(sb, _cond_tok_name(tok_kind(vec_get(tokens, pos))));
         return szal_err(SZAL_ERR_FLOW_INVALID, str_builder_build(sb));
     }
-    var c = alloc(COMPILED_SIZE);
+    var c = alloc(SZAL_CONDITION_SIZE);
     if (c == 0) { return szal_err(SZAL_ERR_OTHER, str_from("out of memory")); }
-    store64(c + CC_SOURCE, trimmed);
-    store64(c + CC_AST, ast);
+    store64(c + SZAL_CC_SOURCE, trimmed);
+    store64(c + SZAL_CC_AST, ast);
     return Ok(c);
 }
 
 # Evaluate a compiled condition against a json_v context. Returns Ok(1)/Ok(0). Never errors once
 # compiled. Mirrors Rust CompiledCondition::evaluate.
-fn compiled_evaluate(c, context) {
-    return Ok(cond_is_truthy(_cond_eval(compiled_ast(c), context)));
+fn szal_condition_evaluate(c, context) {
+    return Ok(cond_is_truthy(_cond_eval(szal_condition_ast(c), context)));
 }
 
 # Evaluate a condition expression (Str) against a json_v context. Compiles then evaluates. An
 # empty expression is vacuously true. Returns Ok(1)/Ok(0) or Err. Mirrors Rust evaluate().
 fn cond_evaluate(expr, context) {
-    var c = compiled_compile(expr)?;
-    return compiled_evaluate(c, context);
+    var c = szal_condition_compile(expr)?;
+    return szal_condition_evaluate(c, context);
 }
 
 # ---------------------------------------------------------------------------
@@ -725,39 +725,39 @@ fn cond_evaluate(expr, context) {
 
 # A cache entry — heap blob {is_err@0, payload@8}: is_err 0 -> payload is a CompiledCondition;
 # is_err 1 -> payload is the error message Str. Mirrors Rust Arc<Result<CompiledCondition,String>>.
-enum CondCacheEntryL { CACHE_ENTRY_SIZE = 16; CE_IS_ERR = 0; CE_PAYLOAD = 8; }
+enum CondCacheEntryL { SZAL_COND_CACHE_ENTRY_SIZE = 16; SZAL_CE_IS_ERR = 0; SZAL_CE_PAYLOAD = 8; }
 
 # ConditionCache — heap blob {map@0}. The map is cstr-keyed (map_new) by ORIGINAL (untrimmed)
 # expression, matching Rust which keyed by `expr.to_owned()`. Caches both successful compilations
 # and parse errors. NOTE: single-threaded for M1 — must be mutex-guarded once engine threads
 # share it (Rust used RwLock; see todo).
-enum CondCacheL { CACHE_SIZE = 8; CACHE_MAP = 0; }
+enum CondCacheL { SZAL_COND_CACHE_SIZE = 8; SZAL_COND_CACHE_MAP = 0; }
 
 # Create an empty condition cache. Returns 0 on OOM. Mirrors ConditionCache::new.
-fn cache_new() {
-    var c = alloc(CACHE_SIZE);
+fn szal_condition_cache_new() {
+    var c = alloc(SZAL_COND_CACHE_SIZE);
     if (c == 0) { return 0; }
-    store64(c + CACHE_MAP, map_new());
+    store64(c + SZAL_COND_CACHE_MAP, map_new());
     return c;
 }
 
 # Get (or compile + cache) the entry for expr (Str). Returns a cache-entry blob. Internal.
 fn _cache_compiled(cache, expr) {
-    var m = load64(cache + CACHE_MAP);
+    var m = load64(cache + SZAL_COND_CACHE_MAP);
     var key = str_cstr(expr);
     var hit = map_get(m, key);
     if (hit != 0) {
         return hit;
     }
-    var entry = alloc(CACHE_ENTRY_SIZE);
+    var entry = alloc(SZAL_COND_CACHE_ENTRY_SIZE);
     if (entry == 0) { return 0; }
-    var r_t, r_v = compiled_compile(expr);
+    var r_t, r_v = szal_condition_compile(expr);
     if (is_err_result(r_t) == 1) {
-        store64(entry + CE_IS_ERR, 1);
-        store64(entry + CE_PAYLOAD, szal_get_err_msg());
+        store64(entry + SZAL_CE_IS_ERR, 1);
+        store64(entry + SZAL_CE_PAYLOAD, szal_get_err_msg());
     } else {
-        store64(entry + CE_IS_ERR, 0);
-        store64(entry + CE_PAYLOAD, result_unwrap(r_t, r_v));
+        store64(entry + SZAL_CE_IS_ERR, 0);
+        store64(entry + SZAL_CE_PAYLOAD, result_unwrap(r_t, r_v));
     }
     map_set(m, key, entry);
     return entry;
@@ -766,23 +766,23 @@ fn _cache_compiled(cache, expr) {
 # Evaluate expr (Str) against a json_v context using the cache, compiling + caching on first use.
 # Returns Ok(1)/Ok(0) or re-raises the cached Err (re-setting the last-error buffer from the
 # cached message). Mirrors Rust ConditionCache::evaluate.
-fn cache_evaluate(cache, expr, context) {
+fn szal_condition_cache_evaluate(cache, expr, context) {
     var entry = _cache_compiled(cache, expr);
     if (entry == 0) { return szal_err(SZAL_ERR_OTHER, str_from("out of memory")); }
-    if (load64(entry + CE_IS_ERR) == 1) {
-        return szal_err(SZAL_ERR_FLOW_INVALID, load64(entry + CE_PAYLOAD));
+    if (load64(entry + SZAL_CE_IS_ERR) == 1) {
+        return szal_err(SZAL_ERR_FLOW_INVALID, load64(entry + SZAL_CE_PAYLOAD));
     }
-    return compiled_evaluate(load64(entry + CE_PAYLOAD), context);
+    return szal_condition_evaluate(load64(entry + SZAL_CE_PAYLOAD), context);
 }
 
 # Number of distinct expressions cached. Mirrors ConditionCache::len.
-fn cache_len(cache) {
-    return map_count(load64(cache + CACHE_MAP));
+fn szal_condition_cache_len(cache) {
+    return map_count(load64(cache + SZAL_COND_CACHE_MAP));
 }
 
 # Whether the cache is empty (1/0). Mirrors ConditionCache::is_empty.
-fn cache_is_empty(cache) {
-    if (cache_len(cache) == 0) { return 1; }
+fn szal_condition_cache_is_empty(cache) {
+    if (szal_condition_cache_len(cache) == 0) { return 1; }
     return 0;
 }
 

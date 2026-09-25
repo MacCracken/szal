@@ -1,0 +1,38 @@
+# szal-mcp — szal's 54 MCP tools, bundled for a consumer that already owns a bote dispatcher.
+#
+# This comment is the first module of `[lib.mcp]` (cyrius.cyml), so it heads dist/szal-mcp.cyr, the
+# file a consumer vendors. Regenerate the bundle with `cyrius distlib mcp`; CI refuses a stale one.
+#
+# WHAT IS INSIDE: only szal's own modules that szal_all_tools() reaches — error, state, uuid, md5,
+# step, condition, flow, mcp, mcp_pool and the 15 mcp_tools_* groups. No bote-core, majra,
+# ai-hwaccel or stdlib: the consumer supplies those, and already has them.
+#
+# INCLUDE, IN THIS ORDER, BEFORE THIS FILE:
+#   1. the stdlib leaves named in dist/szal-mcp.deps (`cyrius deps` reads that sidecar; a raw-include
+#      consumer includes each lib/<leaf>.cyr itself);
+#   2. bote-core (its dist/bote-core.cyr, the [lib.core] cut) — szal 2.2.0 builds and tests against
+#      3.3.13. It cannot compile below 3.1.3, where bote's error tags became BOTE_ERR_*;
+#   3. majra (its dist/majra.cyr) — szal 2.2.0 builds and tests against 2.9.1, and calls only
+#      ratelimit_new / ratelimit_check. Below 2.7.0 majra keyed its buckets on the caller's key
+#      POINTER, so szal's per-request keys got a fresh bucket every call and nothing was ever
+#      rate-limited;
+#   ai-hwaccel is NOT needed: the tool closure never reaches engine_hardware. step.cyr declares
+#   REQ_NONE = 0 itself, which is ai-hwaccel's own symbol at the same value when both are in scope.
+#
+# REGISTER (all return what bote returns; see src/mcp.cyr):
+#   szal_register_into(d)             add the 54 tools to YOUR dispatcher, under your own audit and
+#                                     event sinks; 0 on success, else a BoteError
+#   szal_all_tools()                  the 54 (ToolDef, handler) pairs — szal_tool_def_of /
+#                                     szal_tool_handler_of — to register some other way
+#   szal_register_tools()             a fresh szal-owned dispatcher (Rust's register_tools)
+#   szal_register_tools_with(a, e)    the same with audit / event sinks (Rust's register_tools_with)
+#
+# THE TOOLS ACT ON THE HOST. File tools are confined to the process working directory
+# (szal_validate_path); szal_exec runs a program without a shell and refuses `/` and `..` in its
+# name; git refs may not start with `-`; szal_http refuses non-http(s) schemes, loopback, link-local
+# metadata and RFC 1918 addresses; HTTP, DNS and port checks are rate-limited per host.
+#
+# NAMES: szal owns every symbol here, and the renames that let it sit next to upstream majra and
+# bote-core unmodified (szal_step_result_new, szal_uuid_generate, szal_condition_*,
+# SZAL_TRIGGER_*, ...). Before vendoring a new szal-mcp, run szal's
+# `scripts/scan-collisions.sh --check --consumer <your compile set>` against it.

@@ -7,6 +7,150 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-09-25
+
+Toolchain and dependency refresh — cyrius 6.6.2 → **6.6.6**; majra 2.7.0 → **2.9.1**, bote-core
+3.3.7 → **3.3.13**, ai-hwaccel 2.3.19 → **2.4.0**, each at its latest release and now vendored
+**byte-for-byte** from its release tag — plus the consumer bundle hoosh filed for
+(`dist/szal-mcp.cyr`, `szal_register_into`), and all four open issues closed and archived. A MINOR
+release because szal's own public Cyrius names changed (ADR 0002); no Cyrius program called them
+yet. Full suite: **1,494 assertions across 47 test files**, 5 fuzz harnesses (356,290 properties),
+15 benchmarks, 0 failures; `rust-old/` parity oracle untouched.
+
+### Fixed
+- **Parenthesised conditions stopped parsing in every build that carried the math tool** — the
+  shipped `szal` binary included. `src/mcp_tools_math.cyr` declared `TOK_LPAREN = 6` /
+  `TOK_RPAREN = 7`; `src/condition.cyr` declares the same names as 13 / 14. An enum constant
+  registered past var index 1024 is not folded, so the later value won for **every** read: the
+  condition lexer emitted `(` as its own `TOK_GT` and `)` as `TOK_GTE`, and `(x)`, `(x) == 1`,
+  `!(x)`, `((x == 1))` and `x == (1)` all failed with parse errors (a stray `)` was even reported as
+  `>=`). The engine logs a condition parse error and runs the step, so a step guarded by such a
+  condition ran regardless. Reproduced on the released 2.1.2 tree at its 6.6.2 pin. None of the
+  condition suites or fuzz harnesses include the math tool, and the collision scan only compared
+  szal with other libraries, so nothing saw it. The math tokens are now `MEV_TOK_*`;
+  `tests/szal_mcp_tools_net.tcyr` checks the parser in main.cyr's include order (15 assertions, 12
+  of which fail on the old code); and `scripts/scan-collisions.sh` flags any name two szal files
+  both define.
+- **`szal_server_info` reported version `2.0.0`** — a hand-kept literal no bump ever updated, so
+  2.1.0, 2.1.1 and 2.1.2 all said 2.0.0. It now reports `SZAL_VERSION`, which
+  `scripts/version-bump.sh` writes, the CI version check compares with `VERSION`, and
+  `tests/szal_mcp_tools_engine.tcyr` compares with `./VERSION` at runtime. (Not
+  `CYRIUS_PKG_VERSION`: that resolves per build unit, so inside `dist/szal-mcp.cyr` it would report
+  the consumer's version.) Its `description` also diverged from Rust's `CARGO_PKG_DESCRIPTION`
+  ("Workflow orchestration engine" vs the crate's "Workflow engine — step/flow execution with
+  branching, retry, rollback, and parallel stages"); it now matches, and the test pins it.
+  parity-notes §20 is no longer a divergence.
+- **`_sub_flow_dispatch` handed its inner handler's Result back as one value** — the compiler's
+  pair-return check ("returns a `: stack` pair on another path but a SINGLE value here") has
+  flagged it since at least 6.6.2, and 2.1.2 shipped with that warning. The non-`sub_flow` delegate
+  path was `return handler_invoke(...)`, a fn-pointer call the compiler
+  types as one value, so the payload only survived because rdx happened to outlive two epilogues.
+  Latent — current codegen preserves it, and the old form passes the new test too — but now
+  explicit (`_sub_flow_delegate` binds both halves and re-wraps). `tests/szal_engine_subflow.tcyr`
+  now checks that delegation keeps both the Ok payload and the Err message.
+- **`scripts/sync-ai-hwaccel.sh` vendored unreleased code under a release label.** It copied the
+  checkout's working tree and labelled it with `VERSION`; at this sync the ai-hwaccel checkout sat
+  one commit past 2.4.0 (comments only). All three sync scripts now extract the dist from the
+  release tag and check its `# Version:` line.
+
+### Changed — ⚠ szal's own names (ADR 0002)
+szal renames its own symbols instead of rewriting the libraries it vendors, so szal and its
+consumers compile against the same upstream files. Renamed, each with its whole family:
+
+| was | now |
+|---|---|
+| `EventType` members `FLOW_*` / `STEP_*` | `SZAL_FLOW_*` / `SZAL_STEP_*` (majra owns `STEP_COMPLETED` / `_FAILED` / `_SKIPPED`) |
+| `TriggerMode` / `TRIGGER_ALL` / `TRIGGER_ANY`, `StepStatus` (type name) | `SzalTriggerMode` / `SZAL_TRIGGER_*`, `SzalStepStatus` |
+| `step_result_new`, `uuid_generate` | `szal_step_result_new`, `szal_uuid_generate` |
+| `compiled_compile` / `_evaluate` / `_source` / `_ast` | `szal_condition_compile` / `_evaluate` / `_source` / `_ast` |
+| `cache_new` / `_evaluate` / `_len` / `_is_empty`, `CACHE_SIZE`, `CACHE_ENTRY_SIZE`, `CE_*`, `CACHE_MAP` | `szal_condition_cache_*`, `SZAL_COND_CACHE_*`, `SZAL_CE_*` |
+| `result_ok` / `_ok_json` / `_error` / `_error_typed`, `validate_path` | `szal_result_*`, `szal_validate_path` |
+| `mcp_err_name` / `_retryable`, `mcp_tool_def` / `_new` / `_def_of` / `_handler_of`, `MCP_*` codes | `szal_mcp_err_*`, `szal_tool_*`, `SZAL_MCP_*` |
+| `register_tools[_with](tools, …)`, `all_tools`, `<group>_tools` | `szal_register_tool_vec[_with]`, `szal_all_tools`, `szal_<group>_tools` |
+| `pool`, `network_pool_new`, `pool_check_*` | `szal_net_pool`, `szal_network_pool_new`, `szal_pool_check_*` |
+
+The Rust oracle's names remain in comments and parity notes. The scan now reports a single
+intersection anywhere in szal's build: `REQ_NONE`, shared with ai-hwaccel on purpose.
+
+### Added
+- **`dist/szal-mcp.cyr` + `dist/szal-mcp.deps`** (`[lib.mcp]`, `cyrius distlib mcp`): the 54 MCP
+  tools for a consumer that already owns a bote dispatcher — only szal's own modules that
+  `szal_all_tools()` reaches, no vendored library or stdlib inside. It needs no ai-hwaccel (the tool
+  closure never reaches `engine_hardware`). `src/mcp_bundle.cyr`, a comment-only first module,
+  carries the consumer contract (include order, tested versions, entry points, host guards) into
+  the vendored file.
+- **`szal_register_into(d)`** — add the 54 tools to the consumer's existing dispatcher, under its
+  audit and event sinks, via bote's `dispatcher_register_tool`. Also `szal_all_tools()`,
+  `szal_register_tool_vec_into`, and `szal_register_tools_with(audit, events)` (Rust's
+  `register_tools_with`).
+- **`tests/szal_consumer_bundle.tcyr`** (47th suite) — builds the committed bundle with no szal
+  `src/` in the compile unit and drives it through bote's JSON-RPC codec: 55 tools after
+  registering into a dispatcher holding one, the consumer's event sink hears 54 registrations, the
+  path / SSRF / exec guards hold.
+- **`scripts/consumer-check.sh [consumer-checkout]`** — the acceptance bar from the hoosh filing.
+  Against hoosh 2.7.1: its program plus the bundle builds `--strict`; the only duplicate warning is
+  sigil x `lib/sys.cyr` `uname_release`, which hoosh already prints without the bundle; nothing
+  collides; `tools/list` returns 55.
+- **`scripts/scan-collisions.sh`**: an intra-szal pass; allow-list entries must agree on VALUE
+  (a renumbered `REQ_NONE` now fails); a `--consumer FILE…` mode that checks the bundle against a
+  consumer's compile set. Positive controls: the old math tokens, a bare `TRIGGER_ALL`, and
+  `REQ_NONE = 1` each fail it.
+- **CI**: a Consumer bundle step (regenerate the bundle and fail on any drift — `distlib --check`
+  cannot target one profile — then the generic consumer scan); `SZAL_VERSION` in the version check;
+  the bundle, the new suite and `consumer-check.sh` in the harness manifest.
+- **ADR 0002** — szal owns its namespace; vendored libraries stay byte-identical.
+
+### Removed
+- **`szal_thread_join`.** cyrius **6.5.8** fixed `lib/thread.cyr`'s lost-wakeup `thread_join`
+  the way szal's shim did (one load feeds both the loop test and `FUTEX_WAIT`), so all four join
+  sites call the stdlib again. Verified with the stress suite, as the issue required: 12 / 12
+  green on the real 6.6.6 lib, and 4 / 4 watchdog trips (`DEADLOCKED`) with the double load put
+  back into a copy of `lib/thread.cyr` — so the suite still guards the primitive szal now uses.
+- **The `var STEP_I64_MAX` workaround.** cyrius **6.5.36** fixed the bit-62 enum-constant fold, so
+  `STEP_I64_MAX` is an `enum` constant again. `tests/szal_step.tcyr` now compares it with inline
+  literals; every earlier assertion compared it with itself, which passes when it folds to -1
+  (forcing it to -1 fails exactly the two new assertions).
+- The vendored-copy renames (`MJ_ERR_*`, `MJ_STEP_*`, `MJ_TRIGGER_*`, `majra_uuid_generate`,
+  `majra_step_result_new`, `MJ_SYS_GETRANDOM`, `bote_compiled_compile`).
+
+### Changed — cyrius pin 6.6.2 → 6.6.6
+- `lib/` re-provisioned (`rm -rf lib && cyrius lib sync`, 58 files). 46/46 existing suites and all
+  5 fuzz harnesses were green on 6.6.6 before any source change.
+- The roadmap's 6.6.6 migration note, checked: majra's `ret2` pair returns pass the pair-return
+  check, and the only szal site the compiler flags is `_sub_flow_dispatch` — a warning (not the
+  error the note predicted) that 6.6.2 already printed, fixed above. `cyrius deps` in this zero-git-dep tree exits 0 and writes **no** `cyrius.lock`,
+  so there is no lock to commit; `dist/` profiles did not exist before this release. The
+  `O_APPEND` Windows fix stays latent: szal ships no PE target.
+- Toolchain behaviour worth knowing, all new in 6.6.x: the wrapper re-execs the pinned version and
+  that binary uses its SIBLING `cycc`, so the 2.1.1 trap (a newer `~/.cyrius/current` compiling
+  with the wrong cycc) is gone; `cyrius build` re-syncs `lib/` from the pinned snapshot before
+  compiling, so a stale `lib/` can no longer shadow the pin — and a deliberate `lib/` mutation is
+  silently undone.
+- Main-build warnings: 27 at 6.6.2, 29 on the same tree at 6.6.6, 28 now. The two new ones are
+  `undefined function 'sys_uname'` (sigil 3.12.18 calls `lib/sys.cyr`, unreachable from szal;
+  including `sys` would trade it for sigil's `duplicate fn 'uname_release'`) and sigil's
+  static-storage frame-budget note, promoted to a warning in 6.6.5. The pair-return warning is
+  fixed.
+
+### Changed — dependencies
+- **majra 2.7.0 → 2.9.1.** Every fn szal calls is signature-identical. It picks up 2.7.3's
+  `uuid_generate` via `sys_getrandom` (which is what made the `MJ_SYS_GETRANDOM` rename
+  unnecessary), 2.8.1's `ratelimit_check` reading the clock under its mutex and `fleet_submit` no
+  longer losing a job to a concurrent `fleet_deregister_node`, and 2.8.2's heartbeat trackers owning
+  their key copies (szal registers per-run ids). 2.9.0's two wire breaks are in encrypted IPC and
+  signed envelopes, which szal does not use. majra's error codes are `MAJRA_ERR_*` now, with bare
+  `ERR_*` aliases until 3.0.0; none collide with szal or the stdlib.
+- **bote-core 3.3.7 → 3.3.13.** All 13 fns szal calls are identical; `ping` and protocol version
+  `2025-06-18` conformance fixes.
+- **ai-hwaccel 2.3.19 → 2.4.0.** `REQ_*` / `FAMILY_*` value table byte-identical; detection fixes
+  (one physical device, one profile; integrated GPUs through Vulkan; unified memory counted once).
+
+### Issues
+All four in `docs/development/issues/` are closed and moved to `docs/development/issues/archive/`,
+each with its resolution on top: the `registry_new` collision (re-verified — both sides renamed),
+the `thread_join` deadlock (fixed upstream at 6.5.8, shim retired), the bit-62 enum fold (fixed
+upstream at 6.5.36, enum restored), and the hoosh consumer bundle (shipped here).
+
 ## [2.1.2] — 2026-09-10
 
 **Migrated to the cyrius 6.6.x value form.** 46/46 test files pass.
@@ -67,7 +211,7 @@ step timeouts, and a cross-arch symbol collision that no previous scan could see
   (`engine_runner`, `engine_subflow`, `engine_step_exec`, `engine_hardware`,
   `engine_parallel_stress`) and `fuzz/step_json` failed on this and are green again. Upstream bug
   + minimal repro:
-  [`docs/development/issues/2026-08-26-cycc-enum-bit62-sign-extension.md`](docs/development/issues/2026-08-26-cycc-enum-bit62-sign-extension.md).
+  [`docs/development/issues/archive/2026-08-26-cycc-enum-bit62-sign-extension.md`](docs/development/issues/archive/2026-08-26-cycc-enum-bit62-sign-extension.md).
   **Do not convert `STEP_I64_MAX` back to an enum until cycc is fixed.**
 
 - **`SYS_GETRANDOM` cross-kind collision (latent, non-x86_64)** — vendored majra declares
@@ -146,7 +290,7 @@ deadlock fix. Full suite: 1,437 assertions across 46 test files, 5 fuzz harnesse
   (`src/engine_step_exec.cyr`) loads the tid once per iteration, and all four szal join sites —
   `engine_step_exec` / `engine_parallel` / `engine_dag` / `engine_distributed` — now use it. No szal
   code calls `thread_join` directly. Full analysis + suggested upstream patch:
-  [`docs/development/issues/2026-07-29-thread-join-lost-wakeup-deadlock.md`](docs/development/issues/2026-07-29-thread-join-lost-wakeup-deadlock.md)
+  [`docs/development/issues/archive/2026-07-29-thread-join-lost-wakeup-deadlock.md`](docs/development/issues/archive/2026-07-29-thread-join-lost-wakeup-deadlock.md)
 
 - **`BYTES_PER_GB` value divergence** — szal defined it as `1073741824` (2^30) while vendored
   ai-hwaccel defines `var BYTES_PER_GB = 1000000000` (10^9). Under last-definition-wins these

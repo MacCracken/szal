@@ -1,6 +1,14 @@
 # `registry_new` symbol collision — bote-core × ai-hwaccel
 
-**Status:** ✅ **RESOLVED (2026-06-13) — bote-side rename.** bote `2.7.5` renamed its tool-registry
+**Status:** ✅ **CLOSED — archived 2026-09-25 (szal 2.2.0), re-verified on the current pins.**
+Both sides have since renamed: bote's tool registry is `tool_registry_new` (2.7.5+) and ai-hwaccel's
+profile registry is `hw_registry_new` (ai-hwaccel closed its copy of this issue on verification at
+2.3.22). At szal 2.2.0 — bote-core 3.3.13, ai-hwaccel 2.4.0, both vendored byte-for-byte —
+`grep -c '^fn registry_new('` is 0 in both dists, and `scripts/scan-collisions.sh` reports one
+intersection anywhere in szal's build: the deliberately shared `REQ_NONE` (equal values). Nothing
+left to do.
+
+**Original status:** ✅ **RESOLVED (2026-06-13) — bote-side rename.** bote `2.7.5` renamed its tool-registry
 ctor `registry_new` → `tool_registry_new` upstream (not the option-1 ai-hwaccel rename, but it
 dissolves the clash all the same: bote no longer owns the `registry_new` symbol). szal re-synced the
 vendored copy to 2.7.5 (`scripts/sync-bote.sh`) and updated its sole caller
@@ -10,7 +18,7 @@ a second definition to collide with — **row 17 `engine_hardware` is unblocked.
 **Filed:** 2026-06-11 during the szal Rust→Cyrius port (M2 engine arc)
 **Severity:** Medium — **blocks szal `engine_hardware` (port-plan §4 row 17)**;
 the rest of M2 shipped around it. Tracked as a **P2 blocker-from-completion** in
-[`../roadmap.md`](../roadmap.md) (M2 cannot close until this resolves).
+[`../roadmap.md`](../../roadmap.md) (M2 cannot close until this resolves).
 **Affects:** any Cyrius consumer that includes BOTH `dist/bote-core.cyr` (or
 `dist/bote.cyr`) and `dist/ai-hwaccel.cyr` in one compile unit — szal is the first.
 **Repos:** bote `2.7.5` (fixed; was `2.7.3`) · ai-hwaccel `2.3.9` (issue also filed in both repos' `docs/development/issues/`).
@@ -62,7 +70,7 @@ These collide, so `engine_hardware` cannot be ported until this is resolved.
    for ai-hwaccel 2.4.0.
 2. **Local sed-rename in szal's vendored/synced copy.** If szal vendors
    ai-hwaccel (like the 9-symbol majra rename in
-   [`../majra-vendoring.md`](../majra-vendoring.md)), apply
+   [`../majra-vendoring.md`](../../majra-vendoring.md)), apply
    `registry_new`→`hw_registry_new` in `src/vendor/ai-hwaccel.cyr` via a
    `scripts/sync-ai-hwaccel.sh`. Interim, szal-only; carries re-sync maintenance.
 3. **bote rename.** Less natural — `registry_new` is bote's long-standing tool
@@ -76,5 +84,5 @@ interim unblock for szal if 2.4.0 is not imminent.
 
 - szal port-plan §3.3 (the collision was flagged pre-port as "Open Q9").
 - szal roadmap.md M2 (row 17 `engine_hardware`, P2 blocker-from-completion).
-- The majra vendoring rename ([`../majra-vendoring.md`](../majra-vendoring.md)) is
+- The majra vendoring rename ([`../majra-vendoring.md`](../../majra-vendoring.md)) is
   the established precedent for option 2.

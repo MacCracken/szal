@@ -5,11 +5,17 @@
 # porting pattern in docs/development/state.md.
 #
 # PARITY NOTE (server version): Rust's szal_server_info reads version/description from
-# env!("CARGO_PKG_*") at build time. Cyrius has no equivalent, so the port hardcodes the version
-# ("2.0.0") — KEEP IN SYNC with the VERSION file. The server_info test only asserts "szal"/"bote"
-# are present (not the version value). Recorded §20.
+# env!("CARGO_PKG_*") at build time. The Cyrius analog, CYRIUS_PKG_VERSION, is per BUILD UNIT —
+# in a consumer that vendors dist/szal-mcp.cyr it would report the consumer's version — so szal
+# carries its own SZAL_VERSION below. scripts/version-bump.sh writes it from VERSION, CI checks the
+# two agree, and tests/szal_mcp_tools_engine.tcyr compares server_info against ./VERSION at runtime.
+# (Through 2.1.2 this was a hand-kept "2.0.0" literal that nobody kept: 2.1.0-2.1.2 all reported
+# 2.0.0.) Recorded §20.
 #
 # Usage: include AFTER src/mcp.cyr (+ lib/bayan, lib/str, lib/vec).
+
+# szal's version, as szal_server_info reports it. Written by scripts/version-bump.sh — do not edit.
+var SZAL_VERSION = "2.2.0";
 
 enum EngineTools {
     DEFAULT_MAX_CONCURRENCY = 16;
@@ -56,7 +62,7 @@ fn _engine_create_handler(args, claims) {
     } else {
         bayan_json_v_obj_set(out, str_from("global_timeout_ms"), bayan_json_v_null());
     }
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -81,12 +87,12 @@ fn _result_inspect_handler(args, claims) {
     var o = _eng_parse_args(args);
     var jv = bayan_json_v_obj_get(o, "result_json");
     if (bayan_json_v_is_str(jv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: result_json"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: result_json"));
         return str_data(e);
     }
     var val = bayan_json_v_parse(bayan_json_v_str(jv));
     if (val == 0) {
-        var ej = result_error_typed(MCP_VALIDATION, str_from("invalid JSON"));
+        var ej = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("invalid JSON"));
         return str_data(ej);
     }
 
@@ -122,7 +128,7 @@ fn _result_inspect_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("step_count"), bayan_json_v_int_new(step_count));
     bayan_json_v_obj_set(out, str_from("completed"), bayan_json_v_int_new(completed));
     bayan_json_v_obj_set(out, str_from("failed"), bayan_json_v_int_new(failed));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -136,7 +142,7 @@ fn _step_status_list_handler(args, claims) {
     bayan_json_v_arr_push(arr, _eng_kv2("status", "skipped", "description", "Step was skipped"));
     bayan_json_v_arr_push(arr, _eng_kv2("status", "rolled_back", "description",
         "Step was rolled back after failure"));
-    var r = result_ok_json(arr);
+    var r = szal_result_ok_json(arr);
     return str_data(r);
 }
 
@@ -154,7 +160,7 @@ fn _error_list_handler(args, claims) {
     bayan_json_v_arr_push(arr, _eng_kv2("error", "RollbackFailed", "description",
         "Rollback operation failed"));
     bayan_json_v_arr_push(arr, _eng_kv2("error", "CycleDetected", "description", "DAG contains a cycle"));
-    var r = result_ok_json(arr);
+    var r = szal_result_ok_json(arr);
     return str_data(r);
 }
 
@@ -178,12 +184,13 @@ fn _server_info_handler(args, claims) {
 
     var out = bayan_json_v_obj_new();
     bayan_json_v_obj_set(out, str_from("name"), bayan_json_v_str_new(str_from("szal")));
-    bayan_json_v_obj_set(out, str_from("version"), bayan_json_v_str_new(str_from("2.0.0")));
-    bayan_json_v_obj_set(out, str_from("description"),
-      bayan_json_v_str_new(str_from("Workflow orchestration engine")));
+    bayan_json_v_obj_set(out, str_from("version"), bayan_json_v_str_new(str_from(SZAL_VERSION)));
+    # Rust reports env!("CARGO_PKG_DESCRIPTION"): rust-old/Cargo.toml's description, verbatim.
+    var desc = "Workflow engine — step/flow execution with branching, retry, rollback, and parallel stages";
+    bayan_json_v_obj_set(out, str_from("description"), bayan_json_v_str_new(str_from(desc)));
     bayan_json_v_obj_set(out, str_from("mcp_backend"), bayan_json_v_str_new(str_from("bote")));
     bayan_json_v_obj_set(out, str_from("capabilities"), caps);
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -203,29 +210,29 @@ fn _result_json_props() {
 }
 
 # The engine tool group: engine_create, result_inspect, step_status_list, error_list, server_info.
-fn engine_tools() {
+fn szal_engine_tools() {
     var tools = vec_new();
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_engine_create", "Create an engine configuration with concurrency and timeout settings",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_engine_create", "Create an engine configuration with concurrency and timeout settings",
           _engine_create_props(), vec_new()), &_engine_create_handler));
 
     var ri_req = vec_new();
     vec_push(ri_req, "result_json");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_result_inspect",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_result_inspect",
           "Inspect a flow execution result — step counts, duration, success/failure",
           _result_json_props(), ri_req), &_result_inspect_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_step_status_list", "List all possible step execution statuses",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_step_status_list", "List all possible step execution statuses",
           vec_new(), vec_new()), &_step_status_list_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_error_list", "List all workflow error types with descriptions",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_error_list", "List all workflow error types with descriptions",
           vec_new(), vec_new()), &_error_list_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_server_info", "Show szal server info — version, capabilities",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_server_info", "Show szal server info — version, capabilities",
           vec_new(), vec_new()), &_server_info_handler));
     return tools;
 }

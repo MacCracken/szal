@@ -134,7 +134,7 @@ fn t_inspect() {
 # Inspect reports dependency_count.
 fn t_inspect_deps() {
     var s = step_new(str_from("dep-test"));
-    var hi, lo = uuid_generate();
+    var hi, lo = szal_uuid_generate();
     s = step_depends_on_add(s, hi, lo);
     var sj = step_to_json(s);
     var r = _call_step_json(&_step_inspect_handler, sj);
@@ -145,7 +145,7 @@ fn t_inspect_deps() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(step_tools());
+    var d = szal_register_tool_vec(szal_step_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_step_create"), 1, "step_create registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_step_validate"), 1, "step_validate registered");

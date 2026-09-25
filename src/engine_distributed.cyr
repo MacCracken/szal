@@ -15,12 +15,11 @@
 # become poll loops. A worker polls its `done` cancel token, else `mq_dequeue`s its node queue, else
 # `sleep_ms(2)`. The coordinator `chan_try_recv`s the result channel, else checks the flow token /
 # timeout, else briefly sleeps. After the loop the coordinator signals `done`, joins the workers, and
-# Skips every still-unseen step with the post-loop reason. Joins go through `szal_thread_join`
-# (engine_step_exec.cyr), never lib/thread.cyr's `thread_join`, which deadlocks its joiner when a
-# worker exits inside its check-then-wait window. A join returns no value, so workers
-# publish each StepResult over the result channel (cap = total+1, so `chan_send` never blocks — at
-# most `total` steps are ever submitted). `alloc()` and majra fleet/mq + `chan_*` are all
-# thread-safe, so concurrent coordinator-submits-while-workers-execute is safe.
+# Skips every still-unseen step with the post-loop reason. Joins use lib/thread.cyr's `thread_join`
+# (race-free since cyrius 6.5.8 — see the join note in engine_step_exec.cyr). A join returns no
+# value, so workers publish each StepResult over the result channel (cap = total+1, so `chan_send`
+# never blocks — at most `total` steps are ever submitted). `alloc()` and majra fleet/mq + `chan_*`
+# are all thread-safe, so concurrent coordinator-submits-while-workers-execute is safe.
 #
 # Nondeterminism: real concurrent workers across nodes — assert on the result SET + statuses, never
 # on ordering (the Rust tests do the same).
@@ -105,7 +104,7 @@ fn run_distributed_dag(steps, fleet, timeout_ms, start_ms, token, ctx) {
         var step = vec_get(steps, i);
         var dn = step_depends_on_len(step);
         var deg = dn;
-        if (step_trigger_mode(step) == TRIGGER_ANY) {
+        if (step_trigger_mode(step) == SZAL_TRIGGER_ANY) {
             if (dn > 0) { deg = 1; }
         }
         store64(in_degree + i * 8, deg);
@@ -192,7 +191,7 @@ fn run_distributed_dag(steps, fleet, timeout_ms, start_ms, token, ctx) {
                         in_flight = in_flight + 1;
                     } else {
                         # No node could accept the step (distributed.rs 192-204).
-                        var fr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
+                        var fr = szal_step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
                           bayan_json_v_null(), 0, 0);
                         step_result_set_error(fr, str_from("no fleet node available"));
                         vec_push(results, fr);
@@ -292,7 +291,7 @@ fn _dist_finish(results, steps, total, id_map, event_sink, token, timeout_ms, st
     var wn = vec_len(workers);
     var j = 0;
     while (j < wn) {
-        szal_thread_join(vec_get(workers, j));
+        thread_join(vec_get(workers, j));
         j = j + 1;
     }
     return results;

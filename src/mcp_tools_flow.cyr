@@ -31,14 +31,14 @@ fn _flow_create_handler(args, claims) {
     var o = _flow_parse_args(args);
     var nv = bayan_json_v_obj_get(o, "name");
     if (bayan_json_v_is_str(nv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: name"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: name"));
         return str_data(e);
     }
     var mode = (0 - 1);
     var mv = bayan_json_v_obj_get(o, "mode");
     if (bayan_json_v_is_str(mv) == 1) { mode = _flow_mode_parse(str_cstr(bayan_json_v_str(mv))); }
     if (mode < 0) {
-        var em = result_error_typed(MCP_VALIDATION, str_from("missing or invalid mode"));
+        var em = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing or invalid mode"));
         return str_data(em);
     }
 
@@ -66,7 +66,7 @@ fn _flow_create_handler(args, claims) {
 
     var fj = flow_to_json(flow);
     var jv = bayan_json_v_parse(fj);
-    var r = result_ok_json(jv);
+    var r = szal_result_ok_json(jv);
     return str_data(r);
 }
 
@@ -76,12 +76,12 @@ fn _flow_validate_handler(args, claims) {
     var o = _flow_parse_args(args);
     var jv = bayan_json_v_obj_get(o, "flow_json");
     if (bayan_json_v_is_str(jv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: flow_json"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: flow_json"));
         return str_data(e);
     }
     var flow = flow_from_json(bayan_json_v_str(jv));
     if (flow == 0) {
-        var ej = result_error_typed(MCP_VALIDATION, str_from("invalid JSON"));
+        var ej = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("invalid JSON"));
         return str_data(ej);
     }
 
@@ -95,13 +95,13 @@ fn _flow_validate_handler(args, claims) {
         str_builder_add_cstr(vb, " steps, mode=");
         str_builder_add_cstr(vb, flow_mode_display(flow_mode(flow)));
         str_builder_add_cstr(vb, ")");
-        var rok = result_ok(str_builder_build(vb));
+        var rok = szal_result_ok(str_builder_build(vb));
         return str_data(rok);
     }
     var eb = str_builder_new();
     str_builder_add_cstr(eb, "validation failed: ");
     str_builder_add(eb, szal_get_err_msg());
-    var er = result_error_typed(MCP_VALIDATION, str_builder_build(eb));
+    var er = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(eb));
     return str_data(er);
 }
 
@@ -124,12 +124,12 @@ fn _flow_from_json_handler(args, claims) {
     var o = _flow_parse_args(args);
     var jv = bayan_json_v_obj_get(o, "flow_json");
     if (bayan_json_v_is_str(jv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: flow_json"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: flow_json"));
         return str_data(e);
     }
     var flow = flow_from_json(bayan_json_v_str(jv));
     if (flow == 0) {
-        var ej = result_error_typed(MCP_VALIDATION, str_from("invalid JSON"));
+        var ej = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("invalid JSON"));
         return str_data(ej);
     }
 
@@ -163,7 +163,7 @@ fn _flow_from_json_handler(args, claims) {
     }
     bayan_json_v_obj_set(info, str_from("steps"), sarr);
 
-    var r = result_ok_json(info);
+    var r = szal_result_ok_json(info);
     return str_data(r);
 }
 
@@ -186,7 +186,7 @@ fn _flow_list_modes_handler(args, claims) {
         "Steps run based on dependency graph (Kahn's algorithm), with cycle detection"));
     bayan_json_v_arr_push(arr, _flow_mode_entry("hierarchical",
         "Manager step delegates to sub-steps dynamically"));
-    var r = result_ok_json(arr);
+    var r = szal_result_ok_json(arr);
     return str_data(r);
 }
 
@@ -195,29 +195,29 @@ fn _flow_add_step_handler(args, claims) {
     var o = _flow_parse_args(args);
     var fv = bayan_json_v_obj_get(o, "flow_json");
     if (bayan_json_v_is_str(fv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: flow_json"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: flow_json"));
         return str_data(e);
     }
     var sv = bayan_json_v_obj_get(o, "step_json");
     if (bayan_json_v_is_str(sv) == 0) {
-        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: step_json"));
+        var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: step_json"));
         return str_data(e2);
     }
     var flow = flow_from_json(bayan_json_v_str(fv));
     if (flow == 0) {
-        var ef = result_error_typed(MCP_VALIDATION, str_from("invalid flow JSON"));
+        var ef = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("invalid flow JSON"));
         return str_data(ef);
     }
     var step = step_from_json(bayan_json_v_str(sv));
     if (step == 0) {
-        var es = result_error_typed(MCP_VALIDATION, str_from("invalid step JSON"));
+        var es = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("invalid step JSON"));
         return str_data(es);
     }
     flow_add_step(flow, step);
 
     var fj = flow_to_json(flow);
     var jv = bayan_json_v_parse(fj);
-    var r = result_ok_json(jv);
+    var r = szal_result_ok_json(jv);
     return str_data(r);
 }
 
@@ -252,37 +252,37 @@ fn _flow_add_step_props() {
 }
 
 # The flow tool group: create, validate, from_json, list_modes, add_step.
-fn flow_tools() {
+fn szal_flow_tools() {
     var tools = vec_new();
     var c_req = vec_new();
     vec_push(c_req, "name");
     vec_push(c_req, "mode");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_flow_create", "Create a workflow flow definition with execution mode and options",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_flow_create", "Create a workflow flow definition with execution mode and options",
           _flow_create_props(), c_req), &_flow_create_handler));
 
     var v_req = vec_new();
     vec_push(v_req, "flow_json");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_flow_validate",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_flow_validate",
           "Validate a flow definition — checks for DAG cycles and missing dependencies",
           _flow_json_props(), v_req), &_flow_validate_handler));
 
     var f_req = vec_new();
     vec_push(f_req, "flow_json");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_flow_from_json", "Parse and inspect a flow definition from JSON",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_flow_from_json", "Parse and inspect a flow definition from JSON",
           _flow_json_props(), f_req), &_flow_from_json_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_flow_list_modes", "List available workflow execution modes with descriptions",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_flow_list_modes", "List available workflow execution modes with descriptions",
           vec_new(), vec_new()), &_flow_list_modes_handler));
 
     var a_req = vec_new();
     vec_push(a_req, "flow_json");
     vec_push(a_req, "step_json");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_flow_add_step", "Add a step to an existing flow definition, returning the updated flow",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_flow_add_step", "Add a step to an existing flow definition, returning the updated flow",
           _flow_add_step_props(), a_req), &_flow_add_step_handler));
     return tools;
 }

@@ -20,7 +20,7 @@
 # uuid properties:
 #   9. round-trip           uuid_parse(uuid_to_cstr(hi,lo)) == (hi,lo)     (differential)
 #  10. text shape           36 chars, hyphens at 8/13/18/23, rest lc hex
-#  11. v4 stamping          uuid_generate sets version 4 and variant 10xx
+#  11. v4 stamping          szal_uuid_generate sets version 4 and variant 10xx
 #  12. generator distinct   two generates never collide
 #  13. mutation rejection   a byte that cannot appear at its index -> sentinel
 #  14. length rejection     any length != 36 -> sentinel
@@ -359,13 +359,13 @@ fn fz_uuid_malformed() {
     return 0;
 }
 
-# --- 11/12: uuid_generate -------------------------------------------------------------------
+# --- 11/12: szal_uuid_generate -------------------------------------------------------------------
 fn fz_uuid_generate() {
     fz_group("uuid: generate stamps RFC 4122 v4 and never repeats");
     var seen = map_new();
     var i = 0;
     while (i < 2000) {
-        var hi, lo = uuid_generate();
+        var hi, lo = szal_uuid_generate();
         var s = uuid_to_cstr(hi, lo);
         if (s != 0) {
             # (11) Byte 6 high nibble == 4 (version), byte 8 top two bits == 10 (variant). In
@@ -378,9 +378,9 @@ fn fz_uuid_generate() {
             var phi, plo = uuid_parse(s);
             fz_check((phi == hi) && (plo == lo), "generated uuid round-trips", s);
             # (12) 122 random bits — a repeat inside 2000 draws means the CSPRNG fill failed
-            # (uuid_generate falls back to zeroed bytes on a getrandom error, which this catches).
+            # (szal_uuid_generate falls back to zeroed bytes on a getrandom error, which this catches).
             if (map_has(seen, s) == 1) {
-                fz_check(0, "uuid_generate produced a duplicate", s);
+                fz_check(0, "szal_uuid_generate produced a duplicate", s);
             } else {
                 map_set(seen, s, 1);
             }

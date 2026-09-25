@@ -1,7 +1,27 @@
 # `thread_join` lost-wakeup deadlock — `lib/thread.cyr`
 
-**Status:** 🟡 **OPEN upstream · WORKED AROUND in szal (2026-07-29)** — szal routes every join
-through `szal_thread_join` (`src/engine_step_exec.cyr`); no szal code calls `thread_join` directly.
+**Status:** ✅ **CLOSED — archived 2026-09-25 (szal 2.2.0).** Fixed upstream in **cyrius 6.5.8**
+(CHANGELOG [6.5.8], "`thread_join` lost-wakeup deadlock (P1, szal-filed)"): `lib/thread.cyr` now
+loads the tid once per iteration and feeds that one value to both the loop test and
+`FUTEX_WAIT` — the patch suggested below, verbatim in effect, with the misleading "lockstep"
+comment rewritten. The fix was already in szal's 6.5.35 and 6.6.2 pins; this file just never
+caught up. szal 2.2.0 (pin 6.6.6) **retired `szal_thread_join`** and all four join sites call the
+stdlib `thread_join` again. Verified as this file asked — with the stress suite, not by
+inspection:
+
+- `tests/szal_engine_parallel_stress.tcyr` against the real 6.6.6 `lib/thread.cyr`: **12 / 12**
+  passed (~15 s each).
+- The same suite against a scratch copy of `lib/thread.cyr` with the double load restored,
+  compiled with `cycc < file` directly: **4 / 4** tripped the 120 s watchdog (`DEADLOCKED`). So
+  the suite still detects this bug in the primitive szal now depends on.
+- ⚠ The trap met on the way: `cyrius build` re-syncs `lib/` from the pinned snapshot before it
+  compiles (6.6.x), so a mutation made in `lib/` is silently reverted and the suite "passes"
+  against the real code. Mutate a copy and compile it with cycc directly.
+
+The suite stays as the regression guard for the stdlib primitive (CI runs it on every push).
+
+**Original status:** 🟡 OPEN upstream · WORKED AROUND in szal (2026-07-29) — szal routed every
+join through `szal_thread_join` (`src/engine_step_exec.cyr`); no szal code called `thread_join`.
 **Filed:** 2026-07-29 during the szal Rust→Cyrius port (M2 engine arc, parallel executor).
 **Severity:** High — **permanent process deadlock**, no error, no timeout, no diagnostic.
 **Affects:** every Cyrius consumer of `lib/thread.cyr` that calls `thread_join` on a short-lived

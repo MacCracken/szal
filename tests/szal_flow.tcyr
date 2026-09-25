@@ -132,7 +132,7 @@ fn main() {
     test_group("TriggerMode Any with empty deps is invalid");
     var anyflow = flow_new(str_from("aflow"), FLOW_SEQUENTIAL);
     var anystep = step_new(str_from("orphan"));
-    step_with_trigger_mode(anystep, TRIGGER_ANY);
+    step_with_trigger_mode(anystep, SZAL_TRIGGER_ANY);
     flow_add_step(anyflow, anystep);
     var anyr_t, anyr_v = flow_validate(anyflow);
     assert(is_err_result(anyr_t), "Any + empty deps is Err");

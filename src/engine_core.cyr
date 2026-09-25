@@ -17,7 +17,7 @@
 # Usage: include "src/engine_core.cyr"
 # Requires: lib/alloc, lib/fnptr (fncall2/fncall4), lib/result (Ok/is_ok), lib/str, lib/vec,
 #   src/error.cyr, src/uuid.cyr, src/step.cyr (StepDef/StepResult accessors), src/bus.cyr
-#   (WorkflowEvent for event sinks), src/condition.cyr (cond_build_step_context, cache_evaluate),
+#   (WorkflowEvent for event sinks), src/condition.cyr (cond_build_step_context, szal_condition_cache_evaluate),
 #   src/flow.cyr (FlowDef accessors), src/storage.cyr + src/metrics.cyr (vtable slots in EngineConfig).
 # Naming: public symbols are cb_/flow_ctx_/exec_ctx_/engine_config_/step_progress_/
 #   progress_reporter_/emit_/check_condition-prefixed; internal helpers use _.
@@ -290,5 +290,5 @@ fn check_condition(step, results, all_steps, cache) {
     var cond = step_condition(step);
     if (cond == 0) { return Ok(1); }
     var ctx = cond_build_step_context(results, all_steps);
-    return cache_evaluate(cache, cond, ctx);
+    return szal_condition_cache_evaluate(cache, cond, ctx);
 }

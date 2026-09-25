@@ -37,8 +37,8 @@
 #  16. empty is true         "" / "   " compile to a vacuous true
 #  17. comparison duality    a != b == !(a == b),  a > b == b < a,  a >= b == b <= a
 #  18. order exclusivity     never both a > b and a < b
-#  19. cache agreement       cache_evaluate agrees with cond_evaluate on EVERY input, Ok or Err
-#  20. cache accounting      cache_len == the number of distinct expressions seen
+#  19. cache agreement       szal_condition_cache_evaluate agrees with cond_evaluate on EVERY input, Ok or Err
+#  20. cache accounting      szal_condition_cache_len == the number of distinct expressions seen
 #  21. malformed rejection   truncations / juxtapositions / unbalanced parens are Err
 #  22. template fidelity     no-placeholder templates are the identity; misses render empty
 #  23. step context          cond_build_step_context exposes each result under its step name
@@ -282,14 +282,14 @@ fn fz_eval(e) {
 
 # Evaluate `e` (cstr) through a cache. Same encoding as fz_eval.
 fn fz_eval_cached(cache, e) {
-    var r_t, r_v = cache_evaluate(cache, str_from(e), _fz_ctx);
+    var r_t, r_v = szal_condition_cache_evaluate(cache, str_from(e), _fz_ctx);
     if (is_ok(r_t) == 0) { return (0 - 1); }
     return result_unwrap(r_t, r_v);
 }
 
 # Compile `e` (cstr) and return the raw Result, for the error-discipline checks.
 fn fz_compile(e) {
-    return compiled_compile(str_from(e));
+    return szal_condition_compile(str_from(e));
 }
 
 # Render template `t` (cstr) against the shared context. Same one-line-helper rule as fz_eval:
@@ -488,7 +488,7 @@ fn fz_structural() {
     fz_check(fz_eval("\t\n\r") == 1, "exotic whitespace is vacuously true", 0);
     var ce_t, ce_v = fz_compile("");
     fz_check(is_ok(ce_t) == 1, "empty compiles Ok", "");
-    fz_check(str_len(compiled_source(result_unwrap(ce_t, ce_v))) == 0, "empty compiles to empty source", "");
+    fz_check(str_len(szal_condition_source(result_unwrap(ce_t, ce_v))) == 0, "empty compiles to empty source", "");
     var i = 0;
     while (i < 1500) {
         var base = fz_gen_expr(2);
@@ -533,8 +533,8 @@ fn fz_structural() {
 # uncached path on every input — including the ones that fail.
 fn fz_cache() {
     fz_group("cache: indistinguishable from the uncached path, and accounted for");
-    var cache = cache_new();
-    fz_check(cache_is_empty(cache) == 1, "a fresh cache is empty", 0);
+    var cache = szal_condition_cache_new();
+    fz_check(szal_condition_cache_is_empty(cache) == 1, "a fresh cache is empty", 0);
     # Distinct expression texts seen so far — the cache keys by the ORIGINAL (untrimmed) text,
     # so this map must key the same way for the accounting property to be exact.
     var distinct = map_new();
@@ -552,18 +552,18 @@ fn fz_cache() {
             var direct = fz_eval(e);
             var cached = fz_eval_cached(cache, e);
             # (19) Agreement on the Ok/Err verdict AND on the value.
-            fz_check(cached == direct, "cache_evaluate agrees with cond_evaluate", e);
+            fz_check(cached == direct, "szal_condition_cache_evaluate agrees with cond_evaluate", e);
             # A second pass must hit the cache and still agree — this is where a corrupted
             # cache entry (freed Str, stale message) would show up.
             fz_check(fz_eval_cached(cache, e) == direct, "a cache hit agrees too", e);
             if (map_has(distinct, e) == 0) { map_set(distinct, e, 1); }
             # (20) One entry per distinct text, successes and errors alike.
-            fz_check(cache_len(cache) == map_count(distinct),
-                "cache_len == distinct expressions seen", e);
+            fz_check(szal_condition_cache_len(cache) == map_count(distinct),
+                "szal_condition_cache_len == distinct expressions seen", e);
         }
         i = i + 1;
     }
-    fz_check(cache_is_empty(cache) == 0, "a used cache is not empty", 0);
+    fz_check(szal_condition_cache_is_empty(cache) == 0, "a used cache is not empty", 0);
     return 0;
 }
 
@@ -640,7 +640,7 @@ fn fz_step_context() {
             var st = step_new(str_from(nm));
             vec_push(steps, st);
             var status = fz_rand_below(6);
-            var r = step_result_new(step_id_hi(st), step_id_lo(st), status,
+            var r = szal_step_result_new(step_id_hi(st), step_id_lo(st), status,
                 bayan_json_v_int_new(k), 10, 1);
             vec_push(results, r);
             vec_push(statuses, status);

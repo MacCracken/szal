@@ -91,7 +91,7 @@ fn _system_info_handler(args, claims) {
     bayan_json_v_obj_set(o, str_from("arch"), bayan_json_v_str_new(str_from("x86_64")));
     bayan_json_v_obj_set(o, str_from("cpus"), bayan_json_v_int_new(_sys_cpu_count()));
     bayan_json_v_obj_set(o, str_from("uptime_secs"), _sys_uptime_json());
-    var r = result_ok_json(o);
+    var r = szal_result_ok_json(o);
     return str_data(r);
 }
 
@@ -99,11 +99,11 @@ fn _system_info_handler(args, claims) {
 fn _cwd_handler(args, claims) {
     var cwd = _mcp_getcwd();
     if (cwd == 0) {
-        var e = result_error_typed(MCP_IO_ERROR, str_from("failed to get current directory"));
+        var e = szal_result_error_typed(SZAL_MCP_IO_ERROR, str_from("failed to get current directory"));
         return str_data(e);
     }
     var p = str_from(cwd);
-    var r = result_ok(p);
+    var r = szal_result_ok(p);
     return str_data(r);
 }
 
@@ -112,7 +112,7 @@ fn _env_get_handler(args, claims) {
     var o = _sys_parse_args(args);
     var nv = bayan_json_v_obj_get(o, "name");
     if (bayan_json_v_is_str(nv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: name"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: name"));
         return str_data(e);
     }
     var name = bayan_json_v_str(nv);
@@ -122,11 +122,11 @@ fn _env_get_handler(args, claims) {
         var nb = str_builder_new();
         str_builder_add_cstr(nb, "environment variable not set: ");
         str_builder_add(nb, name);
-        var en = result_error_typed(MCP_NOT_FOUND, str_builder_build(nb));
+        var en = szal_result_error_typed(SZAL_MCP_NOT_FOUND, str_builder_build(nb));
         return str_data(en);
     }
     var vs = str_from(val);
-    var r = result_ok(vs);
+    var r = szal_result_ok(vs);
     return str_data(r);
 }
 
@@ -140,7 +140,7 @@ fn _timestamp_handler(args, claims) {
     bayan_json_v_obj_set(o, str_from("iso8601"), bayan_json_v_str_new(iss));
     bayan_json_v_obj_set(o, str_from("unix_secs"), bayan_json_v_int_new(secs));
     bayan_json_v_obj_set(o, str_from("unix_ms"), bayan_json_v_int_new(clock_epoch_ns() / 1000000));
-    var r = result_ok_json(o);
+    var r = szal_result_ok_json(o);
     return str_data(r);
 }
 
@@ -154,21 +154,21 @@ fn _env_get_props() {
 }
 
 # The system tool group: szal_system_info, szal_cwd, szal_env_get, szal_timestamp.
-fn system_tools() {
+fn szal_system_tools() {
     var tools = vec_new();
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_system_info", "Get system hostname, OS, architecture, CPU count, and uptime",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_system_info", "Get system hostname, OS, architecture, CPU count, and uptime",
           vec_new(), vec_new()), &_system_info_handler));
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_cwd", "Get the current working directory", vec_new(), vec_new()),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_cwd", "Get the current working directory", vec_new(), vec_new()),
         &_cwd_handler));
     var env_req = vec_new();
     vec_push(env_req, "name");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_env_get", "Get the value of an environment variable", _env_get_props(), env_req),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_env_get", "Get the value of an environment variable", _env_get_props(), env_req),
         &_env_get_handler));
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_timestamp", "Get the current timestamp in ISO 8601 and Unix epoch formats",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_timestamp", "Get the current timestamp in ISO 8601 and Unix epoch formats",
           vec_new(), vec_new()), &_timestamp_handler));
     return tools;
 }

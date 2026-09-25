@@ -46,7 +46,7 @@ fn _d_handler(step, ctx) {
 fn _mk_ctx() {
     var handler = cb_new(&_d_handler, 0);
     var flow = flow_ctx_new(str_from("flow"), 0, 0);
-    return exec_ctx_new(handler, 0, flow, 0, 0, 0, cache_new());
+    return exec_ctx_new(handler, 0, flow, 0, 0, 0, szal_condition_cache_new());
 }
 fn _is_step(r, s) {
     if (step_result_id_hi(r) != step_id_hi(s)) { return 0; }
@@ -155,7 +155,7 @@ fn main() {
     var ya = step_new(str_from("a"));
     var yb = step_new(str_from("b"));
     var yc = step_new(str_from("c"));
-    var yd = step_with_trigger_mode(step_new(str_from("d")), TRIGGER_ANY);
+    var yd = step_with_trigger_mode(step_new(str_from("d")), SZAL_TRIGGER_ANY);
     _dep(yb, ya);
     _dep(yc, ya);
     _dep(yd, yb);

@@ -35,6 +35,17 @@ enum SubFlowCtxL {
     SF_INNER = 8;
 }
 
+# Run `step` on the inner StepHandler and hand its Result back as a real pair. handler_invoke is a
+# fn-pointer call, so the compiler types it as ONE value: `return handler_invoke(...)` from a fn
+# whose other paths return Ok/Err only carried the payload because rdx happened to survive two
+# epilogues (cycc's pair-return check flags that mix). Binding both halves and re-wrapping makes it
+# explicit.
+fn _sub_flow_delegate(inner, step) {
+    var dt, dv = handler_invoke(inner, step);
+    if (is_err_result(dt) == 1) { return Err(dv); }
+    return Ok(dv);
+}
+
 # The dispatch handler body (mod.rs 356-386). step is a StepDef; ctx is a SubFlowCtx. Returns a
 # Result<json_v, Str> per the StepHandler ABI. Internal — installed via sub_flow_handler's cb pair.
 fn _sub_flow_dispatch(step, ctx) {
@@ -43,8 +54,8 @@ fn _sub_flow_dispatch(step, ctx) {
 
     # Non-sub_flow steps (incl. step_type None == 0) delegate straight to the inner handler.
     var st = step_step_type(step);
-    if (st == 0) { return handler_invoke(inner, step); }
-    if (str_eq_cstr(st, "sub_flow") == 0) { return handler_invoke(inner, step); }
+    if (st == 0) { return _sub_flow_delegate(inner, step); }
+    if (str_eq_cstr(st, "sub_flow") == 0) { return _sub_flow_delegate(inner, step); }
 
     # Extract config.flow_name (config absent / not a string -> the flow_name error).
     var flow_name = 0;

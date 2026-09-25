@@ -129,7 +129,7 @@ fn t_duration_missing() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(conversion_tools());
+    var d = szal_register_tool_vec(szal_conversion_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_base_convert"), 1, "base_convert registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_byte_format"), 1, "byte_format registered");

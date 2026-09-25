@@ -15,8 +15,8 @@
 # Usage: include "src/engine_dag.cyr" (after engine_core, engine_step_exec, engine_parallel).
 # Requires: those + src/step.cyr (depends_on/trigger_mode accessors), src/bus.cyr, src/uuid.cyr,
 #   lib/thread.cyr, lib/async.cyr, lib/chrono.cyr, lib/hashmap.cyr, lib/vec.cyr.
-# Wave joins use `szal_thread_join` (engine_step_exec.cyr), never lib/thread.cyr's `thread_join`,
-# which deadlocks its joiner when a worker exits inside its check-then-wait window.
+# Wave joins use lib/thread.cyr's `thread_join` (race-free since cyrius 6.5.8 — see the join note in
+# engine_step_exec.cyr).
 # Naming: public symbols are run_dag + unlock_dependents-equivalent (_dag_unlock); helpers use _.
 
 # Per-spawned-step join record: {thread handle, step ordinal, result-slot}.
@@ -39,7 +39,7 @@ fn _dag_lookup(id_map, hi, lo) {
 fn _dag_skip(results, event_sink, step, reason) {
     var sid = uuid_to_str(step_id_hi(step), step_id_lo(step));
     emit(event_sink, event_step_skipped(step_name(step), sid, str_from(reason)));
-    var sr = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_SKIPPED,
+    var sr = szal_step_result_new(step_id_hi(step), step_id_lo(step), STATUS_SKIPPED,
       bayan_json_v_null(), 0, 0);
     step_result_set_error(sr, str_from(reason));
     vec_push(results, sr);
@@ -107,7 +107,7 @@ fn run_dag(steps, max_concurrency, timeout_ms, start_ms, token, ctx) {
         var step = vec_get(steps, i);
         var dn = step_depends_on_len(step);
         var deg = dn;
-        if (step_trigger_mode(step) == TRIGGER_ANY) {
+        if (step_trigger_mode(step) == SZAL_TRIGGER_ANY) {
             if (dn > 0) { deg = 1; }
         }
         store64(in_degree + i * 8, deg);
@@ -207,10 +207,10 @@ fn run_dag(steps, max_concurrency, timeout_ms, start_ms, token, ctx) {
                 var rec = vec_get(handles, hj);
                 var ord = load64(rec + DGR_ORD);
                 var step = vec_get(steps, ord);
-                szal_thread_join(load64(rec + DGR_T));
+                thread_join(load64(rec + DGR_T));
                 var res = load64(load64(rec + DGR_SLOT));
                 if (res == 0) {
-                    res = step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
+                    res = szal_step_result_new(step_id_hi(step), step_id_lo(step), STATUS_FAILED,
                       bayan_json_v_null(), 0, 0);
                     step_result_set_error(res, str_from("task panicked"));
                     store64(failed + ord * 8, 1);

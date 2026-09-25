@@ -35,7 +35,7 @@ fn _state_check_handler(args, claims) {
     var o = _state_parse_args(args);
     var sv = bayan_json_v_obj_get(o, "state");
     if (bayan_json_v_is_str(sv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: state"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: state"));
         return str_data(e);
     }
     var ss = bayan_json_v_str(sv);
@@ -44,7 +44,7 @@ fn _state_check_handler(args, claims) {
         var ib = str_builder_new();
         str_builder_add_cstr(ib, "invalid state: ");
         str_builder_add(ib, ss);
-        var ie = result_error_typed(MCP_VALIDATION, str_builder_build(ib));
+        var ie = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(ib));
         return str_data(ie);
     }
 
@@ -52,7 +52,7 @@ fn _state_check_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("state"), bayan_json_v_str_new(ss));
     bayan_json_v_obj_set(out, str_from("is_terminal"), bayan_json_v_bool_new(state_is_terminal(st)));
     bayan_json_v_obj_set(out, str_from("valid_transitions"), _state_transitions_arr(st));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -68,12 +68,12 @@ fn _state_transition_handler(args, claims) {
     var o = _state_parse_args(args);
     var from = _state_field(o, "from");
     if (from < 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing or invalid 'from' state"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing or invalid 'from' state"));
         return str_data(e);
     }
     var to = _state_field(o, "to");
     if (to < 0) {
-        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing or invalid 'to' state"));
+        var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing or invalid 'to' state"));
         return str_data(e2);
     }
 
@@ -83,7 +83,7 @@ fn _state_transition_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("from"), bayan_json_v_str_new(from_s));
     bayan_json_v_obj_set(out, str_from("to"), bayan_json_v_str_new(to_s));
     bayan_json_v_obj_set(out, str_from("valid"), bayan_json_v_bool_new(state_valid_transition(from, to)));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -101,7 +101,7 @@ fn _state_lifecycle_handler(args, claims) {
         bayan_json_v_arr_push(arr, obj);
         s = s + 1;
     }
-    var r = result_ok_json(arr);
+    var r = szal_result_ok_json(arr);
     return str_data(r);
 }
 
@@ -125,23 +125,23 @@ fn _state_transition_props() {
 }
 
 # The state tool group: szal_state_check, szal_state_transition, szal_state_lifecycle.
-fn state_tools() {
+fn szal_state_tools() {
     var tools = vec_new();
     var c_req = vec_new();
     vec_push(c_req, "state");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_state_check", "Check if a workflow state is terminal and list its valid transitions",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_state_check", "Check if a workflow state is terminal and list its valid transitions",
           _state_check_props(), c_req), &_state_check_handler));
 
     var t_req = vec_new();
     vec_push(t_req, "from");
     vec_push(t_req, "to");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_state_transition", "Check if a state transition from one state to another is valid",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_state_transition", "Check if a state transition from one state to another is valid",
           _state_transition_props(), t_req), &_state_transition_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_state_lifecycle",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_state_lifecycle",
           "Show the complete workflow state machine — all states, transitions, and terminal states",
           vec_new(), vec_new()), &_state_lifecycle_handler));
     return tools;

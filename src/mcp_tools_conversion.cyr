@@ -98,23 +98,23 @@ fn _base_convert_handler(args, claims) {
     var o = _conv_parse_args(args);
     var vv = bayan_json_v_obj_get(o, "value");
     if (bayan_json_v_is_str(vv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: value"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: value"));
         return str_data(e);
     }
     var fv = bayan_json_v_obj_get(o, "from_base");
     if (bayan_json_v_is_int(fv) == 0) {
-        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: from_base"));
+        var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: from_base"));
         return str_data(e2);
     }
     var tv = bayan_json_v_obj_get(o, "to_base");
     if (bayan_json_v_is_int(tv) == 0) {
-        var e3 = result_error_typed(MCP_VALIDATION, str_from("missing required field: to_base"));
+        var e3 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: to_base"));
         return str_data(e3);
     }
     var from = bayan_json_v_int(fv);
     var to = bayan_json_v_int(tv);
     if (_valid_base(from) == 0 || _valid_base(to) == 0) {
-        var eb = result_error_typed(MCP_VALIDATION, str_from("supported bases: 2, 8, 10, 16"));
+        var eb = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("supported bases: 2, 8, 10, 16"));
         return str_data(eb);
     }
 
@@ -127,7 +127,7 @@ fn _base_convert_handler(args, claims) {
         str_builder_add(ib, value);
         str_builder_add_cstr(ib, "' for base ");
         str_builder_add_int(ib, from);
-        var ie = result_error_typed(MCP_VALIDATION, str_builder_build(ib));
+        var ie = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(ib));
         return str_data(ie);
     }
 
@@ -142,7 +142,7 @@ fn _base_convert_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("from_base"), bayan_json_v_int_new(from));
     bayan_json_v_obj_set(out, str_from("to_base"), bayan_json_v_int_new(to));
     bayan_json_v_obj_set(out, str_from("result"), bayan_json_v_str_new(result));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -158,7 +158,7 @@ fn _byte_format_handler(args, claims) {
     var o = _conv_parse_args(args);
     var bv = bayan_json_v_obj_get(o, "bytes");
     if (bayan_json_v_is_int(bv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: bytes"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: bytes"));
         return str_data(e);
     }
     var bytes = bayan_json_v_int(bv);
@@ -185,7 +185,7 @@ fn _byte_format_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("kb"), _ratio_json(bytes, SZAL_BYTES_PER_KB));
     bayan_json_v_obj_set(out, str_from("mb"), _ratio_json(bytes, SZAL_BYTES_PER_MB));
     bayan_json_v_obj_set(out, str_from("gb"), _ratio_json(bytes, SZAL_BYTES_PER_GB));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -196,7 +196,7 @@ fn _duration_format_handler(args, claims) {
     var o = _conv_parse_args(args);
     var sv = bayan_json_v_obj_get(o, "seconds");
     if (bayan_json_v_is_int(sv) == 0 && bayan_json_v_is_float(sv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: seconds"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: seconds"));
         return str_data(e);
     }
     var total = bayan_json_v_int(sv);
@@ -240,7 +240,7 @@ fn _duration_format_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("days"), bayan_json_v_int_new(days));
     bayan_json_v_obj_set(out, str_from("hours"), bayan_json_v_int_new(total / SZAL_SECS_PER_HOUR));
     bayan_json_v_obj_set(out, str_from("minutes"), bayan_json_v_int_new(total / SZAL_SECS_PER_MINUTE));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -269,26 +269,26 @@ fn _duration_props() {
 }
 
 # The conversion tool group: szal_base_convert, szal_byte_format, szal_duration_format.
-fn conversion_tools() {
+fn szal_conversion_tools() {
     var tools = vec_new();
     var bc_req = vec_new();
     vec_push(bc_req, "value");
     vec_push(bc_req, "from_base");
     vec_push(bc_req, "to_base");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_base_convert", "Convert a number between bases (binary, octal, decimal, hexadecimal)",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_base_convert", "Convert a number between bases (binary, octal, decimal, hexadecimal)",
           _base_convert_props(), bc_req), &_base_convert_handler));
 
     var bf_req = vec_new();
     vec_push(bf_req, "bytes");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_byte_format", "Convert bytes to human-readable format (KB, MB, GB, TB)",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_byte_format", "Convert bytes to human-readable format (KB, MB, GB, TB)",
           _byte_format_props(), bf_req), &_byte_format_handler));
 
     var d_req = vec_new();
     vec_push(d_req, "seconds");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_duration_format", "Convert seconds to human-readable duration (Xd Xh Xm Xs) and reverse",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_duration_format", "Convert seconds to human-readable duration (Xd Xh Xm Xs) and reverse",
           _duration_props(), d_req), &_duration_format_handler));
     return tools;
 }

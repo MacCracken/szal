@@ -1,5 +1,5 @@
 # szal_mcp_tools_net.tcyr — network MCP tools (mcp_tools_net.cyr): szal_http, szal_dns_lookup,
-# szal_port_check, szal_url_encode + the all_tools()/szal_register_tools() aggregator.
+# szal_port_check, szal_url_encode + the szal_all_tools()/szal_register_tools() aggregator.
 #
 # Ports rust-old/src/mcp/tools/net_tools.rs tests (SSRF rejections, dns localhost/invalid, port check,
 # url encode/decode/roundtrip/utf8) + the full 54-tool registration.
@@ -213,9 +213,9 @@ fn t_url_roundtrip() {
 
 # --- aggregator ---
 
-# all_tools() / szal_register_tools() wires every group into one dispatcher.
+# szal_all_tools() / szal_register_tools() wires every group into one dispatcher.
 fn t_all_tools() {
-    var all = all_tools();
+    var all = szal_all_tools();
     assert_eq(vec_len(all), 54, "54 built-in tools");
     var d = szal_register_tools();
     assert(d != 0, "dispatcher built");
@@ -227,9 +227,100 @@ fn t_all_tools() {
     return 0;
 }
 
+# --- the condition parser, with EVERY tool module compiled in after it (main.cyr's order) ---
+# szal <= 2.1.2: mcp_tools_math.cyr redeclared condition.cyr's TOK_LPAREN/TOK_RPAREN (13/14 -> 6/7)
+# and, past var index 1024, the later enum value wins for every read — so here `(` lexed as TOK_GT
+# and `)` as TOK_GTE, and `(x)` / `!(x)` / `x == (1)` stopped parsing. The condition suites never
+# saw it: none of them include the math tool. This suite includes both, in main.cyr's order.
+fn _tp_ctx(j) { return bayan_json_v_parse(j); }
+fn _tp_ok(expr, want, name) {
+    var ctx = _tp_ctx(str_from("{\"x\": 1}"));
+    var t, v = cond_evaluate(str_from(expr), ctx);
+    assert_eq(is_ok(t), 1, name);
+    assert_eq(v, want, name);
+    return 0;
+}
+fn t_condition_parens() {
+    _tp_ok("(x)", 1, "(x) parses");
+    _tp_ok("(x) == 1", 1, "(x) == 1 parses");
+    _tp_ok("!(x)", 0, "!(x) parses");
+    _tp_ok("((x == 1))", 1, "nested parens parse");
+    _tp_ok("x == (1)", 1, "parenthesised operand parses");
+    _tp_ok("x >= 1 && (x <= 1)", 1, ">= beside parens");
+    # A stray ')' must be reported as ')', not as the '>=' it used to alias.
+    var ctx = _tp_ctx(str_from("{\"x\": 1}"));
+    var t, v = cond_evaluate(str_from("x == 1)"), ctx);
+    assert_eq(is_err_result(t), 1, "trailing ) is an error");
+    var msg = szal_get_err_msg();
+    assert_eq(str_contains(msg, str_from(")")), 1, "error names the ) token");
+    assert_eq(str_contains(msg, str_from(">=")), 0, "error does not call it >=");
+    return 0;
+}
+
+# --- the consumer shape: add szal's tools to a dispatcher the consumer already owns ---
+# hoosh builds its own registry + dispatcher (bote_echo, its audit chain, its event bus) and needs
+# szal's 54 tools next to them, under ITS sinks — szal_register_into, not a szal-built dispatcher.
+var _reg_events = 0;
+fn _count_registered(ctx, topic, payload) {
+    if (streq(topic, TOPIC_TOOL_REGISTERED()) == 1) { _reg_events = _reg_events + 1; }
+    return 0;
+}
+fn _echo_tool(args, claims) {
+    return "{\"content\":[{\"type\":\"text\",\"text\":\"consumer-echo\"}],\"isError\":false}";
+}
+# Run one JSON-RPC message through bote's codec against `d`; return the parsed `result` object.
+fn _rpc_result(d, msg) {
+    var out = codec_process_message(msg, d, 0);
+    var o = _tp_ctx(str_from(out));
+    return bayan_json_v_obj_get(o, "result");
+}
+# The text of a tools/call result: result.content[0].text.
+fn _rpc_text(d, msg) {
+    var res = _rpc_result(d, msg);
+    var item = bayan_json_v_arr_get(bayan_json_v_obj_get(res, "content"), 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+fn t_register_into() {
+    var d = dispatcher_new(tool_registry_new());
+    dispatcher_set_events(d, event_sink_new(&_count_registered, 0));
+    var td = tool_def_new("consumer_echo", "Echo", schema_new("object", vec_new(), vec_new()));
+    dispatcher_register_tool(d, td, &_echo_tool);
+    assert_eq(registry_len(dispatcher_registry(d)), 1, "consumer dispatcher starts with its own tool");
+
+    _reg_events = 0;
+    assert_eq(szal_register_into(d), 0, "szal_register_into succeeds");
+    assert_eq(registry_len(dispatcher_registry(d)), 55, "54 szal tools join the consumer's one");
+    var list = _rpc_result(d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
+    assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(list, "tools")), 55, "tools/list returns 55");
+    assert_eq(registry_contains(dispatcher_registry(d), "consumer_echo"), 1, "consumer tool kept");
+    assert_eq(registry_contains(dispatcher_registry(d), "szal_math_eval"), 1, "szal tool added");
+    assert_eq(_reg_events, 54, "consumer's event sink heard all 54 registrations");
+
+    # Both kinds of tool dispatch through the consumer's dispatcher.
+    var echo = _rpc_text(d, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"consumer_echo\",\"arguments\":{}}}");
+    assert(str_eq_cstr(echo, "consumer-echo") == 1, "consumer tool still dispatches");
+    var five = _rpc_text(d, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"szal_math_eval\",\"arguments\":{\"expression\":\"2 + 3\"}}}");
+    assert(str_eq_cstr(five, "5") == 1, "szal tool dispatches via the consumer's dispatcher");
+
+    # Registering again replaces by name instead of duplicating.
+    assert_eq(szal_register_into(d), 0, "second szal_register_into succeeds");
+    assert_eq(registry_len(dispatcher_registry(d)), 55, "re-registering keeps 55");
+    return 0;
+}
+
+# szal_register_tools_with(audit, events) — Rust's register_tools_with: all tools, caller's sinks.
+fn t_register_tools_with() {
+    var ev = event_sink_new(&_count_registered, 0);
+    var d = szal_register_tools_with(0, ev);
+    assert_eq(registry_len(dispatcher_registry(d)), 54, "register_tools_with: 54 tools");
+    assert_eq(dispatcher_event_sink(d), ev, "register_tools_with: event sink attached");
+    assert_eq(dispatcher_audit_sink(d), 0, "register_tools_with: audit None stays None");
+    return 0;
+}
+
 # Net group registers its 4 tools.
 fn t_group_registers() {
-    var d = register_tools(net_tools());
+    var d = szal_register_tool_vec(szal_net_tools());
     assert_eq(registry_contains(dispatcher_registry(d), "szal_http"), 1, "http registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_dns_lookup"), 1, "dns registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_port_check"), 1, "port_check registered");
@@ -264,6 +355,11 @@ fn main() {
     test_group("aggregator + registration");
     t_all_tools();
     t_group_registers();
+    t_register_into();
+    t_register_tools_with();
+
+    test_group("condition parser beside every tool module");
+    t_condition_parens();
 
     var rc = assert_summary();
     return rc;

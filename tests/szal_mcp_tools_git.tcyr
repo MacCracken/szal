@@ -129,7 +129,7 @@ fn t_blame_missing() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(git_tools());
+    var d = szal_register_tool_vec(szal_git_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_git_status"), 1, "git_status registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_git_log"), 1, "git_log registered");

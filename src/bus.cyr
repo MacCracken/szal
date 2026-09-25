@@ -9,41 +9,43 @@
 # Requires: lib/str.cyr (Str + builder), lib/alloc.cyr (alloc_init before any
 # constructor), lib/chrono.cyr (clock_epoch_ns, iso8601), lib/sakshi.cyr +
 # lib/log.cyr (for otel_event_sink output routing).
-# Naming: every public symbol is event_/EventType-prefixed; the otel sink reuses
-# sakshi/log surfaces. No bare names that collide with vendored majra/bote.
+# Naming: public fns are event_-prefixed and the EventType members SZAL_-prefixed; the otel
+# sink reuses sakshi/log surfaces. (Through 2.1.2 the members were bare FLOW_*/STEP_*, and
+# STEP_COMPLETED / STEP_FAILED / STEP_SKIPPED = 5/6/9 shadowed upstream majra's StepStatus
+# members of the same names = 2/3/4 — hidden only by the renamed vendored copy.)
 
 # EventType — the 11 workflow lifecycle event kinds. Values are arbitrary
 # (0-indexed declaration order). The wire/Display name (event_type_name) is the
 # snake_case string Rust's Display impl + serde(rename_all="snake_case") emit;
 # both agree, so one table covers serialization and topic building.
 enum EventType {
-    FLOW_STARTED = 0;
-    FLOW_COMPLETED = 1;
-    FLOW_FAILED = 2;
-    FLOW_ROLLED_BACK = 3;
-    STEP_STARTED = 4;
-    STEP_COMPLETED = 5;
-    STEP_FAILED = 6;
-    STEP_RETRY = 7;
-    STEP_ROLLBACK = 8;
-    STEP_SKIPPED = 9;
-    STEP_TIMEOUT = 10;
+    SZAL_FLOW_STARTED = 0;
+    SZAL_FLOW_COMPLETED = 1;
+    SZAL_FLOW_FAILED = 2;
+    SZAL_FLOW_ROLLED_BACK = 3;
+    SZAL_STEP_STARTED = 4;
+    SZAL_STEP_COMPLETED = 5;
+    SZAL_STEP_FAILED = 6;
+    SZAL_STEP_RETRY = 7;
+    SZAL_STEP_ROLLBACK = 8;
+    SZAL_STEP_SKIPPED = 9;
+    SZAL_STEP_TIMEOUT = 10;
 }
 
 # Map an EventType to its snake_case wire name (cstr). Mirrors Rust's Display
 # impl exactly (bus.rs lines 57-73). Used by both event_topic and event_to_json.
 fn event_type_name(t) {
-    if (t == FLOW_STARTED) { return "flow_started"; }
-    if (t == FLOW_COMPLETED) { return "flow_completed"; }
-    if (t == FLOW_FAILED) { return "flow_failed"; }
-    if (t == FLOW_ROLLED_BACK) { return "flow_rolled_back"; }
-    if (t == STEP_STARTED) { return "step_started"; }
-    if (t == STEP_COMPLETED) { return "step_completed"; }
-    if (t == STEP_FAILED) { return "step_failed"; }
-    if (t == STEP_RETRY) { return "step_retry"; }
-    if (t == STEP_ROLLBACK) { return "step_rollback"; }
-    if (t == STEP_SKIPPED) { return "step_skipped"; }
-    if (t == STEP_TIMEOUT) { return "step_timeout"; }
+    if (t == SZAL_FLOW_STARTED) { return "flow_started"; }
+    if (t == SZAL_FLOW_COMPLETED) { return "flow_completed"; }
+    if (t == SZAL_FLOW_FAILED) { return "flow_failed"; }
+    if (t == SZAL_FLOW_ROLLED_BACK) { return "flow_rolled_back"; }
+    if (t == SZAL_STEP_STARTED) { return "step_started"; }
+    if (t == SZAL_STEP_COMPLETED) { return "step_completed"; }
+    if (t == SZAL_STEP_FAILED) { return "step_failed"; }
+    if (t == SZAL_STEP_RETRY) { return "step_retry"; }
+    if (t == SZAL_STEP_ROLLBACK) { return "step_rollback"; }
+    if (t == SZAL_STEP_SKIPPED) { return "step_skipped"; }
+    if (t == SZAL_STEP_TIMEOUT) { return "step_timeout"; }
     return "unknown";
 }
 
@@ -169,70 +171,70 @@ fn _event_with_error(e, error) {
 
 # Construct a FlowStarted event. flow_name is a Str. (bus.rs 121-123)
 fn event_flow_started(flow_name) {
-    return _event_with_flow(_event_new(FLOW_STARTED), flow_name);
+    return _event_with_flow(_event_new(SZAL_FLOW_STARTED), flow_name);
 }
 
 # Construct a FlowCompleted event with duration. (bus.rs 126-130)
 fn event_flow_completed(flow_name, duration_ms) {
-    return _event_with_duration(_event_with_flow(_event_new(FLOW_COMPLETED), flow_name), duration_ms);
+    return _event_with_duration(_event_with_flow(_event_new(SZAL_FLOW_COMPLETED), flow_name), duration_ms);
 }
 
 # Construct a FlowFailed event with an error message (Str). (bus.rs 133-137)
 fn event_flow_failed(flow_name, error) {
-    return _event_with_error(_event_with_flow(_event_new(FLOW_FAILED), flow_name), error);
+    return _event_with_error(_event_with_flow(_event_new(SZAL_FLOW_FAILED), flow_name), error);
 }
 
 # Construct a FlowRolledBack event. (bus.rs 140-142)
 fn event_flow_rolled_back(flow_name) {
-    return _event_with_flow(_event_new(FLOW_ROLLED_BACK), flow_name);
+    return _event_with_flow(_event_new(SZAL_FLOW_ROLLED_BACK), flow_name);
 }
 
 # Construct a StepStarted event. step_name + step_id are Str. (bus.rs 145-147)
 fn event_step_started(step_name, step_id) {
-    return _event_with_step(_event_new(STEP_STARTED), step_name, step_id);
+    return _event_with_step(_event_new(SZAL_STEP_STARTED), step_name, step_id);
 }
 
 # Construct a StepCompleted event with duration + attempt. (bus.rs 150-155)
 fn event_step_completed(step_name, step_id, duration_ms, attempt) {
-    var e = _event_with_step(_event_new(STEP_COMPLETED), step_name, step_id);
+    var e = _event_with_step(_event_new(SZAL_STEP_COMPLETED), step_name, step_id);
     return _event_with_attempt(_event_with_duration(e, duration_ms), attempt);
 }
 
 # Construct a StepFailed event with error + attempt. (bus.rs 158-163)
 fn event_step_failed(step_name, step_id, error, attempt) {
-    var e = _event_with_step(_event_new(STEP_FAILED), step_name, step_id);
+    var e = _event_with_step(_event_new(SZAL_STEP_FAILED), step_name, step_id);
     return _event_with_attempt(_event_with_error(e, error), attempt);
 }
 
 # Construct a StepRetry event with attempt. (bus.rs 166-170)
 fn event_step_retry(step_name, step_id, attempt) {
-    return _event_with_attempt(_event_with_step(_event_new(STEP_RETRY), step_name, step_id), attempt);
+    return _event_with_attempt(_event_with_step(_event_new(SZAL_STEP_RETRY), step_name, step_id), attempt);
 }
 
 # Construct a StepSkipped event with a reason (stored in error). (bus.rs 173-177)
 fn event_step_skipped(step_name, step_id, reason) {
-    return _event_with_error(_event_with_step(_event_new(STEP_SKIPPED), step_name, step_id), reason);
+    return _event_with_error(_event_with_step(_event_new(SZAL_STEP_SKIPPED), step_name, step_id), reason);
 }
 
 # Construct a StepTimeout event with the timeout (stored in duration_ms).
 # (bus.rs 180-184)
 fn event_step_timeout(step_name, step_id, timeout_ms) {
-    return _event_with_duration(_event_with_step(_event_new(STEP_TIMEOUT), step_name, step_id), timeout_ms);
+    return _event_with_duration(_event_with_step(_event_new(SZAL_STEP_TIMEOUT), step_name, step_id), timeout_ms);
 }
 
 # Construct a StepRollback event. (bus.rs 187-189)
 fn event_step_rollback(step_name, step_id) {
-    return _event_with_step(_event_new(STEP_ROLLBACK), step_name, step_id);
+    return _event_with_step(_event_new(SZAL_STEP_ROLLBACK), step_name, step_id);
 }
 
 # Is this a flow-scoped event? (the four Flow* variants). Mirrors the topic()
 # match arm split (bus.rs 195-201) — flow variants get szal/flow/..., the rest
 # get szal/step/... .
 fn _event_is_flow(t) {
-    if (t == FLOW_STARTED) { return 1; }
-    if (t == FLOW_COMPLETED) { return 1; }
-    if (t == FLOW_FAILED) { return 1; }
-    if (t == FLOW_ROLLED_BACK) { return 1; }
+    if (t == SZAL_FLOW_STARTED) { return 1; }
+    if (t == SZAL_FLOW_COMPLETED) { return 1; }
+    if (t == SZAL_FLOW_FAILED) { return 1; }
+    if (t == SZAL_FLOW_ROLLED_BACK) { return 1; }
     return 0;
 }
 
@@ -313,14 +315,14 @@ fn event_to_json(e) {
 # "error", skipped -> "skipped", rolled_back/rollback -> "rolled_back", else
 # "unset".
 fn event_status(t) {
-    if (t == FLOW_COMPLETED) { return "ok"; }
-    if (t == STEP_COMPLETED) { return "ok"; }
-    if (t == FLOW_FAILED) { return "error"; }
-    if (t == STEP_FAILED) { return "error"; }
-    if (t == STEP_TIMEOUT) { return "error"; }
-    if (t == STEP_SKIPPED) { return "skipped"; }
-    if (t == FLOW_ROLLED_BACK) { return "rolled_back"; }
-    if (t == STEP_ROLLBACK) { return "rolled_back"; }
+    if (t == SZAL_FLOW_COMPLETED) { return "ok"; }
+    if (t == SZAL_STEP_COMPLETED) { return "ok"; }
+    if (t == SZAL_FLOW_FAILED) { return "error"; }
+    if (t == SZAL_STEP_FAILED) { return "error"; }
+    if (t == SZAL_STEP_TIMEOUT) { return "error"; }
+    if (t == SZAL_STEP_SKIPPED) { return "skipped"; }
+    if (t == SZAL_FLOW_ROLLED_BACK) { return "rolled_back"; }
+    if (t == SZAL_STEP_ROLLBACK) { return "rolled_back"; }
     return "unset";
 }
 

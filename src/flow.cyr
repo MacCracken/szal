@@ -9,7 +9,7 @@
 # Requires: lib/str.cyr (Str + builder), lib/vec.cyr, lib/hashmap.cyr, lib/alloc.cyr
 #   (alloc_init before any constructor), lib/result.cyr (Ok/Err), lib/bayan.cyr (json_v +
 #   flow_to_json/from_json; lib/io must be in scope before lib/bayan), src/error.cyr
-#   (SzalErr + szal_err), src/uuid.cyr (uuid_generate/uuid_to_str/uuid_parse), src/step.cyr
+#   (SzalErr + szal_err), src/uuid.cyr (szal_uuid_generate/uuid_to_str/uuid_parse), src/step.cyr
 #   (StepDef accessors + step_to_json/step_from_json).
 # Naming: every public symbol is flow_/FlowMode-prefixed; no bare names that collide with
 #   vendored majra/bote. Internal helpers use the _ prefix.
@@ -140,7 +140,7 @@ fn flow_version(f) { return load64(f + FD_VERSION); }
 fn flow_new(name, mode) {
     var f = alloc(FLOWDEF_SIZE);
     if (f == 0) { return 0; }
-    var hi, lo = uuid_generate();
+    var hi, lo = szal_uuid_generate();
     store64(f + FD_ID_HI, hi);
     store64(f + FD_ID_LO, lo);
     store64(f + FD_NAME, name);
@@ -215,7 +215,7 @@ fn flow_validate(f) {
     var i = 0;
     while (i < n) {
         var step = flow_step_at(f, i);
-        if ((step_trigger_mode(step) == TRIGGER_ANY) && (step_depends_on_len(step) == 0)) {
+        if ((step_trigger_mode(step) == SZAL_TRIGGER_ANY) && (step_depends_on_len(step) == 0)) {
             var sb2 = str_builder_new();
             str_builder_add_cstr(sb2, "step '");
             str_builder_add(sb2, step_name(step));

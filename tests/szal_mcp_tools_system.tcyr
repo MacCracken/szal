@@ -103,7 +103,7 @@ fn t_timestamp() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(system_tools());
+    var d = szal_register_tool_vec(szal_system_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_system_info"), 1, "system_info registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_cwd"), 1, "cwd registered");

@@ -2,7 +2,9 @@
 # version-bump.sh — bump szal's version.
 #
 # `VERSION` at the repo root is the SINGLE source of truth: `cyrius.cyml [package].version`
-# reads `${file:VERSION}`, so there is exactly one file to write. (This script used to also
+# reads `${file:VERSION}`. The one derived copy is `var SZAL_VERSION` in src/mcp_tools_engine.cyr
+# (what szal_server_info reports — CYRIUS_PKG_VERSION would report a consumer's version inside
+# dist/szal-mcp.cyr), which this script rewrites and CI cross-checks. (This script used to also
 # rewrite Cargo.toml + regenerate Cargo.lock — leftovers from the pre-port Rust project, which
 # has no Cargo manifest at the root any more; the port's Rust oracle lives at `rust-old/` and is
 # never touched. Those steps were removed at 2.1.0.)
@@ -35,6 +37,12 @@ echo "Bumping szal ${OLD_VERSION} -> ${NEW_VERSION}..."
 echo "$NEW_VERSION" > "$REPO_ROOT/VERSION"
 echo "  Updated VERSION"
 
+ENGINE="$REPO_ROOT/src/mcp_tools_engine.cyr"
+sed -i -E "s/^var SZAL_VERSION = \"[^\"]*\";/var SZAL_VERSION = \"${NEW_VERSION}\";/" "$ENGINE"
+grep -q "^var SZAL_VERSION = \"${NEW_VERSION}\";" "$ENGINE" \
+    || { echo "ERROR: could not set SZAL_VERSION in $ENGINE" >&2; exit 1; }
+echo "  Updated SZAL_VERSION (src/mcp_tools_engine.cyr)"
+
 # Verify the manifest still resolves to the same number. If [package].version was ever
 # hardcoded away from ${file:VERSION}, this catches the drift instead of shipping it.
 CYML_RAW="$(grep '^version = ' "$REPO_ROOT/cyrius.cyml" | head -1 | sed 's/version = "\(.*\)"/\1/')"
@@ -54,12 +62,13 @@ fi
 echo ""
 echo "Version bumped to ${NEW_VERSION}"
 echo ""
-echo "Still to do by hand (this script only owns VERSION):"
+echo "Still to do by hand (this script owns VERSION + SZAL_VERSION):"
+echo "  - cyrius distlib mcp            (dist/szal-mcp.cyr embeds the version; CI fails on drift)"
 echo "  - CHANGELOG.md: add the ${NEW_VERSION} section"
 echo "  - docs/development/state.md: version + toolchain/vendored pins"
 echo ""
 echo "Next steps:"
-echo "  git add VERSION CHANGELOG.md docs/development/state.md"
+echo "  git add VERSION src/mcp_tools_engine.cyr dist/ CHANGELOG.md docs/development/state.md"
 echo "  git commit -m \"bump to ${NEW_VERSION}\""
 echo "  git tag ${NEW_VERSION}"
 echo "  git push && git push --tags"

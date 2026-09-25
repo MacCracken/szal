@@ -181,7 +181,7 @@ fn t_from_json() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(flow_tools());
+    var d = szal_register_tool_vec(szal_flow_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_flow_create"), 1, "flow_create registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_flow_validate"), 1, "flow_validate registered");

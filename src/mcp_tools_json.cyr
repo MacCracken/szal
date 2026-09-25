@@ -103,19 +103,19 @@ fn _json_path_handler(args, claims) {
     var o = _json_parse_args(args);
     var jv = bayan_json_v_obj_get(o, "json");
     if (bayan_json_v_is_str(jv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: json"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: json"));
         return str_data(e);
     }
     var pv = bayan_json_v_obj_get(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
-        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: path"));
+        var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
         return str_data(e2);
     }
 
     var json_str = bayan_json_v_str(jv);
     var value = bayan_json_v_parse(json_str);
     if (value == 0) {
-        var ej = result_error_typed(MCP_VALIDATION, str_from("invalid JSON"));
+        var ej = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("invalid JSON"));
         return str_data(ej);
     }
 
@@ -140,7 +140,7 @@ fn _json_path_handler(args, claims) {
                 str_builder_add_cstr(nb, " not found at '");
                 str_builder_add(nb, seg);
                 str_builder_add_cstr(nb, "'");
-                var en = result_error_typed(MCP_NOT_FOUND, str_builder_build(nb));
+                var en = szal_result_error_typed(SZAL_MCP_NOT_FOUND, str_builder_build(nb));
                 return str_data(en);
             }
             current = next;
@@ -152,14 +152,14 @@ fn _json_path_handler(args, claims) {
                 str_builder_add_cstr(kb, "key '");
                 str_builder_add(kb, seg);
                 str_builder_add_cstr(kb, "' not found");
-                var ek = result_error_typed(MCP_NOT_FOUND, str_builder_build(kb));
+                var ek = szal_result_error_typed(SZAL_MCP_NOT_FOUND, str_builder_build(kb));
                 return str_data(ek);
             }
             current = nx;
         }
     }
 
-    var r = result_ok_json(current);
+    var r = szal_result_ok_json(current);
     return str_data(r);
 }
 
@@ -171,7 +171,7 @@ fn _json_field_or_err(o, field, out_err) {
         var mb = str_builder_new();
         str_builder_add_cstr(mb, "missing required field: ");
         str_builder_add_cstr(mb, field);
-        var e = result_error_typed(MCP_VALIDATION, str_builder_build(mb));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(mb));
         store64(out_err, str_data(e));
         return 0;
     }
@@ -181,7 +181,7 @@ fn _json_field_or_err(o, field, out_err) {
         str_builder_add_cstr(ib, "invalid JSON in '");
         str_builder_add_cstr(ib, field);
         str_builder_add_cstr(ib, "'");
-        var e2 = result_error_typed(MCP_VALIDATION, str_builder_build(ib));
+        var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(ib));
         store64(out_err, str_data(e2));
         return 0;
     }
@@ -204,7 +204,7 @@ fn _json_diff_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("equal"), bayan_json_v_bool_new(equal));
     bayan_json_v_obj_set(out, str_from("a_type"), bayan_json_v_str_new(str_from(_json_type_name(a))));
     bayan_json_v_obj_set(out, str_from("b_type"), bayan_json_v_str_new(str_from(_json_type_name(b))));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -214,7 +214,7 @@ fn _json_validate_handler(args, claims) {
     var o = _json_parse_args(args);
     var jv = bayan_json_v_obj_get(o, "json");
     if (bayan_json_v_is_str(jv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: json"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: json"));
         return str_data(e);
     }
     var json_str = bayan_json_v_str(jv);
@@ -232,7 +232,7 @@ fn _json_validate_handler(args, claims) {
         bayan_json_v_obj_set(info, str_from("error"), bayan_json_v_str_new(str_from(emsg)));
         bayan_json_v_obj_set(info, str_from("position"), bayan_json_v_int_new(_json_err_pos));
     }
-    var r = result_ok_json(info);
+    var r = szal_result_ok_json(info);
     return str_data(r);
 }
 
@@ -269,21 +269,21 @@ fn _req2(a, b) {
 }
 
 # The JSON tool group: szal_json_path, szal_json_diff, szal_json_validate.
-fn json_tools() {
+fn szal_json_tools() {
     var tools = vec_new();
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_json_path",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_json_path",
           "Extract a value from JSON using a dot-separated path (e.g. 'a.b.c' or 'a.0.b')",
           _json_path_props(), _req2("json", "path")), &_json_path_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_json_diff", "Compare two JSON values and report differences",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_json_diff", "Compare two JSON values and report differences",
           _json_diff_props(), _req2("a", "b")), &_json_diff_handler));
 
     var jv_req = vec_new();
     vec_push(jv_req, "json");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_json_validate",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_json_validate",
           "Validate a JSON string — check if it parses correctly and report structure",
           _json_validate_props(), jv_req), &_json_validate_handler));
     return tools;

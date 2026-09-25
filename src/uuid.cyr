@@ -64,7 +64,8 @@ fn _uuid_unhex(c) {
 # Returns TWO values (hi, lo) big-endian packed (see header). Consume with: var hi, lo = ...
 # On CSPRNG failure (negative return) the bytes are left zeroed except for the version/variant
 # patch (so the result is still a structurally valid v4 nil-ish UUID rather than garbage).
-fn uuid_generate() {
+# szal-prefixed since 2.2.0: majra owns uuid_generate (a different implementation).
+fn szal_uuid_generate() {
     var buf = alloc(UUID_BYTES);
     if (buf == 0) {
         return (0, 0);

@@ -117,7 +117,7 @@ fn t_random_custom() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(hash_tools());
+    var d = szal_register_tool_vec(szal_hash_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_sha256"), 1, "szal_sha256 registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_md5"), 1, "szal_md5 registered");

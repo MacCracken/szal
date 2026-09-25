@@ -88,12 +88,12 @@ fn fz_rand_step(depth, tag) {
     if (fz_rand_below(2) == 1) {
         step_with_condition(s, str_from("steps.build.status == 'completed'"));
     }
-    if (fz_rand_below(2) == 1) { step_with_trigger_mode(s, TRIGGER_ANY); }
+    if (fz_rand_below(2) == 1) { step_with_trigger_mode(s, SZAL_TRIGGER_ANY); }
     # Dependencies: random ids, so the round-trip has to carry them through 36-char UUID text.
     var ndeps = fz_rand_below(4);
     var d = 0;
     while (d < ndeps) {
-        var hi, lo = uuid_generate();
+        var hi, lo = szal_uuid_generate();
         step_depends_on_add(s, hi, lo);
         d = d + 1;
     }
@@ -219,7 +219,7 @@ fn fz_result_roundtrip() {
     fz_group("StepResult: round-trip including the json_v output and optional error");
     var i = 0;
     while (i < 1200) {
-        var hi, lo = uuid_generate();
+        var hi, lo = szal_uuid_generate();
         var status = fz_rand_below(FZ_NSTATUS);
         # Vary the output across every json_v shape the field can hold.
         var out = bayan_json_v_null();
@@ -238,7 +238,7 @@ fn fz_result_roundtrip() {
             bayan_json_v_arr_push(arr, bayan_json_v_str_new(str_from("two")));
             out = arr;
         }
-        var r = step_result_new(hi, lo, status, out, fz_rand_range(0, 100000),
+        var r = szal_step_result_new(hi, lo, status, out, fz_rand_range(0, 100000),
             fz_rand_range(1, 5));
         var has_err = fz_rand_below(2);
         if (has_err == 1) { step_result_set_error(r, str_from("assertion failed")); }
@@ -327,7 +327,7 @@ fn fz_enum_wire_forms() {
             var tv = step_trigger_from_name(str_from(junk));
             fz_check((tv >= 0) && (tv < FZ_NTRIGGER), "trigger parse stays in range", junk);
             if (streq(junk, "Any") == 0) {
-                fz_check(tv == TRIGGER_ALL, "an unknown trigger name defaults to All", junk);
+                fz_check(tv == SZAL_TRIGGER_ALL, "an unknown trigger name defaults to All", junk);
             }
             var sv = step_status_from_name(str_from(junk));
             fz_check((sv >= 0) && (sv < FZ_NSTATUS), "status parse stays in range", junk);
@@ -336,7 +336,7 @@ fn fz_enum_wire_forms() {
     }
     # A 0 (None) name must take the default, not dereference.
     fz_check(step_backoff_from_name(0) == BACKOFF_FIXED, "a null backoff name defaults", 0);
-    fz_check(step_trigger_from_name(0) == TRIGGER_ALL, "a null trigger name defaults", 0);
+    fz_check(step_trigger_from_name(0) == SZAL_TRIGGER_ALL, "a null trigger name defaults", 0);
     return 0;
 }
 
@@ -357,7 +357,7 @@ fn fz_malformed_json() {
             "[1,2,3]") == 1) {
         fz_check(step_backoff(arr) == BACKOFF_FIXED, "the defaulted step takes the default backoff",
             0);
-        fz_check(step_trigger_mode(arr) == TRIGGER_ALL, "the defaulted step takes trigger All", 0);
+        fz_check(step_trigger_mode(arr) == SZAL_TRIGGER_ALL, "the defaulted step takes trigger All", 0);
         fz_check(step_depends_on_len(arr) == 0, "the defaulted step has no dependencies", 0);
         # A missing/malformed id yields a FRESHLY GENERATED one, so the port always carries a
         # valid StepId (parity-notes §3 again) — it must not be the parse sentinel.

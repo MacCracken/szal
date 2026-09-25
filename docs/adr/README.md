@@ -19,4 +19,7 @@ Decisions about szal — what we chose, the context, and the consequences we acc
 
 ## Index
 
-_No ADRs yet. Add the first as `0001-kebab-case-title.md`._
+| # | Title | Status |
+|---|---|---|
+| [0001](0001-1.2-persistence-and-distribution.md) | Persistence, streaming, and distribution without bloating the default build (Rust 1.2) | Accepted |
+| [0002](0002-szal-owns-its-namespace.md) | szal owns its namespace; vendored libraries stay byte-identical | Accepted |

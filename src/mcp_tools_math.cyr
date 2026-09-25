@@ -12,16 +12,21 @@
 # integer results. Recorded §18.
 #
 # Usage: include AFTER lib/math.cyr (f64_parse_ok/trunc/fract) + src/mcp.cyr (+ lib/bayan, lib/str).
-
+#
+# Token kinds are MEV_TOK_*, never bare TOK_*: src/condition.cyr owns TOK_LPAREN/TOK_RPAREN (13/14)
+# and this enum used to redeclare them as 6/7. Cyrius resolves enum constants in one flat namespace
+# and does not fold ones registered past var index 1024, so the later value won for EVERY read —
+# the condition parser then tokenized `(` as its own TOK_GT and `)` as TOK_GTE, and `(x)`, `!(x)`,
+# `x == (1)` stopped parsing in any build that included this file (szal <= 2.1.2).
 enum MathTokens {
-    TOK_NUM = 0;
-    TOK_PLUS = 1;
-    TOK_MINUS = 2;
-    TOK_MUL = 3;
-    TOK_DIV = 4;
-    TOK_MOD = 5;
-    TOK_LPAREN = 6;
-    TOK_RPAREN = 7;
+    MEV_TOK_NUM = 0;
+    MEV_TOK_PLUS = 1;
+    MEV_TOK_MINUS = 2;
+    MEV_TOK_MUL = 3;
+    MEV_TOK_DIV = 4;
+    MEV_TOK_MOD = 5;
+    MEV_TOK_LPAREN = 6;
+    MEV_TOK_RPAREN = 7;
 }
 
 fn _math_parse_args(args) {
@@ -29,7 +34,7 @@ fn _math_parse_args(args) {
     return bayan_json_v_parse(s);
 }
 
-# Token = { type@0, fval@8 } (fval is the f64 bit pattern for TOK_NUM).
+# Token = { type@0, fval@8 } (fval is the f64 bit pattern for MEV_TOK_NUM).
 fn _mev_tok_new(ty, fval) {
     var t = alloc(16);
     store64(t, ty);
@@ -106,37 +111,37 @@ fn _mev_tokenize(ec, expr) {
         if (c == 32) {
             i = i + 1;
         } elif (c == 43) {
-            vec_push(tokens, _mev_tok_new(TOK_PLUS, 0)); i = i + 1;
+            vec_push(tokens, _mev_tok_new(MEV_TOK_PLUS, 0)); i = i + 1;
         } elif (c == 45) {
             var is_unary = 0;
             if (vec_len(tokens) == 0) { is_unary = 1; } else {
                 var lt = _mev_tok_type(vec_get(tokens, vec_len(tokens) - 1));
-                if (lt == TOK_PLUS || lt == TOK_MINUS || lt == TOK_MUL || lt == TOK_DIV
-                  || lt == TOK_MOD || lt == TOK_LPAREN) { is_unary = 1; }
+                if (lt == MEV_TOK_PLUS || lt == MEV_TOK_MINUS || lt == MEV_TOK_MUL || lt == MEV_TOK_DIV
+                  || lt == MEV_TOK_MOD || lt == MEV_TOK_LPAREN) { is_unary = 1; }
             }
             i = i + 1;
             if (is_unary == 1) {
                 var end = _scan_number_end(d, n, i);
                 var val = _mev_num(d, i, end, 1, ec);
-                vec_push(tokens, _mev_tok_new(TOK_NUM, val));
+                vec_push(tokens, _mev_tok_new(MEV_TOK_NUM, val));
                 i = end;
             } else {
-                vec_push(tokens, _mev_tok_new(TOK_MINUS, 0));
+                vec_push(tokens, _mev_tok_new(MEV_TOK_MINUS, 0));
             }
         } elif (c == 42) {
-            vec_push(tokens, _mev_tok_new(TOK_MUL, 0)); i = i + 1;
+            vec_push(tokens, _mev_tok_new(MEV_TOK_MUL, 0)); i = i + 1;
         } elif (c == 47) {
-            vec_push(tokens, _mev_tok_new(TOK_DIV, 0)); i = i + 1;
+            vec_push(tokens, _mev_tok_new(MEV_TOK_DIV, 0)); i = i + 1;
         } elif (c == 37) {
-            vec_push(tokens, _mev_tok_new(TOK_MOD, 0)); i = i + 1;
+            vec_push(tokens, _mev_tok_new(MEV_TOK_MOD, 0)); i = i + 1;
         } elif (c == 40) {
-            vec_push(tokens, _mev_tok_new(TOK_LPAREN, 0)); i = i + 1;
+            vec_push(tokens, _mev_tok_new(MEV_TOK_LPAREN, 0)); i = i + 1;
         } elif (c == 41) {
-            vec_push(tokens, _mev_tok_new(TOK_RPAREN, 0)); i = i + 1;
+            vec_push(tokens, _mev_tok_new(MEV_TOK_RPAREN, 0)); i = i + 1;
         } elif ((c >= 48 && c <= 57) || c == 46) {
             var nend = _scan_number_end(d, n, i);
             var nval = _mev_num(d, i, nend, 0, ec);
-            vec_push(tokens, _mev_tok_new(TOK_NUM, nval));
+            vec_push(tokens, _mev_tok_new(MEV_TOK_NUM, nval));
             i = nend;
         } else {
             var eb = str_builder_new();
@@ -158,16 +163,16 @@ fn _mev_atom(ec) {
     }
     var t = vec_get(tokens, pos);
     var ty = _mev_tok_type(t);
-    if (ty == TOK_NUM) {
+    if (ty == MEV_TOK_NUM) {
         store64(ec + 8, pos + 1);
         return _mev_tok_fval(t);
     }
-    if (ty == TOK_LPAREN) {
+    if (ty == MEV_TOK_LPAREN) {
         store64(ec + 8, pos + 1);
         var val = _mev_add_sub(ec);
         if (_ec_err(ec) != 0) { return val; }
         var p2 = load64(ec + 8);
-        if (p2 >= vec_len(tokens) || _mev_tok_type(vec_get(tokens, p2)) != TOK_RPAREN) {
+        if (p2 >= vec_len(tokens) || _mev_tok_type(vec_get(tokens, p2)) != MEV_TOK_RPAREN) {
             _ec_seterr(ec, str_from("missing closing parenthesis"));
             return f64_from(0);
         }
@@ -188,12 +193,12 @@ fn _mev_mul_div(ec) {
         var tokens = load64(ec);
         if (pos >= vec_len(tokens)) { go = 0; } else {
             var ty = _mev_tok_type(vec_get(tokens, pos));
-            if (ty == TOK_MUL) {
+            if (ty == MEV_TOK_MUL) {
                 store64(ec + 8, pos + 1);
                 var r = _mev_atom(ec);
                 if (_ec_err(ec) != 0) { return left; }
                 left = f64_mul(left, r);
-            } elif (ty == TOK_DIV) {
+            } elif (ty == MEV_TOK_DIV) {
                 store64(ec + 8, pos + 1);
                 var r2 = _mev_atom(ec);
                 if (_ec_err(ec) != 0) { return left; }
@@ -202,7 +207,7 @@ fn _mev_mul_div(ec) {
                     return f64_from(0);
                 }
                 left = f64_div(left, r2);
-            } elif (ty == TOK_MOD) {
+            } elif (ty == MEV_TOK_MOD) {
                 store64(ec + 8, pos + 1);
                 var r3 = _mev_atom(ec);
                 if (_ec_err(ec) != 0) { return left; }
@@ -227,12 +232,12 @@ fn _mev_add_sub(ec) {
         var tokens = load64(ec);
         if (pos >= vec_len(tokens)) { go = 0; } else {
             var ty = _mev_tok_type(vec_get(tokens, pos));
-            if (ty == TOK_PLUS) {
+            if (ty == MEV_TOK_PLUS) {
                 store64(ec + 8, pos + 1);
                 var r = _mev_mul_div(ec);
                 if (_ec_err(ec) != 0) { return left; }
                 left = f64_add(left, r);
-            } elif (ty == TOK_MINUS) {
+            } elif (ty == MEV_TOK_MINUS) {
                 store64(ec + 8, pos + 1);
                 var r2 = _mev_mul_div(ec);
                 if (_ec_err(ec) != 0) { return left; }
@@ -281,20 +286,20 @@ fn _math_eval_handler(args, claims) {
     var o = _math_parse_args(args);
     var ev = bayan_json_v_obj_get(o, "expression");
     if (bayan_json_v_is_str(ev) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: expression"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: expression"));
         return str_data(e);
     }
     var expr = bayan_json_v_str(ev);
 
     if (_mev_valid_chars(expr) == 0) {
-        var ic = result_error_typed(MCP_VALIDATION,
+        var ic = szal_result_error_typed(SZAL_MCP_VALIDATION,
           str_from("expression contains invalid characters — only digits, +, -, *, /, %, (, ), . allowed"));
         return str_data(ic);
     }
 
     var ec = _mev_eval(expr);
     if (_ec_err(ec) != 0) {
-        var er = result_error_typed(MCP_INTERNAL, _ec_err(ec));
+        var er = szal_result_error_typed(SZAL_MCP_INTERNAL, _ec_err(ec));
         return str_data(er);
     }
 
@@ -307,7 +312,7 @@ fn _math_eval_handler(args, claims) {
     } else {
         out = _fmt_f64_clean(val);
     }
-    var r = result_ok(out);
+    var r = szal_result_ok(out);
     return str_data(r);
 }
 
@@ -322,12 +327,12 @@ fn _math_eval_props() {
 }
 
 # The math tool group: szal_math_eval.
-fn math_tools() {
+fn szal_math_tools() {
     var tools = vec_new();
     var req = vec_new();
     vec_push(req, "expression");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_math_eval", "Evaluate a basic math expression (+, -, *, /, %, ^)",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_math_eval", "Evaluate a basic math expression (+, -, *, /, %, ^)",
           _math_eval_props(), req), &_math_eval_handler));
     return tools;
 }

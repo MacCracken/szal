@@ -8,9 +8,10 @@
 # Usage: include "src/step.cyr"
 # Requires: lib/str.cyr (Str + builder), lib/vec.cyr, lib/alloc.cyr (alloc_init before any
 #   constructor), lib/bayan.cyr (json_v config + step_to_json/from_json), src/uuid.cyr
-#   (uuid_generate/uuid_to_str/uuid_parse). lib/io must be in scope before lib/bayan.
-# Naming: every public symbol is step_/StepStatus/BackoffStrategy/TriggerMode-prefixed; no
-#   bare names that collide with vendored majra/bote. Internal helpers use the _ prefix.
+#   (szal_uuid_generate/uuid_to_str/uuid_parse). lib/io must be in scope before lib/bayan.
+# Naming: public symbols are step_/STATUS_/BACKOFF_-prefixed, and the names majra ALSO owns are
+#   szal-prefixed (SzalStepStatus, SzalTriggerMode, SZAL_TRIGGER_*, szal_step_result_new) so szal and
+#   its consumers can vendor upstream majra unmodified. Internal helpers use the _ prefix.
 
 # BackoffStrategy — retry-delay growth. Values are declaration order (0/1/2). The serde wire
 # name (step.rs derives Serialize with NO rename_all) is the PascalCase variant name, emitted
@@ -23,16 +24,19 @@ enum BackoffStrategy {
 
 # TriggerMode — DAG dependency resolution mode. Values are declaration order. The serde wire
 # name is the PascalCase variant name. Default (serde + StepDef::new) is All. (step.rs 24-32.)
-enum TriggerMode {
-    TRIGGER_ALL = 0;
-    TRIGGER_ANY = 1;
+# szal-prefixed since 2.2.0 (SzalTriggerMode / SZAL_TRIGGER_*): vendored majra declares its own
+# TriggerMode with TRIGGER_ALL / TRIGGER_ANY, and one flat namespace cannot hold both.
+enum SzalTriggerMode {
+    SZAL_TRIGGER_ALL = 0;
+    SZAL_TRIGGER_ANY = 1;
 }
 
 # StepStatus — the 6 step execution states. Values are declaration order. NOTE: step.rs has
 # TWO distinct string forms: the Display impl emits snake_case (step_status_display) while the
 # serde Serialize impl emits the PascalCase variant name (step_status_serde_name). StepResult
-# JSON carries the serde (PascalCase) form. (step.rs 73-93.)
-enum StepStatus {
+# JSON carries the serde (PascalCase) form. (step.rs 73-93.) The TYPE is SzalStepStatus because
+# majra declares a StepStatus of its own; the STATUS_* members collide with nothing.
+enum SzalStepStatus {
     STATUS_PENDING = 0;
     STATUS_RUNNING = 1;
     STATUS_COMPLETED = 2;
@@ -41,24 +45,24 @@ enum StepStatus {
     STATUS_ROLLED_BACK = 5;
 }
 
-# Hardware accelerator requirement default. The real REQ_* constants come from ai-hwaccel at
-# M2 (port-plan §3.2); for M1 StepDef carries a plain i64 hardware field defaulting to
-# REQ_NONE = 0. See 'todo' — the field is present and round-trips but is not yet validated
-# against an ai-hwaccel registry.
+# Hardware requirement default: REQ_NONE = 0, deliberately the SAME symbol and value as
+# ai-hwaccel's (engine_hardware.cyr checks a step's requirement against ai-hwaccel's REQ_* table).
+# Declared here as well so step.cyr builds without ai-hwaccel — dist/szal-mcp.cyr's tool closure
+# never reaches engine_hardware. scripts/scan-collisions.sh allow-lists the pair only while the
+# two values are equal.
 enum StepHw { REQ_NONE = 0; }
 
 # i64 max sentinel for saturating backoff math (Rust uses u64::MAX; Cyrius i64 clamps to
 # i64::MAX — see docs/development/parity-notes.md §2 for the divergence). 0x7FFF... is 2^63-1.
 #
-# MUST be a `var`, not an `enum` constant. cycc >= 6.5.31 sign-extends enum-constant initialisers
-# from bit 62, so `enum { X = 0x7FFFFFFFFFFFFFFF }` folds to -1 — which silently turned this
-# sentinel negative and made every `timeout_ms >= STEP_I64_MAX` / `elapsed > timeout` comparison
-# (Cyrius `>`/`>=` are signed) take the wrong branch: every step ran without a timeout, and every
-# flow instantly "timed out" and skipped its steps. `var` initialisers and inline literals are
-# unaffected by that fold, so this is the immune form. See
-# docs/development/issues/2026-08-26-cycc-enum-bit62-sign-extension.md — do NOT convert it back to
-# an enum until that upstream regression is fixed.
-var STEP_I64_MAX = 0x7FFFFFFFFFFFFFFF;
+# ⚠ Needs cyrius >= 6.5.36. cycc 6.5.31-6.5.35 sign-extended enum constants from bit 62, folding
+# this one to -1 — and because Cyrius `>`/`>=` are signed, every `timeout_ms >= STEP_I64_MAX` /
+# `elapsed > timeout` comparison took the wrong branch (steps ran untimed, flows "timed out" at
+# once). szal 2.1.1-2.1.2 carried it as a `var` to dodge that; 2.2.0 restored the enum once the
+# pin moved past the fix. tests/szal_step.tcyr asserts the value directly, so a regressed compiler
+# fails a test instead of inverting the engine. History:
+# docs/development/issues/archive/2026-08-26-cycc-enum-bit62-sign-extension.md.
+enum StepSat { STEP_I64_MAX = 0x7FFFFFFFFFFFFFFF; }
 
 # Map a BackoffStrategy to its serde/Debug PascalCase name (cstr). Mirrors step.rs derive(
 # Serialize) on the enum (no rename_all). Unknown -> "Fixed" (the default).
@@ -80,17 +84,17 @@ fn step_backoff_from_name(s) {
 
 # Map a TriggerMode to its serde/Debug PascalCase name (cstr). Unknown -> "All" (the default).
 fn step_trigger_name(t) {
-    if (t == TRIGGER_ALL) { return "All"; }
-    if (t == TRIGGER_ANY) { return "Any"; }
+    if (t == SZAL_TRIGGER_ALL) { return "All"; }
+    if (t == SZAL_TRIGGER_ANY) { return "Any"; }
     return "All";
 }
 
-# Parse a TriggerMode from its serde PascalCase name (Str). Unknown/missing -> TRIGGER_ALL
+# Parse a TriggerMode from its serde PascalCase name (Str). Unknown/missing -> SZAL_TRIGGER_ALL
 # (serde #[default] parity). Used by step_from_json.
 fn step_trigger_from_name(s) {
-    if (s == 0) { return TRIGGER_ALL; }
-    if (str_eq_cstr(s, "Any") == 1) { return TRIGGER_ANY; }
-    return TRIGGER_ALL;
+    if (s == 0) { return SZAL_TRIGGER_ALL; }
+    if (str_eq_cstr(s, "Any") == 1) { return SZAL_TRIGGER_ANY; }
+    return SZAL_TRIGGER_ALL;
 }
 
 # Map a StepStatus to its Display (snake_case) string (cstr). Mirrors the std::fmt::Display
@@ -189,7 +193,7 @@ fn _step_sat_mul(a, b) {
 #   +80   config         (json_v* , 0 = None)
 #   +88   condition      (Str ptr, 0 = None)
 #   +96   depends_on     (vec of dep-blob ptrs {hi@0, lo@8})
-#   +104  trigger_mode   (i64 TriggerMode, default TRIGGER_ALL)
+#   +104  trigger_mode   (i64 SzalTriggerMode, default SZAL_TRIGGER_ALL)
 #   +112  sub_steps      (vec of StepDef ptrs)
 #   +120  hardware       (i64, REQ_NONE default; ai-hwaccel REQ_* constants at M2)
 enum StepDefL {
@@ -265,7 +269,7 @@ fn step_depends_on_hi(s, i) { return load64(vec_get(load64(s + SD_DEPENDS_ON), i
 # Get the i-th dependency id low half.
 fn step_depends_on_lo(s, i) { return load64(vec_get(load64(s + SD_DEPENDS_ON), i) + DEP_LO); }
 
-# Get the trigger mode (TriggerMode enum value).
+# Get the trigger mode (SzalTriggerMode enum value).
 fn step_trigger_mode(s) { return load64(s + SD_TRIGGER_MODE); }
 
 # Get the sub_steps vec (vec of StepDef ptrs).
@@ -289,7 +293,7 @@ fn step_hardware(s) { return load64(s + SD_HARDWARE); }
 fn step_new(name) {
     var s = alloc(STEPDEF_SIZE);
     if (s == 0) { return 0; }
-    var hi, lo = uuid_generate();
+    var hi, lo = szal_uuid_generate();
     store64(s + SD_ID_HI, hi);
     store64(s + SD_ID_LO, lo);
     store64(s + SD_NAME, name);
@@ -303,7 +307,7 @@ fn step_new(name) {
     store64(s + SD_CONFIG, 0);
     store64(s + SD_CONDITION, 0);
     store64(s + SD_DEPENDS_ON, vec_new());
-    store64(s + SD_TRIGGER_MODE, TRIGGER_ALL);
+    store64(s + SD_TRIGGER_MODE, SZAL_TRIGGER_ALL);
     store64(s + SD_SUB_STEPS, vec_new());
     store64(s + SD_HARDWARE, REQ_NONE);
     return s;
@@ -400,7 +404,7 @@ fn step_with_hardware(s, req) {
 # Byte layout (56 bytes):
 #   +0   step_id_hi  (i64)
 #   +8   step_id_lo  (i64)
-#   +16  status      (i64 StepStatus)
+#   +16  status      (i64 SzalStepStatus)
 #   +24  output      (json_v*, Value::Null if no output)
 #   +32  duration_ms (i64)
 #   +40  attempts    (i64)
@@ -422,7 +426,7 @@ fn step_result_id_hi(r) { return load64(r + SR_ID_HI); }
 # Get the StepResult step id low half.
 fn step_result_id_lo(r) { return load64(r + SR_ID_LO); }
 
-# Get the StepResult status (StepStatus enum value).
+# Get the StepResult status (SzalStepStatus enum value).
 fn step_result_status(r) { return load64(r + SR_STATUS); }
 
 # Get the StepResult output (json_v*).
@@ -439,7 +443,8 @@ fn step_result_error(r) { return load64(r + SR_ERROR); }
 
 # Allocate a StepResult. hi/lo are the StepId halves, status is a StepStatus, output is a
 # json_v* (pass bayan_json_v_null() for "no output"), error is a Str/0. Returns 0 on OOM.
-fn step_result_new(hi, lo, status, output, duration_ms, attempts) {
+# szal-prefixed since 2.2.0: majra owns a 3-argument step_result_new.
+fn szal_step_result_new(hi, lo, status, output, duration_ms, attempts) {
     var r = alloc(STEPRESULT_SIZE);
     if (r == 0) { return 0; }
     store64(r + SR_ID_HI, hi);
@@ -685,7 +690,7 @@ fn step_result_to_json(r) {
 fn _step_result_from_v(o) {
     if (o == 0) { return 0; }
     # step_id (UUID string; missing/malformed -> fresh generated id)
-    var hi, lo = uuid_generate();
+    var hi, lo = szal_uuid_generate();
     var id_v = bayan_json_v_obj_get(o, "step_id");
     if (bayan_json_v_is_str(id_v) == 1) {
         var phi, plo = uuid_parse(str_cstr(bayan_json_v_str(id_v)));
@@ -707,7 +712,7 @@ fn _step_result_from_v(o) {
     var att = 0;
     var att_v = bayan_json_v_obj_get(o, "attempts");
     if (bayan_json_v_is_int(att_v) == 1) { att = bayan_json_v_int(att_v); }
-    var r = step_result_new(hi, lo, status, out, dur, att);
+    var r = szal_step_result_new(hi, lo, status, out, dur, att);
     if (r == 0) { return 0; }
     # error (Option<String>; null/absent -> None)
     var err_v = bayan_json_v_obj_get(o, "error");

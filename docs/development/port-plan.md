@@ -354,6 +354,9 @@ Near-1:1 for szal's `HardwareContext`.
 
 ### 3.3 KNOWN COLLISION (must resolve BEFORE porting)
 
+> **Resolved** — both sides renamed (`tool_registry_new` in bote 2.7.5, `hw_registry_new` in
+> ai-hwaccel); [`issues/archive/2026-06-11-registry-new-collision.md`](issues/archive/2026-06-11-registry-new-collision.md).
+
 **`registry_new` is defined by BOTH bote-core (24-byte tool registry) and ai-hwaccel (32-byte
 profile registry).** Cyrius duplicate-fn semantics = last definition wins + warning. szal needs
 BOTH surfaces, and ai-hwaccel's `registry_detect*` call `registry_new()` internally, so include
@@ -375,6 +378,10 @@ must prefix everything `szal_`/`flow_`/`step_` to stay out of majra's `ratelimit
 - Postgres → defer (Open Q6); document in CHANGELOG "Removed/Deferred".
 
 ### 3.5 Consumer expectations for `dist/szal.cyr`
+
+> **Current state** (2.2.0): the tool-only consumer bundle `dist/szal-mcp.cyr` shipped for hoosh,
+> and szal's public names are szal-prefixed per [ADR 0002](../adr/0002-szal-owns-its-namespace.md);
+> see `roadmap.md` → Consumer contract. The full `dist/szal.cyr` below is still M5.
 
 - **daimon** (Cyrius 1.2.4): NO szal dep today; single-file monolith with its own `mcp_*` MCP
   types ("no bote dependency"). The port defines the contract fresh. Constraint: no bare
@@ -461,6 +468,11 @@ upstream). Strategy:
 ---
 
 ## 5. Project structure plan
+
+> This is the pre-port PLAN. What actually shipped differs — all three libraries are vendored
+> byte-for-byte at `src/vendor/` (no `[deps.X]` blocks, no `cyrius deps`), and the one committed
+> bundle is `[lib.mcp]` → `dist/szal-mcp.cyr`. Current state: `state.md`, `majra-vendoring.md`,
+> `cyrius.cyml`.
 
 ```
 szal/

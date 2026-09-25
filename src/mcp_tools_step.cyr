@@ -17,7 +17,7 @@ fn _step_create_handler(args, claims) {
     var o = _stp_parse_args(args);
     var nv = bayan_json_v_obj_get(o, "name");
     if (bayan_json_v_is_str(nv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: name"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: name"));
         return str_data(e);
     }
     var step = step_new(bayan_json_v_str(nv));
@@ -54,7 +54,7 @@ fn _step_create_handler(args, claims) {
                     var ib = str_builder_new();
                     str_builder_add_cstr(ib, "invalid UUID: ");
                     str_builder_add(ib, bayan_json_v_str(dep));
-                    var ie = result_error_typed(MCP_VALIDATION, str_builder_build(ib));
+                    var ie = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(ib));
                     return str_data(ie);
                 }
                 step = step_depends_on_add(step, hi, lo);
@@ -65,7 +65,7 @@ fn _step_create_handler(args, claims) {
 
     var sj = step_to_json(step);
     var jv = bayan_json_v_parse(sj);
-    var r = result_ok_json(jv);
+    var r = szal_result_ok_json(jv);
     return str_data(r);
 }
 
@@ -75,12 +75,12 @@ fn _step_validate_handler(args, claims) {
     var o = _stp_parse_args(args);
     var jv = bayan_json_v_obj_get(o, "step_json");
     if (bayan_json_v_is_str(jv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: step_json"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: step_json"));
         return str_data(e);
     }
     var step = step_from_json(bayan_json_v_str(jv));
     if (step == 0) {
-        var ej = result_error_typed(MCP_VALIDATION, str_from("invalid JSON"));
+        var ej = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("invalid JSON"));
         return str_data(ej);
     }
 
@@ -98,7 +98,7 @@ fn _step_validate_handler(args, claims) {
         var ids = str_from(idc);
         str_builder_add(vb, ids);
         str_builder_add_cstr(vb, ")");
-        var rok = result_ok(str_builder_build(vb));
+        var rok = szal_result_ok(str_builder_build(vb));
         return str_data(rok);
     }
 
@@ -110,7 +110,7 @@ fn _step_validate_handler(args, claims) {
         if (first == 0) { str_builder_add_cstr(ib, ", "); }
         str_builder_add_cstr(ib, "timeout_ms is zero");
     }
-    var er = result_error_typed(MCP_VALIDATION, str_builder_build(ib));
+    var er = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(ib));
     return str_data(er);
 }
 
@@ -119,12 +119,12 @@ fn _step_inspect_handler(args, claims) {
     var o = _stp_parse_args(args);
     var jv = bayan_json_v_obj_get(o, "step_json");
     if (bayan_json_v_is_str(jv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: step_json"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: step_json"));
         return str_data(e);
     }
     var step = step_from_json(bayan_json_v_str(jv));
     if (step == 0) {
-        var ej = result_error_typed(MCP_VALIDATION, str_from("invalid JSON"));
+        var ej = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("invalid JSON"));
         return str_data(ej);
     }
 
@@ -151,7 +151,7 @@ fn _step_inspect_handler(args, claims) {
     }
     bayan_json_v_obj_set(info, str_from("depends_on"), arr);
 
-    var r = result_ok_json(info);
+    var r = szal_result_ok_json(info);
     return str_data(r);
 }
 
@@ -186,24 +186,24 @@ fn _step_json_props() {
 }
 
 # The step tool group: szal_step_create, szal_step_validate, szal_step_inspect.
-fn step_tools() {
+fn szal_step_tools() {
     var tools = vec_new();
     var c_req = vec_new();
     vec_push(c_req, "name");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_step_create", "Create a workflow step definition with timeout, retry, and rollback config",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_step_create", "Create a workflow step definition with timeout, retry, and rollback config",
           _step_create_props(), c_req), &_step_create_handler));
 
     var v_req = vec_new();
     vec_push(v_req, "step_json");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_step_validate", "Validate a step definition JSON, checking all fields are well-formed",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_step_validate", "Validate a step definition JSON, checking all fields are well-formed",
           _step_json_props(), v_req), &_step_validate_handler));
 
     var i_req = vec_new();
     vec_push(i_req, "step_json");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_step_inspect", "Inspect a step definition, returning its configuration details",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_step_inspect", "Inspect a step definition, returning its configuration details",
           _step_json_props(), i_req), &_step_inspect_handler));
     return tools;
 }

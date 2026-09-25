@@ -124,15 +124,15 @@ fn main() {
     vec_push(steps, stest);
     var results = vec_new();
     var out_build = ctx_of("{\"artifact\":\"build.tar.gz\"}");
-    var rb = step_result_new(step_id_hi(sbuild), step_id_lo(sbuild), STATUS_COMPLETED,
+    var rb = szal_step_result_new(step_id_hi(sbuild), step_id_lo(sbuild), STATUS_COMPLETED,
         out_build, 1200, 1);
     vec_push(results, rb);
-    var rt = step_result_new(step_id_hi(stest), step_id_lo(stest), STATUS_FAILED,
+    var rt = szal_step_result_new(step_id_hi(stest), step_id_lo(stest), STATUS_FAILED,
         bayan_json_v_null(), 500, 2);
     step_result_set_error(rt, str_from("assertion failed"));
     vec_push(results, rt);
     var bctx = cond_build_step_context(results, steps);
-    # cond_evaluate (Ok) sees the status written by step_result_new
+    # cond_evaluate (Ok) sees the status written by szal_step_result_new
     var ev1_t, ev1_v = cond_evaluate(str_from("steps.build.status == 'completed'"), bctx);
     assert(is_ok(ev1_t), "cond_evaluate is Ok");
     assert_eq(result_unwrap(ev1_t, ev1_v), 1, "build completed condition is true");
@@ -144,7 +144,7 @@ fn main() {
     # --- bus: build an event and event_to_json round-trip (field presence) ---
     test_group("bus: event_to_json field presence");
     var je = event_step_failed(str_from("deploy"), str_from("id-1"), str_from("timeout"), 3);
-    assert_eq(event_type(je), STEP_FAILED, "event_type is StepFailed");
+    assert_eq(event_type(je), SZAL_STEP_FAILED, "event_type is StepFailed");
     assert(str_eq_cstr(event_topic(je), "szal/step/deploy/step_failed"), "event topic");
     var js = event_to_json(je);
     assert_eq(contains_cstr(js, "\"event_type\":\"step_failed\""), 1, "json event_type");

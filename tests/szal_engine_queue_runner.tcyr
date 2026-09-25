@@ -44,7 +44,7 @@ fn _q_handler(step, ctx) {
 fn _mk_ctx() {
     var handler = cb_new(&_q_handler, 0);
     var flow = flow_ctx_new(str_from("flow"), 0, 0);
-    return exec_ctx_new(handler, 0, flow, 0, 0, 0, cache_new());
+    return exec_ctx_new(handler, 0, flow, 0, 0, 0, szal_condition_cache_new());
 }
 fn _is_step(r, s) {
     if (step_result_id_hi(r) != step_id_hi(s)) { return 0; }

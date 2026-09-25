@@ -1,7 +1,7 @@
 # szal_mcp_tools_file.tcyr — file MCP tools (mcp_tools_file.cyr): szal_file_read, szal_file_write,
 # szal_dir_list, szal_file_stat, szal_path_exists.
 #
-# Ports rust-old/src/mcp/tools/file_tools.rs tests. Uses cwd-relative paths (validate_path confines
+# Ports rust-old/src/mcp/tools/file_tools.rs tests. Uses cwd-relative paths (szal_validate_path confines
 # to the working directory) and cleans up its artifacts. Mirrors the Rust cwd_tempdir approach.
 #
 #   cyrius build --strict --no-deps tests/szal_mcp_tools_file.tcyr build/test_mcp_tools_file
@@ -149,7 +149,7 @@ fn t_exists_absent() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(file_tools());
+    var d = szal_register_tool_vec(szal_file_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_file_read"), 1, "file_read registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_file_write"), 1, "file_write registered");

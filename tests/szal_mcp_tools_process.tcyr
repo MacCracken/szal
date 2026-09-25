@@ -119,7 +119,7 @@ fn t_which_not_found() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(process_tools());
+    var d = szal_register_tool_vec(szal_process_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_exec"), 1, "exec registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_pid"), 1, "pid registered");

@@ -314,8 +314,8 @@ fn t_event_order() {
     var e = engine_with_event_sink(_eng_ok(), cb_new(&_sink_capture, evs));
     engine_run(e, f);
     assert_eq(vec_len(evs), 6, "2-step flow emits 6 events");
-    assert_eq(vec_get(evs, 0), FLOW_STARTED, "first event flow_started");
-    assert_eq(vec_get(evs, 5), FLOW_COMPLETED, "last event flow_completed");
+    assert_eq(vec_get(evs, 0), SZAL_FLOW_STARTED, "first event flow_started");
+    assert_eq(vec_get(evs, 5), SZAL_FLOW_COMPLETED, "last event flow_completed");
     return 0;
 }
 fn t_event_rollback() {
@@ -331,9 +331,9 @@ fn t_event_rollback() {
     var _fr_t, _fr_v = engine_run(e, f);
     var fr = result_unwrap(_fr_t, _fr_v);
     assert_eq(flow_result_rolled_back(fr), 1, "evr rolled_back");
-    assert_eq(_has(evs, STEP_ROLLBACK), 1, "emits step_rollback");
-    assert_eq(_has(evs, FLOW_ROLLED_BACK), 1, "emits flow_rolled_back");
-    assert_eq(_has(evs, FLOW_FAILED), 1, "emits flow_failed");
+    assert_eq(_has(evs, SZAL_STEP_ROLLBACK), 1, "emits step_rollback");
+    assert_eq(_has(evs, SZAL_FLOW_ROLLED_BACK), 1, "emits flow_rolled_back");
+    assert_eq(_has(evs, SZAL_FLOW_FAILED), 1, "emits flow_failed");
     return 0;
 }
 

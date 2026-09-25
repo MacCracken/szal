@@ -138,7 +138,7 @@ fn t_join_missing() {
 # --- registration ---
 
 fn t_group_registers() {
-    var d = register_tools(template_tools());
+    var d = szal_register_tool_vec(szal_template_tools());
     assert(d != 0, "dispatcher built");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_template_render"), 1, "render registered");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_wc"), 1, "wc registered");

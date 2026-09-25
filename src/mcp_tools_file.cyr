@@ -1,10 +1,10 @@
 # mcp_tools_file.cyr — MCP file tools (ports mcp/tools/file_tools.rs): szal_file_read, szal_file_write,
 # szal_dir_list, szal_file_stat, szal_path_exists.
 #
-# SECURITY: EVERY path is routed through validate_path (mcp.cyr's lexical CWD-confinement boundary)
+# SECURITY: EVERY path is routed through szal_validate_path (mcp.cyr's lexical CWD-confinement boundary)
 # before any filesystem access — paths outside the working directory or with `..` escapes are rejected
 # with PermissionDenied. Read is capped (DEFAULT_MAX_READ_BYTES), directory listing is bounded
-# (MAX_DIR_ENTRIES + MAX_DIR_DEPTH). Do NOT add a filesystem op that skips validate_path.
+# (MAX_DIR_ENTRIES + MAX_DIR_DEPTH). Do NOT add a filesystem op that skips szal_validate_path.
 #
 # stat uses newfstatat (syscall 262, stable on x86_64-linux; raw SYS_STAT=4 is aarch64-fragile per
 # syscalls.cyr). Handlers follow the bote ABI + the porting pattern in docs/development/state.md.
@@ -57,9 +57,9 @@ fn _fs_kind(mode) {
 # Validate `path` (a Str); returns the normalized path Str on success, or writes a PermissionDenied
 # result cstr to *out_err and returns 0.
 fn _fs_validate(path, out_err) {
-    var vr_t, vr_v = validate_path(path);
+    var vr_t, vr_v = szal_validate_path(path);
     if (is_err_result(vr_t) == 1) {
-        var e = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr_t, vr_v));
+        var e = szal_result_error_typed(SZAL_MCP_PERMISSION_DENIED, err_code_of(vr_t, vr_v));
         store64(out_err, str_data(e));
         return 0;
     }
@@ -71,7 +71,7 @@ fn _file_read_handler(args, claims) {
     var o = _file_parse_args(args);
     var pv = bayan_json_v_obj_get(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: path"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
         return str_data(e);
     }
     var errc = alloc(8);
@@ -93,11 +93,11 @@ fn _file_read_handler(args, claims) {
         var eb = str_builder_new();
         str_builder_add_cstr(eb, "failed to read ");
         str_builder_add(eb, vpath);
-        var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+        var er = szal_result_error_typed(SZAL_MCP_IO_ERROR, str_builder_build(eb));
         return str_data(er);
     }
     var content = str_new(buf, n);
-    var r = result_ok(content);
+    var r = szal_result_ok(content);
     return str_data(r);
 }
 
@@ -106,7 +106,7 @@ fn _file_write_handler(args, claims) {
     var o = _file_parse_args(args);
     var pv = bayan_json_v_obj_get(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: path"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
         return str_data(e);
     }
     var errc = alloc(8);
@@ -116,7 +116,7 @@ fn _file_write_handler(args, claims) {
 
     var cv = bayan_json_v_obj_get(o, "content");
     if (bayan_json_v_is_str(cv) == 0) {
-        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: content"));
+        var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: content"));
         return str_data(e2);
     }
     var content = bayan_json_v_str(cv);
@@ -142,7 +142,7 @@ fn _file_write_handler(args, claims) {
         var eb = str_builder_new();
         str_builder_add_cstr(eb, "failed to write ");
         str_builder_add(eb, vpath);
-        var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+        var er = szal_result_error_typed(SZAL_MCP_IO_ERROR, str_builder_build(eb));
         return str_data(er);
     }
 
@@ -151,7 +151,7 @@ fn _file_write_handler(args, claims) {
     str_builder_add_int(wb, clen);
     str_builder_add_cstr(wb, " bytes to ");
     str_builder_add(wb, vpath);
-    var r = result_ok(str_builder_build(wb));
+    var r = szal_result_ok(str_builder_build(wb));
     return str_data(r);
 }
 
@@ -236,7 +236,7 @@ fn _dir_list_handler(args, claims) {
         bayan_json_v_arr_push(arr, vec_get(entries, i));
         i = i + 1;
     }
-    var r = result_ok_json(arr);
+    var r = szal_result_ok_json(arr);
     return str_data(r);
 }
 
@@ -245,7 +245,7 @@ fn _file_stat_handler(args, claims) {
     var o = _file_parse_args(args);
     var pv = bayan_json_v_obj_get(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: path"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
         return str_data(e);
     }
     var errc = alloc(8);
@@ -258,7 +258,7 @@ fn _file_stat_handler(args, claims) {
         var eb = str_builder_new();
         str_builder_add_cstr(eb, "failed to stat ");
         str_builder_add(eb, vpath);
-        var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+        var er = szal_result_error_typed(SZAL_MCP_IO_ERROR, str_builder_build(eb));
         return str_data(er);
     }
     var mode = _fs_mode(sb);
@@ -273,7 +273,7 @@ fn _file_stat_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("size"), bayan_json_v_int_new(load64(sb + STAT_SIZE_OFF)));
     bayan_json_v_obj_set(out, str_from("readonly"), bayan_json_v_bool_new(readonly));
     bayan_json_v_obj_set(out, str_from("modified"), bayan_json_v_str_new(mods));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -283,7 +283,7 @@ fn _path_exists_handler(args, claims) {
     var o = _file_parse_args(args);
     var pv = bayan_json_v_obj_get(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: path"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
         return str_data(e);
     }
     var errc = alloc(8);
@@ -307,7 +307,7 @@ fn _path_exists_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("exists"), bayan_json_v_bool_new(exists));
     bayan_json_v_obj_set(out, str_from("is_file"), bayan_json_v_bool_new(is_file));
     bayan_json_v_obj_set(out, str_from("is_dir"), bayan_json_v_bool_new(is_dir));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -353,36 +353,36 @@ fn _path_props(desc_c) {
 }
 
 # The file tool group: file_read, file_write, dir_list, file_stat, path_exists.
-fn file_tools() {
+fn szal_file_tools() {
     var tools = vec_new();
     var p_req = vec_new();
     vec_push(p_req, "path");
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_file_read", "Read a file's contents as text", _file_read_props(), p_req),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_file_read", "Read a file's contents as text", _file_read_props(), p_req),
         &_file_read_handler));
 
     var w_req = vec_new();
     vec_push(w_req, "path");
     vec_push(w_req, "content");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_file_write", "Write text content to a file (creates or overwrites)",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_file_write", "Write text content to a file (creates or overwrites)",
           _file_write_props(), w_req), &_file_write_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_dir_list", "List files and directories in a path", _dir_list_props(), vec_new()),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_dir_list", "List files and directories in a path", _dir_list_props(), vec_new()),
         &_dir_list_handler));
 
     var s_req = vec_new();
     vec_push(s_req, "path");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_file_stat", "Get metadata for a file or directory (size, permissions, timestamps)",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_file_stat", "Get metadata for a file or directory (size, permissions, timestamps)",
           _path_props(", \"description\": \"File or directory path\""), s_req), &_file_stat_handler));
 
     var e_req = vec_new();
     vec_push(e_req, "path");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_path_exists", "Check if a file or directory exists", _path_props(""), e_req),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_path_exists", "Check if a file or directory exists", _path_props(""), e_req),
         &_path_exists_handler));
     return tools;
 }

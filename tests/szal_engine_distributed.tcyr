@@ -51,7 +51,7 @@ fn _h(step, ctx) {
 fn _mk_ctx() {
     var handler = cb_new(&_h, 0);
     var flow = flow_ctx_new(str_from("flow"), 0, 0);
-    return exec_ctx_new(handler, 0, flow, 0, 0, 0, cache_new());
+    return exec_ctx_new(handler, 0, flow, 0, 0, 0, szal_condition_cache_new());
 }
 fn _mk_fleet(n) {
     var fq = fleet_new(fleet_config_new(5, 10, 16));

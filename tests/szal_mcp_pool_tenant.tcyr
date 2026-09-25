@@ -33,11 +33,11 @@ include "src/mcp_tenant.cyr"
 
 # HTTP burst is 50 — exactly 50 of 60 calls for one host are allowed. (pool.rs 70-80)
 fn t_http_burst() {
-    var p = network_pool_new();
+    var p = szal_network_pool_new();
     var allowed = 0;
     var i = 0;
     while (i < 60) {
-        if (pool_check_http(p, "example.com") == 1) { allowed = allowed + 1; }
+        if (szal_pool_check_http(p, "example.com") == 1) { allowed = allowed + 1; }
         i = i + 1;
     }
     assert_eq(allowed, 50, "HTTP burst allows exactly 50");
@@ -46,20 +46,20 @@ fn t_http_burst() {
 
 # After draining the burst, the next request is rejected. (pool.rs 82-94)
 fn t_http_rejects() {
-    var p = network_pool_new();
+    var p = szal_network_pool_new();
     var i = 0;
-    while (i < 50) { pool_check_http(p, "test.com"); i = i + 1; }
-    assert_eq(pool_check_http(p, "test.com"), 0, "HTTP rejects after burst");
+    while (i < 50) { szal_pool_check_http(p, "test.com"); i = i + 1; }
+    assert_eq(szal_pool_check_http(p, "test.com"), 0, "HTTP rejects after burst");
     return 0;
 }
 
 # DNS burst is 200. (pool.rs 96-106)
 fn t_dns_burst() {
-    var p = network_pool_new();
+    var p = szal_network_pool_new();
     var allowed = 0;
     var i = 0;
     while (i < 210) {
-        if (pool_check_dns(p, "example.com") == 1) { allowed = allowed + 1; }
+        if (szal_pool_check_dns(p, "example.com") == 1) { allowed = allowed + 1; }
         i = i + 1;
     }
     assert_eq(allowed, 200, "DNS burst allows exactly 200");
@@ -68,11 +68,11 @@ fn t_dns_burst() {
 
 # Port burst is 100. (pool.rs 108-118)
 fn t_port_burst() {
-    var p = network_pool_new();
+    var p = szal_network_pool_new();
     var allowed = 0;
     var i = 0;
     while (i < 110) {
-        if (pool_check_port(p, "host:8080") == 1) { allowed = allowed + 1; }
+        if (szal_pool_check_port(p, "host:8080") == 1) { allowed = allowed + 1; }
         i = i + 1;
     }
     assert_eq(allowed, 100, "port burst allows exactly 100");
@@ -81,28 +81,28 @@ fn t_port_burst() {
 
 # Distinct hosts have independent buckets. (pool.rs 120-130)
 fn t_separate_hosts() {
-    var p = network_pool_new();
+    var p = szal_network_pool_new();
     var i = 0;
-    while (i < 50) { pool_check_http(p, "host-a.com"); i = i + 1; }
-    assert_eq(pool_check_http(p, "host-a.com"), 0, "host-a exhausted");
-    assert_eq(pool_check_http(p, "host-b.com"), 1, "host-b independent");
+    while (i < 50) { szal_pool_check_http(p, "host-a.com"); i = i + 1; }
+    assert_eq(szal_pool_check_http(p, "host-a.com"), 0, "host-a exhausted");
+    assert_eq(szal_pool_check_http(p, "host-b.com"), 1, "host-b independent");
     return 0;
 }
 
 # The lazy global pool initializes and works. (pool.rs 132-136)
 fn t_global_pool() {
-    assert_eq(pool_check_dns(pool(), "global-test.com"), 1, "global pool usable");
+    assert_eq(szal_pool_check_dns(szal_net_pool(), "global-test.com"), 1, "global pool usable");
     return 0;
 }
 
 # Tokens refill over time: 10 req/s = 1 per 100ms, so 150ms restores at least one. (pool.rs 138-153)
 fn t_refill() {
-    var p = network_pool_new();
+    var p = szal_network_pool_new();
     var i = 0;
-    while (i < 50) { pool_check_http(p, "refill.com"); i = i + 1; }
-    assert_eq(pool_check_http(p, "refill.com"), 0, "exhausted before refill");
+    while (i < 50) { szal_pool_check_http(p, "refill.com"); i = i + 1; }
+    assert_eq(szal_pool_check_http(p, "refill.com"), 0, "exhausted before refill");
     sleep_ms(150);
-    assert_eq(pool_check_http(p, "refill.com"), 1, "allowed after refill");
+    assert_eq(szal_pool_check_http(p, "refill.com"), 1, "allowed after refill");
     return 0;
 }
 

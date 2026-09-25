@@ -187,12 +187,12 @@ fn _exec_handler(args, claims) {
     var o = _proc_parse_args(args);
     var cv = bayan_json_v_obj_get(o, "command");
     if (bayan_json_v_is_str(cv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: command"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: command"));
         return str_data(e);
     }
     var command = bayan_json_v_str(cv);
     if (_proc_cmd_has_path(command) == 1) {
-        var ep = result_error_typed(MCP_PERMISSION_DENIED,
+        var ep = szal_result_error_typed(SZAL_MCP_PERMISSION_DENIED,
           str_from("command must be a plain executable name, not a path — use PATH lookup"));
         return str_data(ep);
     }
@@ -213,9 +213,9 @@ fn _exec_handler(args, claims) {
     var cwd_c = 0;
     var cwv = bayan_json_v_obj_get(o, "cwd");
     if (bayan_json_v_is_str(cwv) == 1) {
-        var vr_t, vr_v = validate_path(bayan_json_v_str(cwv));
+        var vr_t, vr_v = szal_validate_path(bayan_json_v_str(cwv));
         if (is_err_result(vr_t) == 1) {
-            var ec = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr_t, vr_v));
+            var ec = szal_result_error_typed(SZAL_MCP_PERMISSION_DENIED, err_code_of(vr_t, vr_v));
             return str_data(ec);
         }
         cwd_c = str_cstr(result_unwrap(vr_t, vr_v));
@@ -227,7 +227,7 @@ fn _exec_handler(args, claims) {
         str_builder_add_cstr(eb, "command failed: ");
         str_builder_add(eb, command);
         str_builder_add_cstr(eb, " not found");
-        var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+        var er = szal_result_error_typed(SZAL_MCP_IO_ERROR, str_builder_build(eb));
         return str_data(er);
     }
 
@@ -239,7 +239,7 @@ fn _exec_handler(args, claims) {
     var success = 0;
     if (code == 0) { success = 1; }
     bayan_json_v_obj_set(out, str_from("success"), bayan_json_v_bool_new(success));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -247,7 +247,7 @@ fn _exec_handler(args, claims) {
 fn _pid_handler(args, claims) {
     var p = syscall(39);
     var ps = str_from_int(p);
-    var r = result_ok(ps);
+    var r = szal_result_ok(ps);
     return str_data(r);
 }
 
@@ -270,7 +270,7 @@ fn _which_handler(args, claims) {
     var o = _proc_parse_args(args);
     var cv = bayan_json_v_obj_get(o, "command");
     if (bayan_json_v_is_str(cv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: command"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: command"));
         return str_data(e);
     }
     var command = bayan_json_v_str(cv);
@@ -288,7 +288,7 @@ fn _which_handler(args, claims) {
     } else {
         bayan_json_v_obj_set(out, str_from("found"), bayan_json_v_bool_new(0));
     }
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -317,21 +317,21 @@ fn _which_props() {
 }
 
 # The process tool group: szal_exec, szal_pid, szal_which.
-fn process_tools() {
+fn szal_process_tools() {
     var tools = vec_new();
     var c_req = vec_new();
     vec_push(c_req, "command");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_exec", "Execute a shell command and return stdout, stderr, and exit code",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_exec", "Execute a shell command and return stdout, stderr, and exit code",
           _exec_props(), c_req), &_exec_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_pid", "Get the current process ID", vec_new(), vec_new()), &_pid_handler));
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_pid", "Get the current process ID", vec_new(), vec_new()), &_pid_handler));
 
     var w_req = vec_new();
     vec_push(w_req, "command");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_which", "Check if a command exists on PATH", _which_props(), w_req),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_which", "Check if a command exists on PATH", _which_props(), w_req),
         &_which_handler));
     return tools;
 }

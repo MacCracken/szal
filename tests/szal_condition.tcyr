@@ -201,57 +201,58 @@ fn main() {
     assert(ev("!status == 'completed'", ctx_nf) == 0, "(!status)=='completed' false");
 
     test_group("compiled condition reuse");
-    var ccr_t, ccr_v = compiled_compile(str_from("n > 5"));
+    var ccr_t, ccr_v = szal_condition_compile(str_from("n > 5"));
     assert(is_ok(ccr_t) == 1, "compile n>5 ok");
     var cc = result_unwrap(ccr_t, ccr_v);
-    var r10_t, r10_v = compiled_evaluate(cc, ctx_of("{\"n\":10}"));
+    var r10_t, r10_v = szal_condition_evaluate(cc, ctx_of("{\"n\":10}"));
     assert(is_ok(r10_t) == 1, "eval ok");
     assert(result_unwrap(r10_t, r10_v) == 1, "n=10 > 5");
-    var r3_t, r3_v = compiled_evaluate(cc, ctx_of("{\"n\":3}"));
+    var r3_t, r3_v = szal_condition_evaluate(cc, ctx_of("{\"n\":3}"));
     assert(result_unwrap(r3_t, r3_v) == 0, "n=3 not > 5");
-    assert(str_eq_cstr(compiled_source(cc), "n > 5") == 1, "source preserved");
+    assert(str_eq_cstr(szal_condition_source(cc), "n > 5") == 1, "source preserved");
 
     test_group("compiled empty is true");
-    var cer_t, cer_v = compiled_compile(str_from("   "));
+    var cer_t, cer_v = szal_condition_compile(str_from("   "));
     assert(is_ok(cer_t) == 1, "compile blank ok");
     var ce = result_unwrap(cer_t, cer_v);
-    var rce_t, rce_v = compiled_evaluate(ce, empty);
+    var rce_t, rce_v = szal_condition_evaluate(ce, empty);
     assert(result_unwrap(rce_t, rce_v) == 1, "blank compiles to true");
-    assert(str_eq_cstr(compiled_source(ce), "") == 1, "blank source is empty");
+    assert(str_eq_cstr(szal_condition_source(ce), "") == 1, "blank source is empty");
 
     test_group("compiled malformed errors");
-    assert(is_err_result(compiled_compile(str_from("== 'x'"))) == 1, "== 'x' err");
-    assert(is_err_result(compiled_compile(str_from("true true"))) == 1, "true true err");
-    assert(is_err_result(compiled_compile(str_from("'unterminated"))) == 1, "unterminated err");
+    assert(is_err_result(szal_condition_compile(str_from("== 'x'"))) == 1, "== 'x' err");
+    assert(is_err_result(szal_condition_compile(str_from("true true"))) == 1, "true true err");
+    assert(is_err_result(szal_condition_compile(str_from("'unterminated"))) == 1, "unterminated err");
 
     test_group("cache memoizes compilation");
-    var cache = cache_new();
-    assert(cache_is_empty(cache) == 1, "cache starts empty");
-    var _c10_t, _c10_v = cache_evaluate(cache, str_from("n > 5"), ctx_of("{\"n\":10}"));
+    var cache = szal_condition_cache_new();
+    assert(szal_condition_cache_is_empty(cache) == 1, "cache starts empty");
+    var _c10_t, _c10_v = szal_condition_cache_evaluate(cache, str_from("n > 5"), ctx_of("{\"n\":10}"));
     assert(result_unwrap(_c10_t, _c10_v) == 1,
         "cache n>5 with 10");
-    var _c3_t, _c3_v = cache_evaluate(cache, str_from("n > 5"), ctx_of("{\"n\":3}"));
+    var _c3_t, _c3_v = szal_condition_cache_evaluate(cache, str_from("n > 5"), ctx_of("{\"n\":3}"));
     assert(result_unwrap(_c3_t, _c3_v) == 0,
         "cache n>5 with 3");
-    var _c100_t, _c100_v = cache_evaluate(cache, str_from("n > 5"), ctx_of("{\"n\":100}"));
+    var _c100_t, _c100_v = szal_condition_cache_evaluate(cache, str_from("n > 5"), ctx_of("{\"n\":100}"));
     assert(result_unwrap(_c100_t, _c100_v) == 1,
         "cache n>5 with 100");
-    assert_eq(cache_len(cache), 1, "compiled once for n>5");
-    var _c1_t, _c1_v = cache_evaluate(cache, str_from("n < 5"), ctx_of("{\"n\":1}"));
+    assert_eq(szal_condition_cache_len(cache), 1, "compiled once for n>5");
+    var _c1_t, _c1_v = szal_condition_cache_evaluate(cache, str_from("n < 5"), ctx_of("{\"n\":1}"));
     assert(result_unwrap(_c1_t, _c1_v) == 1,
         "cache n<5 with 1");
-    assert_eq(cache_len(cache), 2, "two distinct exprs cached");
+    assert_eq(szal_condition_cache_len(cache), 2, "two distinct exprs cached");
 
     test_group("cache caches errors");
-    var cache2 = cache_new();
-    assert(is_err_result(cache_evaluate(cache2, str_from("== bad"), empty)) == 1, "err first time");
-    assert(is_err_result(cache_evaluate(cache2, str_from("== bad"), empty)) == 1, "err cached");
-    assert_eq(cache_len(cache2), 1, "error cached, one entry");
+    var cache2 = szal_condition_cache_new();
+    assert(is_err_result(szal_condition_cache_evaluate(cache2, str_from("== bad"), empty)) == 1, "err first time");
+    assert(is_err_result(szal_condition_cache_evaluate(cache2, str_from("== bad"), empty)) == 1, "err cached");
+    assert_eq(szal_condition_cache_len(cache2), 1, "error cached, one entry");
 
     test_group("cache matches direct evaluate");
-    var cache3 = cache_new();
+    var cache3 = szal_condition_cache_new();
     var ctx_cm = ctx_of("{\"steps\":{\"build\":{\"status\":\"completed\"}}}");
-    var _via_cache_t, _via_cache_v = cache_evaluate(cache3, str_from("steps.build.status == 'completed'"), ctx_cm);
+    var _via_cache_t, _via_cache_v = szal_condition_cache_evaluate(cache3,
+        str_from("steps.build.status == 'completed'"), ctx_cm);
     var via_cache = result_unwrap(_via_cache_t, _via_cache_v);
     var via_direct = ev("steps.build.status == 'completed'", ctx_cm);
     assert_eq(via_cache, via_direct, "cache matches direct evaluate");
@@ -298,9 +299,9 @@ fn main() {
     vec_push(steps, test_step);
     var results = vec_new();
     var out_build = ctx_of("{\"artifact\":\"build.tar.gz\"}");
-    var rb = step_result_new(step_id_hi(build), step_id_lo(build), STATUS_COMPLETED, out_build, 1200, 1);
+    var rb = szal_step_result_new(step_id_hi(build), step_id_lo(build), STATUS_COMPLETED, out_build, 1200, 1);
     vec_push(results, rb);
-    var rt = step_result_new(step_id_hi(test_step), step_id_lo(test_step), STATUS_FAILED,
+    var rt = szal_step_result_new(step_id_hi(test_step), step_id_lo(test_step), STATUS_FAILED,
         jnull(), 500, 2);
     step_result_set_error(rt, str_from("assertion failed"));
     vec_push(results, rt);
@@ -328,12 +329,12 @@ fn main() {
     var steps2 = vec_new();
     vec_push(steps2, build2);
     var results2 = vec_new();
-    var r2a = step_result_new(step_id_hi(build2), step_id_lo(build2), STATUS_COMPLETED,
+    var r2a = szal_step_result_new(step_id_hi(build2), step_id_lo(build2), STATUS_COMPLETED,
         jnull(), 100, 1);
     vec_push(results2, r2a);
     # unknown id (use a fresh generated uuid not in steps2)
-    var uhi, ulo = uuid_generate();
-    var r2b = step_result_new(uhi, ulo, STATUS_FAILED, jnull(), 0, 1);
+    var uhi, ulo = szal_uuid_generate();
+    var r2b = szal_step_result_new(uhi, ulo, STATUS_FAILED, jnull(), 0, 1);
     step_result_set_error(r2b, str_from("orphan"));
     vec_push(results2, r2b);
     var bctx2 = cond_build_step_context(results2, steps2);

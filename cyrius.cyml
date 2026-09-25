@@ -5,15 +5,49 @@ description = "szal — workflow engine: step/flow execution with branching, ret
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/szal"
 language = "cyrius"
-cyrius = "6.6.2"
+cyrius = "6.6.6"
 
 [build]
 entry = "src/main.cyr"
 output = "build/szal"
 
-# [lib] / [lib.core] dist-bundle module lists are added at `cyrius distlib` time (M5).
-# The authoritative target lists live in docs/development/port-plan.md §5; they are grown
-# here incrementally as modules land so the manifest never references a nonexistent file.
+# Consumer bundle: dist/szal-mcp.cyr (+ dist/szal-mcp.deps) = the 54 MCP tools for a consumer that
+# already owns a bote dispatcher (hoosh). ONLY szal's own modules that szal_all_tools() reaches, in
+# single-pass order — no bote-core / majra / ai-hwaccel / stdlib, which the consumer supplies.
+# src/mcp_bundle.cyr is a comment-only header carrying that contract into the vendored file.
+# Regenerate with `cyrius distlib mcp` and commit dist/; CI regenerates it and fails on any diff
+# (`distlib --check` cannot target one profile and insists on a base bundle), then builds
+# tests/szal_consumer_bundle.tcyr against it. The full [lib] / [lib.core] profiles (dist/szal.cyr,
+# dist/szal-core.cyr) remain M5 — port-plan.md §5 — and need majra / ai-hwaccel declared: their
+# engine modules name those libs' enum constants, which distlib's standalone compile check refuses.
+[lib.mcp]
+modules = [
+    "src/mcp_bundle.cyr",
+    "src/error.cyr",
+    "src/state.cyr",
+    "src/uuid.cyr",
+    "src/md5.cyr",
+    "src/step.cyr",
+    "src/condition.cyr",
+    "src/flow.cyr",
+    "src/mcp.cyr",
+    "src/mcp_pool.cyr",
+    "src/mcp_tools_encoding.cyr",
+    "src/mcp_tools_hash.cyr",
+    "src/mcp_tools_system.cyr",
+    "src/mcp_tools_json.cyr",
+    "src/mcp_tools_template.cyr",
+    "src/mcp_tools_conversion.cyr",
+    "src/mcp_tools_math.cyr",
+    "src/mcp_tools_state.cyr",
+    "src/mcp_tools_step.cyr",
+    "src/mcp_tools_flow.cyr",
+    "src/mcp_tools_engine.cyr",
+    "src/mcp_tools_file.cyr",
+    "src/mcp_tools_process.cyr",
+    "src/mcp_tools_git.cyr",
+    "src/mcp_tools_net.cyr",
+]
 
 [deps]
 # Human-readable stdlib record (cyrius 6.x: `cyrius lib sync` provisions ./lib/).

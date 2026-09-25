@@ -28,18 +28,17 @@ include "lib/thread.cyr"
 include "lib/async.cyr"
 include "lib/patra.cyr"
 
-# ai-hwaccel VENDORED at src/vendor/ai-hwaccel.cyr (NOT a [deps] block — see cyrius.cyml: a git dep
-# forces the full-deps build path that mis-resolves error.cyr's enum-array on x86_64). Provides the
-# CachedRegistry + REQ_*/FAMILY_* surface for src/engine_hardware.cyr (row 17). Its detectors shell
-# out (nvidia-smi, etc.) + read sysfs, so it needs fs + process. Included AFTER src/error.cyr is not
-# required (vendored, no overlay), but it sits here next to its fs/process deps.
+# ai-hwaccel VENDORED at src/vendor/ai-hwaccel.cyr (NOT a [deps] block — szal keeps zero git deps;
+# see cyrius.cyml). Provides the CachedRegistry + REQ_*/FAMILY_* surface for
+# src/engine_hardware.cyr (row 17). Its detectors shell out (nvidia-smi, etc.) + read sysfs, so it
+# needs fs + process, and it sits here next to them.
 include "lib/fs.cyr"
 include "lib/process.cyr"
 include "src/vendor/ai-hwaccel.cyr"
 
-# --- vendored deps (hoosh pattern). Full majra 2.7.0 dist with szal-collision renames applied
-# (MJ_ERR_/MJ_STEP_/MJ_TRIGGER_ + majra_uuid_generate/majra_step_result_new) — synced by
-# scripts/sync-majra.sh. See docs/development/majra-vendoring.md. ---
+# --- vendored deps (hoosh pattern): the full majra dist and bote's core bundle, byte-identical to
+# their release tags (scripts/sync-majra.sh / sync-bote.sh) — the same files szal's consumers
+# vendor. szal owns the renames that keep them apart (see docs/development/majra-vendoring.md). ---
 include "src/vendor/majra.cyr"
 include "src/vendor/bote-core.cyr"
 

@@ -1,6 +1,21 @@
 # cycc sign-extends enum-constant initialisers from bit 62
 
-**Status:** 🔴 OPEN upstream. **Filed 2026-08-26** as cyrius
+**Status:** ✅ **CLOSED — archived 2026-09-25 (szal 2.2.0).** Fixed upstream in **cyrius 6.5.36**
+(CHANGELOG [6.5.36], "🔴 CRITICAL: enum constants ≥ 2^62 were silently corrupted (shipped in
+.31–.35)", reported by szal): presence moved out of band (`_vecp_base`), `_vecv_base` holds the
+raw i64, `ENUM_CONST_VAL` deleted — the fix proposed below. cyrius also now names 6.5.31–6.5.35
+as pins carrying a known Critical (`_pin_has_known_critical`). Re-verified on szal's 6.6.6 pin with
+the repro below, extended: `0x3FFF…FF`, `0x4000…00`, `0x7FFF…FE`, `0x7FFF…FF`, decimal
+`9223372036854775807` and `-1` all read back exactly, and `0x7FFF…FF > 0` is true.
+
+szal 2.2.0 therefore **restored `enum StepSat { STEP_I64_MAX = 0x7FFFFFFFFFFFFFFF; }`** and
+retired the bit-62 audit rule, and added what was missing the first time: a DIRECT value guard.
+Every earlier test compared `STEP_I64_MAX` with itself, which passes when it folds to -1;
+`tests/szal_step.tcyr` now asserts it equals the inline literal `0x7FFFFFFFFFFFFFFF` and exceeds
+`2^62 - 1`. Forcing the enum to `-1` in a scratch copy fails exactly those two assertions and no
+others.
+
+**Original status:** 🔴 OPEN upstream. **Filed 2026-08-26** as cyrius
 `docs/development/issues/2026-08-26-enum-const-bit62-sign-extension.md` (Critical), with the repro at
 `docs/development/issues/repros/2026-08-26-enum-const-bit62-sign-extension.cyr` and the root cause
 pinned to `parse_types.cyr:436` + `common/util.cyr:57-60`. Worked around szal-side at 2.1.1.

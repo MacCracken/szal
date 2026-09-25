@@ -135,16 +135,16 @@ fn _template_render_handler(args, claims) {
     var o = _tpl_parse_args(args);
     var tv = bayan_json_v_obj_get(o, "template");
     if (bayan_json_v_is_str(tv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: template"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: template"));
         return str_data(e);
     }
     var vv = bayan_json_v_obj_get(o, "variables");
     if (bayan_json_v_is_obj(vv) == 0) {
-        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: variables"));
+        var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: variables"));
         return str_data(e2);
     }
     var rendered = cond_render_template(bayan_json_v_str(tv), vv);
-    var r = result_ok(rendered);
+    var r = szal_result_ok(rendered);
     return str_data(r);
 }
 
@@ -163,9 +163,9 @@ fn _wc_handler(args, claims) {
         var fv = bayan_json_v_obj_get(o, "file");
         if (bayan_json_v_is_str(fv) == 1) {
             var path = bayan_json_v_str(fv);
-            var vr_t, vr_v = validate_path(path);
+            var vr_t, vr_v = szal_validate_path(path);
             if (is_err_result(vr_t) == 1) {
-                var e = result_error_typed(MCP_PERMISSION_DENIED, err_code_of(vr_t, vr_v));
+                var e = szal_result_error_typed(SZAL_MCP_PERMISSION_DENIED, err_code_of(vr_t, vr_v));
                 return str_data(e);
             }
             var vpath = result_unwrap(vr_t, vr_v);
@@ -176,13 +176,13 @@ fn _wc_handler(args, claims) {
                 var eb = str_builder_new();
                 str_builder_add_cstr(eb, "failed to read ");
                 str_builder_add(eb, vpath);
-                var er = result_error_typed(MCP_IO_ERROR, str_builder_build(eb));
+                var er = szal_result_error_typed(SZAL_MCP_IO_ERROR, str_builder_build(eb));
                 return str_data(er);
             }
             dptr = buf;
             dlen = n;
         } else {
-            var ev = result_error_typed(MCP_VALIDATION, str_from("provide either 'text' or 'file'"));
+            var ev = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("provide either 'text' or 'file'"));
             return str_data(ev);
         }
     }
@@ -192,7 +192,7 @@ fn _wc_handler(args, claims) {
     bayan_json_v_obj_set(out, str_from("words"), bayan_json_v_int_new(_wc_words(dptr, dlen)));
     bayan_json_v_obj_set(out, str_from("chars"), bayan_json_v_int_new(_wc_chars(dptr, dlen)));
     bayan_json_v_obj_set(out, str_from("bytes"), bayan_json_v_int_new(dlen));
-    var r = result_ok_json(out);
+    var r = szal_result_ok_json(out);
     return str_data(r);
 }
 
@@ -202,17 +202,17 @@ fn _text_replace_handler(args, claims) {
     var o = _tpl_parse_args(args);
     var tv = bayan_json_v_obj_get(o, "text");
     if (bayan_json_v_is_str(tv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: text"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: text"));
         return str_data(e);
     }
     var sv = bayan_json_v_obj_get(o, "search");
     if (bayan_json_v_is_str(sv) == 0) {
-        var e2 = result_error_typed(MCP_VALIDATION, str_from("missing required field: search"));
+        var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: search"));
         return str_data(e2);
     }
     var rv = bayan_json_v_obj_get(o, "replace");
     if (bayan_json_v_is_str(rv) == 0) {
-        var e3 = result_error_typed(MCP_VALIDATION, str_from("missing required field: replace"));
+        var e3 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: replace"));
         return str_data(e3);
     }
     var all = 1;
@@ -220,7 +220,7 @@ fn _text_replace_handler(args, claims) {
     if (bayan_json_v_is_bool(av) == 1) { all = bayan_json_v_bool(av); }
 
     var result = _str_replace(bayan_json_v_str(tv), bayan_json_v_str(sv), bayan_json_v_str(rv), all);
-    var rr = result_ok(result);
+    var rr = szal_result_ok(result);
     return str_data(rr);
 }
 
@@ -230,7 +230,7 @@ fn _text_split_handler(args, claims) {
     var o = _tpl_parse_args(args);
     var tv = bayan_json_v_obj_get(o, "text");
     if (bayan_json_v_is_str(tv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: text"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: text"));
         return str_data(e);
     }
     var delim = str_from("\n");
@@ -246,7 +246,7 @@ fn _text_split_handler(args, claims) {
         i = i + 1;
     }
     var pretty = bayan_json_v_build_pretty(arr, 2);
-    var r = result_ok(pretty);
+    var r = szal_result_ok(pretty);
     return str_data(r);
 }
 
@@ -256,7 +256,7 @@ fn _text_join_handler(args, claims) {
     var o = _tpl_parse_args(args);
     var pv = bayan_json_v_obj_get(o, "parts");
     if (bayan_json_v_is_arr(pv) == 0) {
-        var e = result_error_typed(MCP_VALIDATION, str_from("missing required field: parts"));
+        var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: parts"));
         return str_data(e);
     }
     var sep = str_from("\n");
@@ -277,7 +277,7 @@ fn _text_join_handler(args, claims) {
         i = i + 1;
     }
     var joined = str_builder_build(sb);
-    var r = result_ok(joined);
+    var r = szal_result_ok(joined);
     return str_data(r);
 }
 
@@ -349,29 +349,29 @@ fn _req1(a) {
 }
 
 # The template/text tool group: render, wc, text_replace, text_split, text_join.
-fn template_tools() {
+fn szal_template_tools() {
     var tools = vec_new();
     var tr_req = vec_new();
     vec_push(tr_req, "template");
     vec_push(tr_req, "variables");
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_template_render", "Render a mustache-style template with {{variable}} substitution",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_template_render", "Render a mustache-style template with {{variable}} substitution",
           _tpl_render_props(), tr_req), &_template_render_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_wc", "Count lines, words, and characters in text", _wc_props(), vec_new()),
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_wc", "Count lines, words, and characters in text", _wc_props(), vec_new()),
         &_wc_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_text_replace", "Search and replace text in a string",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_text_replace", "Search and replace text in a string",
           _text_replace_props(), _req3("text", "search", "replace")), &_text_replace_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_text_split", "Split text by a delimiter and return as JSON array",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_text_split", "Split text by a delimiter and return as JSON array",
           _text_split_props(), _req1("text")), &_text_split_handler));
 
-    vec_push(tools, mcp_tool_new(
-        mcp_tool_def("szal_text_join", "Join array elements into a single string with a separator",
+    vec_push(tools, szal_tool_new(
+        szal_tool_def("szal_text_join", "Join array elements into a single string with a separator",
           _text_join_props(), _req1("parts")), &_text_join_handler));
     return tools;
 }

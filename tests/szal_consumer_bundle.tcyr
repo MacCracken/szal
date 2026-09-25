@@ -1,0 +1,169 @@
+# szal_consumer_bundle.tcyr — dist/szal-mcp.cyr exactly as a consumer uses it.
+#
+# NO szal src/ module is included. The compile unit is what a gateway such as hoosh builds: the
+# stdlib leaves dist/szal-mcp.deps names, upstream bote-core and majra (src/vendor/ holds the
+# byte-identical release files, which is also what hoosh commits), and then the committed bundle.
+# So this suite fails if the bundle stops compiling on its own, needs a leaf its sidecar does not
+# name, or goes stale against src/ in a way that breaks a consumer (CI also regenerates the bundle
+# and fails on any byte of drift). The tools are driven the way a consumer drives them: JSON-RPC
+# through bote's codec, on a dispatcher the CONSUMER built.
+#
+#   cyrius build --strict --no-deps tests/szal_consumer_bundle.tcyr build/test_consumer_bundle
+#   ./build/test_consumer_bundle
+
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/hashmap.cyr"
+include "lib/syscalls.cyr"
+include "lib/tagged.cyr"
+include "lib/result.cyr"
+include "lib/fnptr.cyr"
+include "lib/trait.cyr"
+include "lib/assert.cyr"
+include "lib/io.cyr"
+include "lib/bayan.cyr"
+include "lib/chrono.cyr"
+include "lib/thread.cyr"
+include "lib/fs.cyr"
+include "lib/process.cyr"
+include "lib/args.cyr"
+include "lib/sys.cyr"
+include "lib/ct.cyr"
+include "lib/keccak.cyr"
+include "lib/thread_local.cyr"
+include "lib/sigil.cyr"
+include "lib/random.cyr"
+include "lib/math.cyr"
+include "lib/net.cyr"
+include "src/vendor/bote-core.cyr"
+include "src/vendor/majra.cyr"
+include "dist/szal-mcp.cyr"
+
+# A consumer-side tool, registered BEFORE szal's — it must survive szal_register_into.
+fn _cb_echo(args, claims) {
+    return "{\"content\":[{\"type\":\"text\",\"text\":\"consumer-echo\"}],\"isError\":false}";
+}
+
+var _cb_registered = 0;
+fn _cb_on_event(ctx, topic, payload) {
+    if (streq(topic, TOPIC_TOOL_REGISTERED()) == 1) { _cb_registered = _cb_registered + 1; }
+    return 0;
+}
+
+fn _cb_parse(s) { return bayan_json_v_parse(s); }
+
+# Run one JSON-RPC message through the codec; return the parsed `result` object.
+fn _cb_rpc(d, msg) {
+    var out = codec_process_message(msg, d, 0);
+    var o = _cb_parse(str_from(out));
+    return bayan_json_v_obj_get(o, "result");
+}
+
+# tools/call `name` with `args_json`; return the tool's result object.
+fn _cb_call(d, name, args_json) {
+    var sb = str_builder_new();
+    str_builder_add_cstr(sb, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"");
+    str_builder_add_cstr(sb, name);
+    str_builder_add_cstr(sb, "\",\"arguments\":");
+    str_builder_add_cstr(sb, args_json);
+    str_builder_add_cstr(sb, "}}");
+    var msg = str_builder_build(sb);
+    return _cb_rpc(d, str_data(msg));
+}
+
+fn _cb_text(res) {
+    var item = bayan_json_v_arr_get(bayan_json_v_obj_get(res, "content"), 0);
+    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+}
+
+fn _cb_is_error(res) { return bayan_json_v_bool(bayan_json_v_obj_get(res, "isError")); }
+
+fn t_register_into() {
+    var d = dispatcher_new(tool_registry_new());
+    dispatcher_set_events(d, event_sink_new(&_cb_on_event, 0));
+    var td = tool_def_new("consumer_echo", "Echo", schema_new("object", vec_new(), vec_new()));
+    dispatcher_register_tool(d, td, &_cb_echo);
+
+    _cb_registered = 0;
+    assert_eq(szal_register_into(d), 0, "szal_register_into on the consumer's dispatcher");
+    assert_eq(registry_len(dispatcher_registry(d)), 55, "1 consumer tool + 54 szal tools");
+    var list = _cb_rpc(d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
+    assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(list, "tools")), 55, "tools/list returns 55");
+    assert_eq(_cb_registered, 54, "the consumer's event sink heard 54 registrations");
+    assert_eq(vec_len(szal_all_tools()), 54, "szal_all_tools() is the 54");
+
+    var echo = _cb_call(d, "consumer_echo", "{}");
+    assert(str_eq_cstr(_cb_text(echo), "consumer-echo") == 1, "the consumer's own tool still dispatches");
+    return d;
+}
+
+fn t_tools_work(d) {
+    var m = _cb_call(d, "szal_math_eval", "{\"expression\": \"(2 + 3) * 4\"}");
+    assert_eq(_cb_is_error(m), 0, "szal_math_eval ok");
+    assert(str_eq_cstr(_cb_text(m), "20") == 1, "(2 + 3) * 4 = 20");
+
+    var h = _cb_call(d, "szal_sha256", "{\"input\": \"hello\"}");
+    assert(str_contains(_cb_text(h),
+        str_from("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")) == 1,
+        "szal_sha256(hello) is the known digest");
+
+    var u = _cb_call(d, "szal_uuid", "{}");
+    assert_eq(str_len(_cb_text(u)), 36, "szal_uuid returns one RFC 4122 string");
+
+    var s = _cb_call(d, "szal_state_transition", "{\"from\": \"created\", \"to\": \"running\"}");
+    assert_eq(_cb_is_error(s), 0, "szal_state_transition created -> running ok");
+    return 0;
+}
+
+# The host-facing guards hold in the consumer's build too.
+fn t_guards(d) {
+    var f = _cb_call(d, "szal_file_read", "{\"path\": \"/etc/passwd\"}");
+    assert_eq(_cb_is_error(f), 1, "szal_file_read outside the working directory is refused");
+    assert(str_contains(_cb_text(f), str_from("outside working directory")) == 1,
+        "with the confinement message");
+
+    var n = _cb_call(d, "szal_http", "{\"url\": \"http://169.254.169.254/latest/meta-data/\"}");
+    assert_eq(_cb_is_error(n), 1, "szal_http refuses the cloud-metadata address");
+
+    var x = _cb_call(d, "szal_exec", "{\"command\": \"../bin/sh\"}");
+    assert_eq(_cb_is_error(x), 1, "szal_exec refuses a path-bearing command");
+    assert(str_contains(_cb_text(x), str_from("plain executable name")) == 1, "with the path-form message");
+    return 0;
+}
+
+# The szal-owned entry points still work from the bundle alone.
+fn t_fresh_dispatchers() {
+    var d = szal_register_tools();
+    assert_eq(registry_len(dispatcher_registry(d)), 54, "szal_register_tools: 54");
+    var ev = event_sink_noop();
+    var dw = szal_register_tools_with(0, ev);
+    assert_eq(registry_len(dispatcher_registry(dw)), 54, "szal_register_tools_with: 54");
+    assert_eq(dispatcher_event_sink(dw), ev, "szal_register_tools_with: event sink attached");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("register into the consumer's dispatcher");
+    var d = t_register_into();
+
+    test_group("tools dispatch through it");
+    t_tools_work(d);
+
+    test_group("host guards");
+    t_guards(d);
+
+    test_group("szal-built dispatchers");
+    t_fresh_dispatchers();
+
+    var rc = assert_summary();
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

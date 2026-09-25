@@ -21,7 +21,7 @@ enum NetPoolL {
 }
 
 # NetworkPool::new — three rate limiters with the pool.rs default rate/burst settings.
-fn network_pool_new() {
+fn szal_network_pool_new() {
     var p = alloc(NP_SIZE);
     store64(p + NP_HTTP, ratelimit_new(10000, 50));
     store64(p + NP_DNS, ratelimit_new(100000, 200));
@@ -30,17 +30,17 @@ fn network_pool_new() {
 }
 
 # NetworkPool::check_http — is an HTTP request to `host` (cstr) allowed under the rate limit?
-fn pool_check_http(p, host) {
+fn szal_pool_check_http(p, host) {
     return ratelimit_check(load64(p + NP_HTTP), host);
 }
 
 # NetworkPool::check_dns — is a DNS lookup for `domain` (cstr) allowed under the rate limit?
-fn pool_check_dns(p, domain) {
+fn szal_pool_check_dns(p, domain) {
     return ratelimit_check(load64(p + NP_DNS), domain);
 }
 
 # NetworkPool::check_port — is a port scan for `key` (cstr) allowed under the rate limit?
-fn pool_check_port(p, key) {
+fn szal_pool_check_port(p, key) {
     return ratelimit_check(load64(p + NP_PORT), key);
 }
 
@@ -52,9 +52,9 @@ fn pool_check_port(p, key) {
 var _network_pool = 0;
 
 # Accessor for the lazily-initialised global NetworkPool (Rust's NETWORK_POOL).
-fn pool() {
+fn szal_net_pool() {
     if (_network_pool == 0) {
-        _network_pool = network_pool_new();
+        _network_pool = szal_network_pool_new();
     }
     return _network_pool;
 }
