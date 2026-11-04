@@ -111,7 +111,7 @@ fn _net_is_safe(url) {
 # (net_tools.rs 81-205). The successful-curl path is faithful but untested (tests cover rejections).
 fn _http_handler(args, claims) {
     var o = _net_parse_args(args);
-    var uv = bayan_json_v_obj_get(o, "url");
+    var uv = bayan_json_v_obj_get_by_cstr(o, "url");
     if (bayan_json_v_is_str(uv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: url"));
         return str_data(e);
@@ -136,10 +136,10 @@ fn _http_handler(args, claims) {
     }
 
     var method = "GET";
-    var mv = bayan_json_v_obj_get(o, "method");
+    var mv = bayan_json_v_obj_get_by_cstr(o, "method");
     if (bayan_json_v_is_str(mv) == 1) { method = str_cstr(bayan_json_v_str(mv)); }
     var timeout = DEFAULT_HTTP_TIMEOUT_SECS;
-    var tv = bayan_json_v_obj_get(o, "timeout_secs");
+    var tv = bayan_json_v_obj_get_by_cstr(o, "timeout_secs");
     if (bayan_json_v_is_int(tv) == 1) { timeout = bayan_json_v_int(tv); }
     var tb = str_builder_new();
     str_builder_add_int(tb, timeout);
@@ -158,7 +158,7 @@ fn _http_handler(args, claims) {
     vec_push(argv, "-D");
     vec_push(argv, "-");
 
-    var hv = bayan_json_v_obj_get(o, "headers");
+    var hv = bayan_json_v_obj_get_by_cstr(o, "headers");
     if (bayan_json_v_is_obj(hv) == 1) {
         var pairs = load64(hv + 8);
         var hn = vec_len(pairs);
@@ -187,7 +187,7 @@ fn _http_handler(args, claims) {
             }
         }
     }
-    var bv = bayan_json_v_obj_get(o, "body");
+    var bv = bayan_json_v_obj_get_by_cstr(o, "body");
     if (bayan_json_v_is_str(bv) == 1) {
         vec_push(argv, "-d");
         vec_push(argv, str_cstr(bayan_json_v_str(bv)));
@@ -266,7 +266,7 @@ fn _net_atoi(s) {
 # szal_dns_lookup: resolve a hostname (via `getent ahosts`). Mirrors DnsLookup::call (net_tools.rs 221-258).
 fn _dns_handler(args, claims) {
     var o = _net_parse_args(args);
-    var hv = bayan_json_v_obj_get(o, "hostname");
+    var hv = bayan_json_v_obj_get_by_cstr(o, "hostname");
     if (bayan_json_v_is_str(hv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: hostname"));
         return str_data(e);
@@ -365,10 +365,10 @@ fn _net_parse_ipv4(host) {
 fn _port_check_handler(args, claims) {
     var o = _net_parse_args(args);
     var host = str_from("127.0.0.1");
-    var hv = bayan_json_v_obj_get(o, "host");
+    var hv = bayan_json_v_obj_get_by_cstr(o, "host");
     if (bayan_json_v_is_str(hv) == 1) { host = bayan_json_v_str(hv); }
 
-    var pv = bayan_json_v_obj_get(o, "port");
+    var pv = bayan_json_v_obj_get_by_cstr(o, "port");
     if (bayan_json_v_is_int(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: port"));
         return str_data(e);
@@ -383,7 +383,7 @@ fn _port_check_handler(args, claims) {
         return str_data(er);
     }
     var timeout_ms = DEFAULT_PORT_CHECK_TIMEOUT_MS;
-    var tv = bayan_json_v_obj_get(o, "timeout_ms");
+    var tv = bayan_json_v_obj_get_by_cstr(o, "timeout_ms");
     if (bayan_json_v_is_int(tv) == 1) { timeout_ms = bayan_json_v_int(tv); }
 
     var kb = str_builder_new();
@@ -433,14 +433,14 @@ fn _net_unhex(c) {
 # szal_url_encode: percent-encode/decode. Mirrors UrlEncode::call (net_tools.rs 350-413).
 fn _url_encode_handler(args, claims) {
     var o = _net_parse_args(args);
-    var iv = bayan_json_v_obj_get(o, "input");
+    var iv = bayan_json_v_obj_get_by_cstr(o, "input");
     if (bayan_json_v_is_str(iv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: input"));
         return str_data(e);
     }
     var input = bayan_json_v_str(iv);
     var op = "encode";
-    var ov = bayan_json_v_obj_get(o, "operation");
+    var ov = bayan_json_v_obj_get_by_cstr(o, "operation");
     if (bayan_json_v_is_str(ov) == 1) { op = str_cstr(bayan_json_v_str(ov)); }
 
     if (streq(op, "encode") == 1) {

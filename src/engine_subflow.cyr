@@ -61,7 +61,7 @@ fn _sub_flow_dispatch(step, ctx) {
     var flow_name = 0;
     var config = step_config(step);
     if (config != 0) {
-        var fnv = bayan_json_v_obj_get(config, "flow_name");
+        var fnv = bayan_json_v_obj_get_by_cstr(config, "flow_name");
         if (bayan_json_v_is_str(fnv) == 1) { flow_name = bayan_json_v_str(fnv); }
     }
     if (flow_name == 0) {

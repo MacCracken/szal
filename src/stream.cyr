@@ -10,8 +10,11 @@
 # `subscriber_count`, a configurable per-subscriber backlog, and the no-subscribers-is-a-no-op
 # behavior. ONE lag-semantics divergence vs tokio broadcast (parity-notes §9): Cyrius `chan_send`
 # BLOCKS when a subscriber's channel is full, whereas tokio broadcast drops the oldest and lets the
-# slow subscriber observe `Lagged`. Cyrius has no non-blocking `chan_try_send`, so a wedged slow
-# subscriber back-pressures the producer instead of losing events. Bound `capacity` accordingly.
+# slow subscriber observe `Lagged`. The hub fans out with the blocking `chan_send`, so a wedged slow
+# subscriber back-pressures the producer instead of losing events — on Linux, and from cyrius
+# 6.6.16 on arm64 macOS and Windows too (their channels used to drop the event when full). The
+# stdlib's non-blocking `chan_try_send` (cyrius 6.4.84; -2 when full) would let the hub drop
+# instead; adopting it is a behaviour change, not done here. Bound `capacity` accordingly.
 #
 # Usage: include "src/stream.cyr" (after engine_core — uses StepProgress accessors + cb_new).
 # Requires: src/engine_core.cyr (StepProgress accessors, cb_new), lib/thread.cyr (chan_new/chan_send),

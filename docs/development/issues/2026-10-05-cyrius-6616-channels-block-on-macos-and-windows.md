@@ -5,7 +5,14 @@
 **Severity:** none expected — the new behaviour is the contract szal's own comments already document.
 **Checked against:** szal **2.2.0** (pin `cyrius = "6.6.6"`), read only, not measured.
 
-⛔ Nothing to do until cyrius 6.6.16 is tagged and out and szal's pin moves to it.
+> **Progress at szal 2.2.1 (2026-11-03, pin `cyrius = "6.6.20"`):** the pin is past 6.6.16. The stale
+> `chan_try_send` sentence is fixed in `src/stream.cyr` and parity-notes §9 (comment and note only; the
+> hub still blocks). On Linux x86_64, `tests/szal_stream.tcyr`, `szal_engine_parallel.tcyr` and
+> `szal_engine_parallel_stress.tcyr` pass, with the rest of the 47 suites. **Still open:** nothing has run
+> them on arm64 macOS or Windows — CI is `ubuntu-latest` only — and that run is this issue's closing
+> condition.
+
+~~⛔ Nothing to do until cyrius 6.6.16 is tagged and out and szal's pin moves to it.~~ (done at 2.2.1)
 
 ## What changed in cyrius
 

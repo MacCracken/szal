@@ -133,12 +133,12 @@ fn _wc_chars(d, n) {
 # (template_tools.rs 24-52).
 fn _template_render_handler(args, claims) {
     var o = _tpl_parse_args(args);
-    var tv = bayan_json_v_obj_get(o, "template");
+    var tv = bayan_json_v_obj_get_by_cstr(o, "template");
     if (bayan_json_v_is_str(tv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: template"));
         return str_data(e);
     }
-    var vv = bayan_json_v_obj_get(o, "variables");
+    var vv = bayan_json_v_obj_get_by_cstr(o, "variables");
     if (bayan_json_v_is_obj(vv) == 0) {
         var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: variables"));
         return str_data(e2);
@@ -154,13 +154,13 @@ fn _wc_handler(args, claims) {
     var dptr = 0;
     var dlen = 0;
 
-    var tv = bayan_json_v_obj_get(o, "text");
+    var tv = bayan_json_v_obj_get_by_cstr(o, "text");
     if (bayan_json_v_is_str(tv) == 1) {
         var input = bayan_json_v_str(tv);
         dptr = str_data(input);
         dlen = str_len(input);
     } else {
-        var fv = bayan_json_v_obj_get(o, "file");
+        var fv = bayan_json_v_obj_get_by_cstr(o, "file");
         if (bayan_json_v_is_str(fv) == 1) {
             var path = bayan_json_v_str(fv);
             var vr_t, vr_v = szal_validate_path(path);
@@ -200,23 +200,23 @@ fn _wc_handler(args, claims) {
 # Mirrors TextReplace::call (template_tools.rs 132-173).
 fn _text_replace_handler(args, claims) {
     var o = _tpl_parse_args(args);
-    var tv = bayan_json_v_obj_get(o, "text");
+    var tv = bayan_json_v_obj_get_by_cstr(o, "text");
     if (bayan_json_v_is_str(tv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: text"));
         return str_data(e);
     }
-    var sv = bayan_json_v_obj_get(o, "search");
+    var sv = bayan_json_v_obj_get_by_cstr(o, "search");
     if (bayan_json_v_is_str(sv) == 0) {
         var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: search"));
         return str_data(e2);
     }
-    var rv = bayan_json_v_obj_get(o, "replace");
+    var rv = bayan_json_v_obj_get_by_cstr(o, "replace");
     if (bayan_json_v_is_str(rv) == 0) {
         var e3 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: replace"));
         return str_data(e3);
     }
     var all = 1;
-    var av = bayan_json_v_obj_get(o, "all");
+    var av = bayan_json_v_obj_get_by_cstr(o, "all");
     if (bayan_json_v_is_bool(av) == 1) { all = bayan_json_v_bool(av); }
 
     var result = _str_replace(bayan_json_v_str(tv), bayan_json_v_str(sv), bayan_json_v_str(rv), all);
@@ -228,13 +228,13 @@ fn _text_replace_handler(args, claims) {
 # (template_tools.rs 193-215).
 fn _text_split_handler(args, claims) {
     var o = _tpl_parse_args(args);
-    var tv = bayan_json_v_obj_get(o, "text");
+    var tv = bayan_json_v_obj_get_by_cstr(o, "text");
     if (bayan_json_v_is_str(tv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: text"));
         return str_data(e);
     }
     var delim = str_from("\n");
-    var dv = bayan_json_v_obj_get(o, "delimiter");
+    var dv = bayan_json_v_obj_get_by_cstr(o, "delimiter");
     if (bayan_json_v_is_str(dv) == 1) { delim = bayan_json_v_str(dv); }
 
     var parts = _split_by_str(bayan_json_v_str(tv), delim);
@@ -254,13 +254,13 @@ fn _text_split_handler(args, claims) {
 # (template_tools.rs 234-253).
 fn _text_join_handler(args, claims) {
     var o = _tpl_parse_args(args);
-    var pv = bayan_json_v_obj_get(o, "parts");
+    var pv = bayan_json_v_obj_get_by_cstr(o, "parts");
     if (bayan_json_v_is_arr(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: parts"));
         return str_data(e);
     }
     var sep = str_from("\n");
-    var sv = bayan_json_v_obj_get(o, "separator");
+    var sv = bayan_json_v_obj_get_by_cstr(o, "separator");
     if (bayan_json_v_is_str(sv) == 1) { sep = bayan_json_v_str(sv); }
 
     var sb = str_builder_new();

@@ -158,12 +158,19 @@ slow subscriber observes `RecvError::Lagged` and the producer never stalls (the 
 events are dropped for that subscriber). The Cyrius port (`stream.cyr`) fans each event out to a
 per-subscriber bounded `chan_new(capacity)` (port-plan §4 row 22's documented alternative).
 
-**Divergence:** Cyrius has only a **blocking `chan_send`** (no `chan_try_send`), so when a
-subscriber's channel is full the producer BLOCKS until that subscriber drains, rather than dropping
-the oldest event and continuing. A wedged slow subscriber back-pressures the engine's progress
-emission instead of losing events.
+**Divergence:** `_hub_publish` sends with the **blocking `chan_send`**, so when a subscriber's
+channel is full the producer BLOCKS until that subscriber drains, rather than dropping the oldest
+event and continuing. A wedged slow subscriber back-pressures the engine's progress emission instead
+of losing events. Through cyrius 6.6.15 that held on Linux only — arm64 macOS and Windows channels
+returned -1 and dropped the event when full; from 6.6.16 (szal pins 6.6.20 since 2.2.1) they block
+as well.
 
-**Why accepted:** the stdlib offers no non-blocking bounded send, and the alternatives (a background
+> **Corrected 2.2.1:** this note used to say the stdlib has no `chan_try_send`. It has had one since
+> cyrius 6.4.84 (`0` sent, `-1` closed, `-2` full), so a drop-instead-of-block hub is now a small
+> change — but a behavioural one, for its own release alongside majra's `PUBSUB_LAG_*`
+> (state.md "Next"). The reasoning below is the original 2.0.0 rationale.
+
+**Why accepted:** the stdlib offered no non-blocking bounded send, and the alternatives (a background
 drain thread per subscriber, or a custom ring buffer) add real machinery for a fan-out whose only
 caller is fire-and-forget progress telemetry. Per-subscriber channels give exact `subscriber_count`,
 a configurable per-subscriber backlog (`capacity`, clamped ≥1 like Rust), and the no-subscribers-is-

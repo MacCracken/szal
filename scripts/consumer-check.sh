@@ -96,7 +96,7 @@ fn main() {
     if (szal_register_into(d) != 0) { println("FAIL: szal_register_into"); return 1; }
     var out = codec_process_message("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", d, 0);
     var o = _probe_parse(str_from(out));
-    var n = bayan_json_v_arr_len(bayan_json_v_obj_get(bayan_json_v_obj_get(o, "result"), "tools"));
+    var n = bayan_json_v_arr_len(bayan_json_v_obj_get_by_cstr(bayan_json_v_obj_get_by_cstr(o, "result"), "tools"));
     print("   tools/list after szal_register_into: ", 40);
     fmt_int(n);
     print("\n", 1);

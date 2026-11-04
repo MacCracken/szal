@@ -40,14 +40,14 @@ fn _hash_result(algo, hex_c, nbytes) {
 fn _sha256_handler(args, claims) {
     var o = _hash_parse_args(args);
 
-    var iv = bayan_json_v_obj_get(o, "input");
+    var iv = bayan_json_v_obj_get_by_cstr(o, "input");
     if (bayan_json_v_is_str(iv) == 1) {
         var input = bayan_json_v_str(iv);
         var h = sha256_hex(str_data(input), str_len(input));
         return _hash_result("sha256", h, str_len(input));
     }
 
-    var fv = bayan_json_v_obj_get(o, "file");
+    var fv = bayan_json_v_obj_get_by_cstr(o, "file");
     if (bayan_json_v_is_str(fv) == 1) {
         var path = bayan_json_v_str(fv);
         var vr_t, vr_v = szal_validate_path(path);
@@ -77,7 +77,7 @@ fn _sha256_handler(args, claims) {
 # szal_md5 handler: hash the required `input` string. Mirrors Md5::call (hash_tools.rs 83-109).
 fn _md5_handler(args, claims) {
     var o = _hash_parse_args(args);
-    var iv = bayan_json_v_obj_get(o, "input");
+    var iv = bayan_json_v_obj_get_by_cstr(o, "input");
     if (bayan_json_v_is_str(iv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: input"));
         return str_data(e);
@@ -92,7 +92,7 @@ fn _md5_handler(args, claims) {
 fn _random_token_handler(args, claims) {
     var o = _hash_parse_args(args);
     var nbytes = 32;
-    var bv = bayan_json_v_obj_get(o, "bytes");
+    var bv = bayan_json_v_obj_get_by_cstr(o, "bytes");
     if (bayan_json_v_is_int(bv) == 1) {
         var b = bayan_json_v_int(bv);
         if (b >= 0) { nbytes = b; }

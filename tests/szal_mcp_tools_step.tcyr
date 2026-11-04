@@ -38,9 +38,9 @@ fn _call(fp, args) {
 
 fn _result_text(r) {
     var o = bayan_json_v_parse(r);
-    var content = bayan_json_v_obj_get(o, "content");
+    var content = bayan_json_v_obj_get_by_cstr(o, "content");
     var item = bayan_json_v_arr_get(content, 0);
-    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+    return bayan_json_v_str(bayan_json_v_obj_get_by_cstr(item, "text"));
 }
 
 # Call a handler with {step_json: <sj>} built via bayan (handles escaping).
@@ -58,7 +58,7 @@ fn t_create_basic() {
     var r = _call(&_step_create_handler, "{\"name\": \"build\"}");
     assert(str_contains(r, str_from("\"isError\":false")), "create ok");
     var step = bayan_json_v_parse(_result_text(r));
-    assert(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(step, "name")), "build"), "name = build");
+    assert(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(step, "name")), "build"), "name = build");
     return 0;
 }
 
@@ -68,9 +68,9 @@ fn t_create_full() {
     "{\"name\": \"deploy\", \"timeout_ms\": 60000, \"max_retries\": 3, \"retry_delay_ms\": 5000, \"rollbackable\": true}");
     assert(str_contains(r, str_from("\"isError\":false")), "create full ok");
     var step = bayan_json_v_parse(_result_text(r));
-    assert_eq(bayan_json_v_int(bayan_json_v_obj_get(step, "timeout_ms")), 60000, "timeout 60000");
-    assert_eq(bayan_json_v_int(bayan_json_v_obj_get(step, "max_retries")), 3, "max_retries 3");
-    assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(step, "rollbackable")), 1, "rollbackable true");
+    assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(step, "timeout_ms")), 60000, "timeout 60000");
+    assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(step, "max_retries")), 3, "max_retries 3");
+    assert_eq(bayan_json_v_bool(bayan_json_v_obj_get_by_cstr(step, "rollbackable")), 1, "rollbackable true");
     return 0;
 }
 

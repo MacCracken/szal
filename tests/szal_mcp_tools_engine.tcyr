@@ -34,9 +34,9 @@ fn _call(fp, args) {
 
 fn _result_text(r) {
     var o = bayan_json_v_parse(r);
-    var content = bayan_json_v_obj_get(o, "content");
+    var content = bayan_json_v_obj_get_by_cstr(o, "content");
     var item = bayan_json_v_arr_get(content, 0);
-    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+    return bayan_json_v_str(bayan_json_v_obj_get_by_cstr(item, "text"));
 }
 
 fn _eng_ctx(s) { return bayan_json_v_parse(s); }
@@ -126,10 +126,10 @@ fn t_server_info() {
     assert(n > 0, "VERSION readable from the working directory");
     while (n > 0 && load8(buf + n - 1) <= 32) { n = n - 1; }
     var want = str_new(buf, n);
-    var got = bayan_json_v_str(bayan_json_v_obj_get(_eng_ctx(text), "version"));
+    var got = bayan_json_v_str(bayan_json_v_obj_get_by_cstr(_eng_ctx(text), "version"));
     assert(str_eq(got, want) == 1, "server_info version == VERSION");
     # ...and the description is the Rust crate's CARGO_PKG_DESCRIPTION (rust-old/Cargo.toml).
-    var desc = bayan_json_v_str(bayan_json_v_obj_get(_eng_ctx(text), "description"));
+    var desc = bayan_json_v_str(bayan_json_v_obj_get_by_cstr(_eng_ctx(text), "description"));
     assert(str_eq_cstr(desc,
         "Workflow engine — step/flow execution with branching, retry, rollback, and parallel stages") == 1,
         "server_info description == the Rust crate's");

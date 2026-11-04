@@ -15,33 +15,33 @@ fn _stp_parse_args(args) {
 # szal_step_create: build a StepDef from optional fields. Mirrors StepCreate::call (step_tools.rs 34-89).
 fn _step_create_handler(args, claims) {
     var o = _stp_parse_args(args);
-    var nv = bayan_json_v_obj_get(o, "name");
+    var nv = bayan_json_v_obj_get_by_cstr(o, "name");
     if (bayan_json_v_is_str(nv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: name"));
         return str_data(e);
     }
     var step = step_new(bayan_json_v_str(nv));
 
-    var dv = bayan_json_v_obj_get(o, "description");
+    var dv = bayan_json_v_obj_get_by_cstr(o, "description");
     if (bayan_json_v_is_str(dv) == 1) { store64(step + SD_DESCRIPTION, bayan_json_v_str(dv)); }
 
-    var tv = bayan_json_v_obj_get(o, "timeout_ms");
+    var tv = bayan_json_v_obj_get_by_cstr(o, "timeout_ms");
     if (bayan_json_v_is_int(tv) == 1) { step = step_with_timeout(step, bayan_json_v_int(tv)); }
 
-    var rv = bayan_json_v_obj_get(o, "max_retries");
+    var rv = bayan_json_v_obj_get_by_cstr(o, "max_retries");
     if (bayan_json_v_is_int(rv) == 1) {
         var delay = 1000;
-        var ddv = bayan_json_v_obj_get(o, "retry_delay_ms");
+        var ddv = bayan_json_v_obj_get_by_cstr(o, "retry_delay_ms");
         if (bayan_json_v_is_int(ddv) == 1) { delay = bayan_json_v_int(ddv); }
         step = step_with_retries(step, bayan_json_v_int(rv), delay);
     }
 
-    var bv = bayan_json_v_obj_get(o, "rollbackable");
+    var bv = bayan_json_v_obj_get_by_cstr(o, "rollbackable");
     if (bayan_json_v_is_bool(bv) == 1) {
         if (bayan_json_v_bool(bv) == 1) { step = step_with_rollback(step); }
     }
 
-    var deps = bayan_json_v_obj_get(o, "depends_on");
+    var deps = bayan_json_v_obj_get_by_cstr(o, "depends_on");
     if (bayan_json_v_is_arr(deps) == 1) {
         var n = bayan_json_v_arr_len(deps);
         var i = 0;
@@ -73,7 +73,7 @@ fn _step_create_handler(args, claims) {
 # (step_tools.rs 107-145).
 fn _step_validate_handler(args, claims) {
     var o = _stp_parse_args(args);
-    var jv = bayan_json_v_obj_get(o, "step_json");
+    var jv = bayan_json_v_obj_get_by_cstr(o, "step_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: step_json"));
         return str_data(e);
@@ -117,7 +117,7 @@ fn _step_validate_handler(args, claims) {
 # szal_step_inspect: structured config of a StepDef. Mirrors StepInspect::call (step_tools.rs 163-198).
 fn _step_inspect_handler(args, claims) {
     var o = _stp_parse_args(args);
-    var jv = bayan_json_v_obj_get(o, "step_json");
+    var jv = bayan_json_v_obj_get_by_cstr(o, "step_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: step_json"));
         return str_data(e);

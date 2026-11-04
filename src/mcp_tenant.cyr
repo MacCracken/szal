@@ -119,27 +119,27 @@ fn tenant_ctx_to_json(c) {
 # -> None; missing quota fields -> 0.
 fn _tenant_ctx_from_v(o) {
     var id = 0;
-    var id_v = bayan_json_v_obj_get(o, "tenant_id");
+    var id_v = bayan_json_v_obj_get_by_cstr(o, "tenant_id");
     if (bayan_json_v_is_str(id_v) == 1) { id = bayan_json_v_str(id_v); }
 
     var dn = 0;
-    var dn_v = bayan_json_v_obj_get(o, "display_name");
+    var dn_v = bayan_json_v_obj_get_by_cstr(o, "display_name");
     if (bayan_json_v_is_str(dn_v) == 1) { dn = bayan_json_v_str(dn_v); }
 
     var rate = f64_from(0);
     var max_flows = 0;
-    var q_v = bayan_json_v_obj_get(o, "quota");
+    var q_v = bayan_json_v_obj_get_by_cstr(o, "quota");
     if (q_v != 0) {
-        var r_v = bayan_json_v_obj_get(q_v, "max_requests_per_sec");
+        var r_v = bayan_json_v_obj_get_by_cstr(q_v, "max_requests_per_sec");
         if (bayan_json_v_is_float(r_v) == 1 || bayan_json_v_is_int(r_v) == 1) {
             rate = bayan_json_v_float(r_v);
         }
-        var mf_v = bayan_json_v_obj_get(q_v, "max_concurrent_flows");
+        var mf_v = bayan_json_v_obj_get_by_cstr(q_v, "max_concurrent_flows");
         if (bayan_json_v_is_int(mf_v) == 1) { max_flows = bayan_json_v_int(mf_v); }
     }
 
     var allowed = 0;
-    var at_v = bayan_json_v_obj_get(o, "allowed_tools");
+    var at_v = bayan_json_v_obj_get_by_cstr(o, "allowed_tools");
     if (bayan_json_v_is_arr(at_v) == 1) {
         allowed = map_new_str();
         var n = bayan_json_v_arr_len(at_v);

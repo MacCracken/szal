@@ -110,7 +110,7 @@ fn _cwd_handler(args, claims) {
 # szal_env_get: value of env var `name` (required). Unset -> NotFound. Mirrors EnvGet::call (system_tools.rs 95-116).
 fn _env_get_handler(args, claims) {
     var o = _sys_parse_args(args);
-    var nv = bayan_json_v_obj_get(o, "name");
+    var nv = bayan_json_v_obj_get_by_cstr(o, "name");
     if (bayan_json_v_is_str(nv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: name"));
         return str_data(e);

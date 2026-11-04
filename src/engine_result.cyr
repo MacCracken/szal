@@ -140,22 +140,22 @@ fn flow_result_to_json(fr) {
 # flow_result_from_json wraps the Str entry. Returns 0 on OOM.
 fn _flow_result_from_v(o) {
     if (o == 0) { return 0; }
-    var name_v = bayan_json_v_obj_get(o, "flow_name");
+    var name_v = bayan_json_v_obj_get_by_cstr(o, "flow_name");
     var name = str_from("");
     if (bayan_json_v_is_str(name_v) == 1) { name = bayan_json_v_str(name_v); }
     var dur = 0;
-    var dur_v = bayan_json_v_obj_get(o, "total_duration_ms");
+    var dur_v = bayan_json_v_obj_get_by_cstr(o, "total_duration_ms");
     if (bayan_json_v_is_int(dur_v) == 1) { dur = bayan_json_v_int(dur_v); }
     var success = 0;
-    var su_v = bayan_json_v_obj_get(o, "success");
+    var su_v = bayan_json_v_obj_get_by_cstr(o, "success");
     if (bayan_json_v_is_bool(su_v) == 1) { success = bayan_json_v_bool(su_v); }
     var rb = 0;
-    var rb_v = bayan_json_v_obj_get(o, "rolled_back");
+    var rb_v = bayan_json_v_obj_get_by_cstr(o, "rolled_back");
     if (bayan_json_v_is_bool(rb_v) == 1) { rb = bayan_json_v_bool(rb_v); }
     var fr = flow_result_new(name, dur, success, rb);
     if (fr == 0) { return 0; }
     # steps (default empty; array of StepResult objects)
-    var steps_v = bayan_json_v_obj_get(o, "steps");
+    var steps_v = bayan_json_v_obj_get_by_cstr(o, "steps");
     if (bayan_json_v_is_arr(steps_v) == 1) {
         var sn = bayan_json_v_arr_len(steps_v);
         var i = 0;

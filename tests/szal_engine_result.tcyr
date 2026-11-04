@@ -110,7 +110,7 @@ fn main() {
     assert_eq(step_result_duration_ms(bs), 100, "round-trip step duration");
     # the nested object output survived
     var bout = step_result_output(bs);
-    assert(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(bout, "key")), "value"),
+    assert(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(bout, "key")), "value"),
     "round-trip nested output.key == value");
 
     # empty FlowResult round-trips to empty steps + zero counts.

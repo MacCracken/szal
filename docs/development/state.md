@@ -5,16 +5,20 @@
 
 ## Version
 
-**2.2.0** (2026-09-25) — Rust→Cyrius port. Rust 1.2.0 (13172 lines) frozen at `rust-old/` (git tag
+**2.2.1** (2026-11-03) — Rust→Cyrius port. Rust 1.2.0 (13172 lines) frozen at `rust-old/` (git tag
 `1.2.0`) as the parity oracle. `VERSION` is the single source of truth; `cyrius.cyml` reads
 `${file:VERSION}`, and `scripts/version-bump.sh` also writes the one derived copy, `var SZAL_VERSION`
 in `src/mcp_tools_engine.cyr` (what `szal_server_info` reports; CI cross-checks the two).
 
 ## Toolchain
 
-- **Cyrius pin**: `6.6.6` (`cyrius.cyml [package].cyrius`). Suite at this pin: **1,494 assertions
+- **Cyrius pin**: `6.6.20` (`cyrius.cyml [package].cyrius`). Suite at this pin: **1,495 assertions
   across 47 test files**, 5 fuzz harnesses (356,290 properties), 15 benchmarks, main — 0 failures.
-  History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 → 6.2.2 → 6.5.2 → 6.5.35 → 6.6.2 → 6.6.6.
+  (2.2.0 recorded 1,494; its tree counts 1,495 on 6.6.6 too, suite for suite.)
+  History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 → 6.2.2 → 6.5.2 → 6.5.35 → 6.6.2 → 6.6.6
+  → 6.6.20. The vendored libraries follow the pin: each is at its last release pinned to it.
+- **`cyrius build` writes `cyrius.lock`** (from 6.6.20): the hashes of the provisioned stdlib files
+  plus a `cyrius <pin>` trailer. Deterministic, and committed (the siblings commit theirs).
 - **The pin now selects the compiler.** The 6.6.x wrapper re-execs `~/.cyrius/versions/<pin>/bin/
   cyrius` and that binary uses its SIBLING `cycc`, so plain `cyrius build` compiles with the pinned
   compiler (`cyrius --version` inside the repo prints the pin). The 2.1.1-era trap — a newer
@@ -30,11 +34,19 @@ in `src/mcp_tools_engine.cyr` (what `szal_server_info` reports; CI cross-checks 
 - **Both szal toolchain workarounds are retired** (2.2.0): `thread_join`'s lost wakeup was fixed in
   cyrius 6.5.8, and the bit-62 enum-constant fold in 6.5.36 (cyrius now names 6.5.31–6.5.35 as pins
   with a known Critical). History: `issues/archive/`.
-- **Enum constants past var index 1024 are not constant-folded** (cycc `PARSE_ENUM_DEF`): they act as
-  globals, and a later same-named declaration wins for EVERY read, including code compiled earlier.
-  That is how two szal files each declaring `TOK_LPAREN` broke the condition parser in every build
-  with the math tool (fixed 2.2.0). `scripts/scan-collisions.sh` now flags any name two szal files
-  both define; `cyrius build --strict` does not.
+- **A later same-named enum constant wins for EVERY read, including code compiled earlier** — at any
+  var index, on 6.6.6 and 6.6.20 alike (measured at 2.2.1). That is how two szal files each
+  declaring `TOK_LPAREN` broke the condition parser in every build with the math tool (fixed 2.2.0).
+  Through cyrius 6.6.7 a constant past var index 1024 was also not folded and its conflicting
+  redeclaration printed nothing; from 6.6.8 it folds (so `var buf[ENUM]` works at any index) and the
+  conflict warns. `scripts/scan-collisions.sh` flags any name two szal files both define, and every
+  cross-kind clash `cyrius build --strict` is still silent on.
+- **`cyrius distlib`'s sidecar verify reads the stdlib snapshot in filesystem-listing order** (6.6.20):
+  a name two leaves both declare goes to whichever is listed first, so a sidecar can differ between
+  hosts. szal's did (`O_WRONLY`: `io` vs the syscalls peers); `src/mcp_bundle.cyr`'s `include
+  "lib/io.cyr"` seeds the verify so it cannot. Re-check after any change to the bundle's modules:
+  copy `~/.cyrius/versions/<pin>` into two `CYRIUS_HOME` roots on tmpfs, filling `lib/` in opposite
+  orders, run `cyrius distlib mcp` in a scratch copy of the tree under each, and `cmp` the outputs.
 
 ## Milestone
 
@@ -416,13 +428,14 @@ ported, tested (per-group + full-stack), security-audited (validate_path / no-sh
   `enum { K = 0x7FFFFFFFFFFFFFFF }` to -1. `STEP_I64_MAX` is an enum again, and `tests/szal_step.tcyr`
   compares it with inline literals. Write-up:
   [`issues/archive/2026-08-26-cycc-enum-bit62-sign-extension.md`](issues/archive/2026-08-26-cycc-enum-bit62-sign-extension.md).
-- **Enum-constant redeclaration** — see the Toolchain section: past var index 1024 the last
-  declaration wins everywhere. Never declare a name another szal file declares.
-- **`var buf[N]` sizing:** N must be an integer literal or ONE enum constant, and an enum constant is
-  only honoured below var index 1024 (`FINDVAR`), so whether it compiles depends on how many globals
-  the preceding includes declared. **Use a literal** and keep the enum as the documented name
-  (`src/error.cyr`, `src/md5.cyr`). This was also the real cause of the old "full-deps `cyrius build`
-  breaks `var buf[ENUM_CONST]`" note — full deps just added globals. Per-call buffers: `alloc(N)`.
+- **Enum-constant redeclaration** — see the Toolchain section: the last declaration wins everywhere,
+  at any var index. Never declare a name another szal file declares.
+- **`var buf[N]` sizing:** N must be an integer literal or ONE enum constant. Through cyrius 6.6.7 an
+  enum constant was only honoured below var index 1024, so whether it compiled depended on how many
+  globals the preceding includes declared — the real cause of the old "full-deps `cyrius build`
+  breaks `var buf[ENUM_CONST]`" note. 6.6.8 lifted that (verified at 6.6.20). szal still sizes with a
+  literal and keeps the enum as the documented name (`src/error.cyr`, `src/md5.cyr`) — harmless, and
+  it keeps a consumer on an older stdlib building. Per-call buffers: `alloc(N)`.
 - **bayan inline-parse miscompile:** calling `bayan_json_v_parse(...)` directly in `main()` or a test
   fn when bayan + several project modules are included can read stale parser globals → every parse
   returns 0. Route parsing through a one-line helper fn (`fn ctx_of(j) { return bayan_json_v_parse(j); }`).
@@ -452,8 +465,11 @@ ported, tested (per-group + full-stack), security-audited (validate_path / no-sh
 - **Every public name is szal-prefixed** (ADR 0002). Tool-file helpers use a group prefix
   (`_math_*`, `_mev_*`, `_proc_*`), and constants a module-owned prefix (`MEV_TOK_*`) — never a bare
   name another szal file might also declare.
-- sigil needs `lib/ct.cyr` + `lib/thread_local.cyr` before it; its unreachable SHA-3 paths leave
-  `shake256` / `_keccak_*` undefined-function warnings, and 3.12.18 adds `sys_uname` (DCE'd).
+- **Read a JSON field with `bayan_json_v_obj_get_by_cstr(o, "key")`** (or `_by_str` for a Str key).
+  The old `bayan_json_v_obj_get` is deprecated since bayan 1.5.10 and warns at every call; szal moved
+  off it at 2.2.1.
+- sigil needs `lib/ct.cyr` + `lib/thread_local.cyr` before it. Its `shake256` / `_keccak_*` /
+  `sys_uname` undefined-function warnings are gone at cyrius 6.6.20 (sigil 3.13.10 brings its leaves).
 
 ## Build/test recipe (validated)
 
@@ -467,7 +483,8 @@ scripts/consumer-check.sh [../hoosh]                         # the bundle agains
 ```
 
 szal has zero git deps (all three libraries vendored at `src/vendor/`), so `cyrius lib sync` +
-`--no-deps` is complete; `cyrius deps` has nothing to resolve and writes no `cyrius.lock` here.
+`--no-deps` is complete; `cyrius deps` has nothing to resolve. `cyrius build` (re)writes
+`cyrius.lock` — commit it when the pin changes.
 **CI (`.github/workflows/ci.yml`)**: harness manifest → install the pin → verify toolchain == pin →
 `cyrius lib sync` → build → collision scan → consumer bundle (regenerate + no drift + generic
 consumer scan) → lint, `fmt --check` and `doc --check` over `src/*.cyr` → the 47 suites
@@ -476,41 +493,45 @@ consumer scan) → lint, `fmt --check` and `doc --check` over `src/*.cyr` → th
 
 ## Dependencies
 
-Every dependency is at its latest release, and szal has **zero git deps**.
+Every dependency is at its last release pinned to szal's cyrius (6.6.20), and szal has **zero git
+deps**. Newer releases of all three exist and pin cyrius 6.7.x; they come with a 6.7 pin move.
 
-- **stdlib** — `cyrius lib sync` at the 6.6.6 snapshot (58 files); `math` / `trait` resolve from the
-  snapshot (see Toolchain).
-- **majra 2.9.1**, **bote-core 3.3.13**, **ai-hwaccel 2.4.0** — vendored at `src/vendor/`
-  **byte-for-byte** from their release tags (`scripts/sync-{majra,bote,ai-hwaccel}.sh` use
-  `git show <tag>:…` and check the dist's `# Version:` line). They are the same files hoosh vendors.
-  szal renames nothing inside them — szal renames its own side (ADR 0002). Maintenance record:
-  [`majra-vendoring.md`](majra-vendoring.md).
+- **stdlib** — `cyrius lib sync` at the 6.6.20 snapshot (58 files; bayan 1.5.12, sigil 3.13.10,
+  patra 1.15.2, sakshi 2.5.7); `math` / `trait` resolve from the snapshot (see Toolchain).
+- **majra 2.9.3**, **bote-core 3.3.17**, **ai-hwaccel 2.4.2** — vendored at `src/vendor/`
+  **byte-for-byte** from their release tags (`scripts/sync-{majra,bote,ai-hwaccel}.sh <checkout>
+  <tag>` use `git show <tag>:…` and check the dist's `# Version:` line). They are the same files
+  hoosh 2.8.2 vendors. szal renames nothing inside them — szal renames its own side (ADR 0002).
+  Maintenance record: [`majra-vendoring.md`](majra-vendoring.md).
 - **Collision status:** `scripts/scan-collisions.sh` reports ONE intersection anywhere in szal's
   build — `REQ_NONE`, shared with ai-hwaccel on purpose and allow-listed only while both values are
   0. The scanner is the authority, not the compiler: `cyrius build --strict` is silent on `fn` x data,
-  `fn` x enum-constant, struct and enum-type clashes, equal-value duplicates, and — the class that
-  bit at 2.2.0 — enum constants past var index 1024.
-- **Known, harmless warnings in the main build (28):** unreachable `undefined function` for
-  `argc`/`argv` (an ai-hwaccel arg helper), `sys_uname` / `shake256` / `_keccak_*` (sigil paths szal
-  does not reach), sigil's static-storage frame-budget warning, `large static data`, and the
-  "assigning non-pointer to typed pointer" family.
+  `fn` x enum-constant and enum-type clashes and on equal-value duplicates (6.6.20 does warn on a
+  struct redefined with another layout, and on enum conflicts past var index 1024).
+- **Known, harmless warnings in the main build (22):** 20 of the "assigning non-pointer to typed
+  pointer" family, sigil's static-storage frame-budget warning (`lib/sigil.cyr:28046`, upstream's),
+  and `large static data`.
 
 ## Consumers
 
-- **hoosh 2.7.1** — `dist/szal-mcp.cyr` (+ `.deps`) is built for it: the 54 MCP tools, registered
-  into hoosh's own dispatcher with `szal_register_into`. `scripts/consumer-check.sh ../hoosh` passes
-  (hoosh's program + the bundle builds `--strict`, the bundle adds no duplicate warning, nothing
-  collides, `tools/list` = 55). hoosh must add `result` and `math` (and the over-inferred `trait`)
-  to its `[deps] stdlib`; vendoring the bundle is on hoosh's roadmap.
+- **hoosh** — `dist/szal-mcp.cyr` (+ `.deps`) is built for it: the 54 MCP tools, registered into
+  hoosh's own dispatcher with `szal_register_into`. Checked at 2.2.1 against **hoosh 2.8.2** (its
+  cyrius 6.6.20 release, extracted from the tag with `lib/ai-hwaccel.cyr` supplied from szal's
+  identical copy): `scripts/consumer-check.sh <checkout>` passes — the bundle adds no duplicate
+  warning, nothing collides, `tools/list` = 55. hoosh must add only `math` to its `[deps] stdlib`.
+  The bundle needs a cyrius ≥ 6.6.13 stdlib (`bayan_json_v_obj_get_by_cstr`). hoosh's HEAD has moved
+  to cyrius 6.7.18, so `../hoosh` itself is not a like-for-like check until szal's pin follows.
 - daimon, sutra, samay — planned; `dist/szal-mcp.cyr` is the shape a tool-only consumer takes, the
   full `dist/szal.cyr` is M5 (roadmap).
 
 ## Next — ▶ START HERE (handoff)
 
-**Where it stands (2.2.0):** M1 ✅, M2 ✅, M3 ✅ — 43 ported modules, the six execution modes, the
-54-tool MCP surface; 47 test files / 1,494 assertions, 5 fuzz harnesses, 15 benchmarks, all green on
-cyrius 6.6.6; `rust-old/` untouched. No open issues (`docs/development/issues/` holds only
-`archive/`). Release history is CHANGELOG.md; this section is only what to do next.
+**Where it stands (2.2.1):** M1 ✅, M2 ✅, M3 ✅ — 43 ported modules, the six execution modes, the
+54-tool MCP surface; 47 test files / 1,495 assertions, 5 fuzz harnesses, 15 benchmarks, all green on
+cyrius 6.6.20; `rust-old/` untouched. One open issue, information only:
+[`issues/2026-10-05-cyrius-6616-channels-block-on-macos-and-windows.md`](issues/2026-10-05-cyrius-6616-channels-block-on-macos-and-windows.md)
+— it closes once the stream / parallel suites run on arm64 macOS and Windows. Release history is
+CHANGELOG.md; this section is only what to do next.
 
 1. **M4 — verification** (roadmap): port the remaining Rust assertions across the split suites;
    `cyrius audit` + `cyrius capacity --check`; `docs/benchmarks-rust-v-cyrius.md` (the prerequisite
@@ -518,9 +539,13 @@ cyrius 6.6.6; `rust-old/` untouched. No open issues (`docs/development/issues/` 
 2. **M5 — distribution:** the full `dist/szal.cyr` / `dist/szal-core.cyr`. Their engine modules name
    majra's and ai-hwaccel's enum constants, which `cyrius distlib`'s standalone compile check refuses
    while those libraries are vendored rather than declared — decide that before adding `[lib]`.
-3. **Open parity item:** majra 2.7.0+ ships `PUBSUB_LAG_*`, which could retire parity-notes §9
-   (ProgressHub blocks instead of dropping the oldest) — a behavioural change for its own release.
-4. **Open perf finding:** `engine_sequential_10` costs ~11.5 ms vs ~116 µs without a timeout — the
+3. **Open parity item:** parity-notes §9 (ProgressHub blocks instead of dropping the oldest) could
+   be retired with the stdlib's `chan_try_send` (`-2` when full) or majra's `PUBSUB_LAG_*` — a
+   behavioural change for its own release.
+4. **Next pin move — cyrius 6.7.x:** majra 2.10.0+, bote 3.4.0+, ai-hwaccel 2.5.0+ and hoosh 2.9.0+
+   all pin 6.7.x. Same procedure as 2.2.1 (majra-vendoring.md §11); after it, re-run the distlib
+   listing-order check (Toolchain).
+5. **Open perf finding:** `engine_sequential_10` costs ~11.5 ms vs ~116 µs without a timeout — the
    `sleep_ms(1)` poll in `_run_attempt` (`engine_step_exec.cyr`) dominates per-step cost.
 
 See [`roadmap.md`](roadmap.md), [`port-plan.md`](port-plan.md) (per-module spec),

@@ -15,7 +15,7 @@
 # Usage: include AFTER src/mcp.cyr (+ lib/bayan, lib/str, lib/vec).
 
 # szal's version, as szal_server_info reports it. Written by scripts/version-bump.sh — do not edit.
-var SZAL_VERSION = "2.2.0";
+var SZAL_VERSION = "2.2.1";
 
 enum EngineTools {
     DEFAULT_MAX_CONCURRENCY = 16;
@@ -51,12 +51,12 @@ fn _eng_str_arr(items) {
 fn _engine_create_handler(args, claims) {
     var o = _eng_parse_args(args);
     var mc = DEFAULT_MAX_CONCURRENCY;
-    var mcv = bayan_json_v_obj_get(o, "max_concurrency");
+    var mcv = bayan_json_v_obj_get_by_cstr(o, "max_concurrency");
     if (bayan_json_v_is_int(mcv) == 1) { mc = bayan_json_v_int(mcv); }
 
     var out = bayan_json_v_obj_new();
     bayan_json_v_obj_set(out, str_from("max_concurrency"), bayan_json_v_int_new(mc));
-    var gtv = bayan_json_v_obj_get(o, "global_timeout_ms");
+    var gtv = bayan_json_v_obj_get_by_cstr(o, "global_timeout_ms");
     if (bayan_json_v_is_int(gtv) == 1) {
         bayan_json_v_obj_set(out, str_from("global_timeout_ms"), bayan_json_v_int_new(bayan_json_v_int(gtv)));
     } else {
@@ -73,7 +73,7 @@ fn _eng_count_status(steps, want_c) {
     var i = 0;
     while (i < n) {
         var st = bayan_json_v_arr_get(steps, i);
-        var sv = bayan_json_v_obj_get(st, "status");
+        var sv = bayan_json_v_obj_get_by_cstr(st, "status");
         if (bayan_json_v_is_str(sv) == 1) {
             if (str_eq_cstr(bayan_json_v_str(sv), want_c) == 1) { count = count + 1; }
         }
@@ -85,7 +85,7 @@ fn _eng_count_status(steps, want_c) {
 # szal_result_inspect: summarize a FlowResult JSON. Mirrors ResultInspect::call (engine_tools.rs 56-116).
 fn _result_inspect_handler(args, claims) {
     var o = _eng_parse_args(args);
-    var jv = bayan_json_v_obj_get(o, "result_json");
+    var jv = bayan_json_v_obj_get_by_cstr(o, "result_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: result_json"));
         return str_data(e);
@@ -97,23 +97,23 @@ fn _result_inspect_handler(args, claims) {
     }
 
     var flow_name = str_from("unknown");
-    var fnv = bayan_json_v_obj_get(val, "flow_name");
+    var fnv = bayan_json_v_obj_get_by_cstr(val, "flow_name");
     if (bayan_json_v_is_str(fnv) == 1) { flow_name = bayan_json_v_str(fnv); }
 
     var success = 0;
-    var sv = bayan_json_v_obj_get(val, "success");
+    var sv = bayan_json_v_obj_get_by_cstr(val, "success");
     if (bayan_json_v_is_bool(sv) == 1) { success = bayan_json_v_bool(sv); }
     var rolled_back = 0;
-    var rv = bayan_json_v_obj_get(val, "rolled_back");
+    var rv = bayan_json_v_obj_get_by_cstr(val, "rolled_back");
     if (bayan_json_v_is_bool(rv) == 1) { rolled_back = bayan_json_v_bool(rv); }
     var total_ms = 0;
-    var tv = bayan_json_v_obj_get(val, "total_duration_ms");
+    var tv = bayan_json_v_obj_get_by_cstr(val, "total_duration_ms");
     if (bayan_json_v_is_int(tv) == 1) { total_ms = bayan_json_v_int(tv); }
 
     var step_count = 0;
     var completed = 0;
     var failed = 0;
-    var steps = bayan_json_v_obj_get(val, "steps");
+    var steps = bayan_json_v_obj_get_by_cstr(val, "steps");
     if (bayan_json_v_is_arr(steps) == 1) {
         step_count = bayan_json_v_arr_len(steps);
         completed = _eng_count_status(steps, "Completed");

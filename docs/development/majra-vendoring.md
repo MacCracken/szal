@@ -1,5 +1,9 @@
-# Vendored libraries — majra 2.9.1, bote-core 3.3.13, ai-hwaccel 2.4.0 at `src/vendor/`
+# Vendored libraries — majra 2.9.3, bote-core 3.3.17, ai-hwaccel 2.4.2 at `src/vendor/`
 
+> **Status at szal 2.2.1 (2026-11-03):** re-synced to the last release of each library pinned to
+> cyrius 6.6.20 (szal's pin) — not the latest, which pins 6.7.x. Same procedure, same byte-for-byte
+> rule; §11 is the log.
+>
 > **Status at szal 2.2.0 (2026-09-25): all three vendored BYTE-FOR-BYTE from their release tags.**
 > `scripts/sync-{majra,bote,ai-hwaccel}.sh` extract `dist/<lib>.cyr` with `git show <tag>:…`, check
 > the dist's own `# Version:` line against the tag, and copy it unmodified — the same files hoosh
@@ -32,9 +36,15 @@ metrics vtable (row 10 — shipped now via the shim). All but metrics need the *
 
 | file | release | lines | sync |
 |---|---|---|---|
-| `src/vendor/majra.cyr` | majra **2.9.1** `dist/majra.cyr` (the base bundle) | 5,984 | `scripts/sync-majra.sh` |
-| `src/vendor/bote-core.cyr` | bote **3.3.13** `dist/bote-core.cyr` (`[lib.core]`) | 2,905 | `scripts/sync-bote.sh` |
-| `src/vendor/ai-hwaccel.cyr` | ai-hwaccel **2.4.0** `dist/ai-hwaccel.cyr` | 7,514 | `scripts/sync-ai-hwaccel.sh` |
+| `src/vendor/majra.cyr` | majra **2.9.3** `dist/majra.cyr` (the base bundle) | 6,008 | `scripts/sync-majra.sh` |
+| `src/vendor/bote-core.cyr` | bote **3.3.17** `dist/bote-core.cyr` (`[lib.core]`) | 2,911 | `scripts/sync-bote.sh` |
+| `src/vendor/ai-hwaccel.cyr` | ai-hwaccel **2.4.2** `dist/ai-hwaccel.cyr` | 7,532 | `scripts/sync-ai-hwaccel.sh` |
+
+- **Which release:** the last one whose `cyrius.cyml` pins szal's cyrius. Find it with
+  `git -C ../<lib> show <tag>:cyrius.cyml | grep '^cyrius = '` per tag (in zsh, write
+  `"${tag}:cyrius.cyml"` — a bare `$tag:c…` is read as a history modifier), then pass the tag
+  explicitly: `scripts/sync-majra.sh ../majra 2.9.3`. With no tag the scripts take the checkout's
+  `VERSION`, which is the latest release and may pin a newer cyrius than szal.
 
 - The **base** `dist/majra.cyr` is still the right cut. majra also ships `majra-admin.cyr`,
   `majra-signed.cyr` and `majra-backends.cyr`; the base bundle is a strict subset of all three, and
@@ -272,3 +282,26 @@ maintenance bump, and it belongs in its own change with its own tests.
       5/5 fuzz; benchmarks; lint; fmt; `rust-old/` untouched.
 - [ ] Still open from §9: majra's `PUBSUB_LAG_*` policy could retire parity-notes §9 — a behavioural
       port change for its own release.
+
+## 11. 2.2.1 re-sync — to the cyrius 6.6.20 releases (2026-11-03)
+
+- [x] **Pins:** majra 2.9.1 → **2.9.3**, bote-core 3.3.13 → **3.3.17**, ai-hwaccel 2.4.0 → **2.4.2** —
+      each the last release whose `cyrius.cyml` pins 6.6.20, szal's new pin (majra 2.10.0, bote 3.4.0
+      and ai-hwaccel 2.5.0 move to 6.7.x). These are the files hoosh 2.8.2 commits (`cmp` clean for
+      majra and bote-core; ai-hwaccel matches the `lib/ai-hwaccel.cyr` hash in hoosh 2.8.2's lock).
+- [x] **What changed in the copies:** each dist now opens with a compile-verified `# Requires` block
+      (`include "lib/<leaf>.cyr"` per sidecar leaf — include-once makes it a no-op inside szal's
+      builds). Code: ai-hwaccel's three `_pj_*` readers moved to `bayan_json_v_obj_get_by_cstr`, and
+      bote's `_bote_server_version` string. Everything else is majra comments about cyrius 6.6.20's
+      hashmap (tombstones are counted now; a new-key `map_set` may rebuild in place). No fn szal calls
+      changed.
+- [x] **Scan:** still one intersection (`REQ_NONE`, equal values); consumer-check clean, generic and
+      against hoosh 2.8.2.
+- [x] **The bundle's sidecar had to be made host-independent** (CHANGELOG 2.2.1 Fixed): 6.6.20's
+      distlib attributed `O_WRONLY` in filesystem-listing order. `src/mcp_bundle.cyr` now includes
+      `lib/io.cyr` to seed the verify — the fix majra 2.9.3 used for its admin profile.
+- [x] `cyrius build --strict --no-deps src/main.cyr` clean (22 warnings, all known); 47/47 test files,
+      1,495 assertions (same per-suite counts as the 2.2.0 tree on 6.6.6); 5/5 fuzz; benchmarks;
+      lint; fmt; doc; `rust-old/` untouched.
+- [ ] Still open from §9: majra's `PUBSUB_LAG_*` policy — or now simply the stdlib's
+      `chan_try_send` — could retire parity-notes §9. Behavioural; its own release.

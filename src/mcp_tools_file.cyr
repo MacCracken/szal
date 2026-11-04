@@ -69,7 +69,7 @@ fn _fs_validate(path, out_err) {
 # szal_file_read: read up to max_bytes of a validated path. Mirrors FileRead::call (file_tools.rs 37-79).
 fn _file_read_handler(args, claims) {
     var o = _file_parse_args(args);
-    var pv = bayan_json_v_obj_get(o, "path");
+    var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
         return str_data(e);
@@ -80,7 +80,7 @@ fn _file_read_handler(args, claims) {
     if (vpath == 0) { return load64(errc); }
 
     var max_bytes = DEFAULT_MAX_READ_BYTES;
-    var mbv = bayan_json_v_obj_get(o, "max_bytes");
+    var mbv = bayan_json_v_obj_get_by_cstr(o, "max_bytes");
     if (bayan_json_v_is_int(mbv) == 1) {
         var mb = bayan_json_v_int(mbv);
         if (mb > 0) { max_bytes = mb; }
@@ -104,7 +104,7 @@ fn _file_read_handler(args, claims) {
 # szal_file_write: write/append content to a validated path. Mirrors FileWrite::call (file_tools.rs 99-154).
 fn _file_write_handler(args, claims) {
     var o = _file_parse_args(args);
-    var pv = bayan_json_v_obj_get(o, "path");
+    var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
         return str_data(e);
@@ -114,7 +114,7 @@ fn _file_write_handler(args, claims) {
     var vpath = _fs_validate(bayan_json_v_str(pv), errc);
     if (vpath == 0) { return load64(errc); }
 
-    var cv = bayan_json_v_obj_get(o, "content");
+    var cv = bayan_json_v_obj_get_by_cstr(o, "content");
     if (bayan_json_v_is_str(cv) == 0) {
         var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: content"));
         return str_data(e2);
@@ -125,7 +125,7 @@ fn _file_write_handler(args, claims) {
     var pc = str_cstr(vpath);
 
     var append = 0;
-    var av = bayan_json_v_obj_get(o, "append");
+    var av = bayan_json_v_obj_get_by_cstr(o, "append");
     if (bayan_json_v_is_bool(av) == 1) { append = bayan_json_v_bool(av); }
 
     var rc = 0;
@@ -206,7 +206,7 @@ fn _fs_collect_dir(dir_path, recursive, max, entries, depth) {
 fn _dir_list_handler(args, claims) {
     var o = _file_parse_args(args);
     var path = str_from(".");
-    var pv = bayan_json_v_obj_get(o, "path");
+    var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 1) { path = bayan_json_v_str(pv); }
 
     var errc = alloc(8);
@@ -215,11 +215,11 @@ fn _dir_list_handler(args, claims) {
     if (vpath == 0) { return load64(errc); }
 
     var recursive = 0;
-    var rv = bayan_json_v_obj_get(o, "recursive");
+    var rv = bayan_json_v_obj_get_by_cstr(o, "recursive");
     if (bayan_json_v_is_bool(rv) == 1) { recursive = bayan_json_v_bool(rv); }
 
     var max = DEFAULT_DIR_ENTRIES;
-    var mv = bayan_json_v_obj_get(o, "max_entries");
+    var mv = bayan_json_v_obj_get_by_cstr(o, "max_entries");
     if (bayan_json_v_is_int(mv) == 1) {
         var m = bayan_json_v_int(mv);
         if (m >= 0) { max = m; }
@@ -243,7 +243,7 @@ fn _dir_list_handler(args, claims) {
 # szal_file_stat: metadata of a validated path. Mirrors FileStat::call (file_tools.rs 272-320).
 fn _file_stat_handler(args, claims) {
     var o = _file_parse_args(args);
-    var pv = bayan_json_v_obj_get(o, "path");
+    var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
         return str_data(e);
@@ -281,7 +281,7 @@ fn _file_stat_handler(args, claims) {
 # (file_tools.rs 336-365).
 fn _path_exists_handler(args, claims) {
     var o = _file_parse_args(args);
-    var pv = bayan_json_v_obj_get(o, "path");
+    var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
         return str_data(e);

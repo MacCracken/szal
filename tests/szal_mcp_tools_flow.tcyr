@@ -39,9 +39,9 @@ fn _call(fp, args) {
 
 fn _result_text(r) {
     var o = bayan_json_v_parse(r);
-    var content = bayan_json_v_obj_get(o, "content");
+    var content = bayan_json_v_obj_get_by_cstr(o, "content");
     var item = bayan_json_v_arr_get(content, 0);
-    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+    return bayan_json_v_str(bayan_json_v_obj_get_by_cstr(item, "text"));
 }
 
 # Build args {field: value} (a JSON string) via bayan and call the handler (handles escaping).
@@ -68,7 +68,7 @@ fn t_create_basic() {
     var r = _call(&_flow_create_handler, "{\"name\": \"ci-cd\", \"mode\": \"dag\"}");
     assert(str_contains(r, str_from("\"isError\":false")), "create ok");
     var flow = bayan_json_v_parse(_result_text(r));
-    assert(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get(flow, "name")), "ci-cd"), "name ci-cd");
+    assert(str_eq_cstr(bayan_json_v_str(bayan_json_v_obj_get_by_cstr(flow, "name")), "ci-cd"), "name ci-cd");
     return 0;
 }
 
@@ -78,8 +78,8 @@ fn t_create_options() {
     "{\"name\": \"deploy\", \"mode\": \"sequential\", \"rollback_on_failure\": true, \"timeout_ms\": 300000}");
     assert(str_contains(r, str_from("\"isError\":false")), "create options ok");
     var flow = bayan_json_v_parse(_result_text(r));
-    assert_eq(bayan_json_v_bool(bayan_json_v_obj_get(flow, "rollback_on_failure")), 1, "rollback true");
-    assert_eq(bayan_json_v_int(bayan_json_v_obj_get(flow, "timeout_ms")), 300000, "timeout 300000");
+    assert_eq(bayan_json_v_bool(bayan_json_v_obj_get_by_cstr(flow, "rollback_on_failure")), 1, "rollback true");
+    assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(flow, "timeout_ms")), 300000, "timeout 300000");
     return 0;
 }
 
@@ -161,7 +161,7 @@ fn t_add_step() {
     var r = _call_field2(&_flow_add_step_handler, "flow_json", flow_to_json(flow), "step_json", step_to_json(step));
     assert(str_contains(r, str_from("\"isError\":false")), "add step ok");
     var updated = bayan_json_v_parse(_result_text(r));
-    assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(updated, "steps")), 1, "one step");
+    assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get_by_cstr(updated, "steps")), 1, "one step");
     return 0;
 }
 

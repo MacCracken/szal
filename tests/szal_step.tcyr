@@ -283,7 +283,7 @@ fn main() {
     assert_eq(step_sub_steps_len(fback), 1, "full sub_steps preserved");
     assert(str_eq_cstr(step_name(step_sub_step_at(fback, 0)), "child1"), "full sub_step name");
     assert(step_config(fback) != 0, "full config preserved");
-    assert_eq(bayan_json_v_int(bayan_json_v_obj_get(step_config(fback), "k")), 9,
+    assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(step_config(fback), "k")), 9,
         "full config value preserved");
 
     test_group("step_from_json — missing optionals default (serde-default semantics)");

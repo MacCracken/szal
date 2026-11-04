@@ -91,9 +91,9 @@ fn _call(fp, args) {
 
 fn _result_text(r) {
     var o = bayan_json_v_parse(r);
-    var content = bayan_json_v_obj_get(o, "content");
+    var content = bayan_json_v_obj_get_by_cstr(o, "content");
     var item = bayan_json_v_arr_get(content, 0);
-    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+    return bayan_json_v_str(bayan_json_v_obj_get_by_cstr(item, "text"));
 }
 
 # --- szal_http SSRF guard ---
@@ -272,13 +272,13 @@ fn _echo_tool(args, claims) {
 fn _rpc_result(d, msg) {
     var out = codec_process_message(msg, d, 0);
     var o = _tp_ctx(str_from(out));
-    return bayan_json_v_obj_get(o, "result");
+    return bayan_json_v_obj_get_by_cstr(o, "result");
 }
 # The text of a tools/call result: result.content[0].text.
 fn _rpc_text(d, msg) {
     var res = _rpc_result(d, msg);
-    var item = bayan_json_v_arr_get(bayan_json_v_obj_get(res, "content"), 0);
-    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+    var item = bayan_json_v_arr_get(bayan_json_v_obj_get_by_cstr(res, "content"), 0);
+    return bayan_json_v_str(bayan_json_v_obj_get_by_cstr(item, "text"));
 }
 fn t_register_into() {
     var d = dispatcher_new(tool_registry_new());
@@ -291,7 +291,7 @@ fn t_register_into() {
     assert_eq(szal_register_into(d), 0, "szal_register_into succeeds");
     assert_eq(registry_len(dispatcher_registry(d)), 55, "54 szal tools join the consumer's one");
     var list = _rpc_result(d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
-    assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(list, "tools")), 55, "tools/list returns 55");
+    assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get_by_cstr(list, "tools")), 55, "tools/list returns 55");
     assert_eq(registry_contains(dispatcher_registry(d), "consumer_echo"), 1, "consumer tool kept");
     assert_eq(registry_contains(dispatcher_registry(d), "szal_math_eval"), 1, "szal tool added");
     assert_eq(_reg_events, 54, "consumer's event sink heard all 54 registrations");

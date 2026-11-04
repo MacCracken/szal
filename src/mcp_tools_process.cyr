@@ -185,7 +185,7 @@ fn _proc_run(argv, cwd_c) {
 # (process_tools.rs 29-107).
 fn _exec_handler(args, claims) {
     var o = _proc_parse_args(args);
-    var cv = bayan_json_v_obj_get(o, "command");
+    var cv = bayan_json_v_obj_get_by_cstr(o, "command");
     if (bayan_json_v_is_str(cv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: command"));
         return str_data(e);
@@ -199,7 +199,7 @@ fn _exec_handler(args, claims) {
 
     var argv = vec_new();
     vec_push(argv, str_cstr(command));
-    var av = bayan_json_v_obj_get(o, "args");
+    var av = bayan_json_v_obj_get_by_cstr(o, "args");
     if (bayan_json_v_is_arr(av) == 1) {
         var n = bayan_json_v_arr_len(av);
         var i = 0;
@@ -211,7 +211,7 @@ fn _exec_handler(args, claims) {
     }
 
     var cwd_c = 0;
-    var cwv = bayan_json_v_obj_get(o, "cwd");
+    var cwv = bayan_json_v_obj_get_by_cstr(o, "cwd");
     if (bayan_json_v_is_str(cwv) == 1) {
         var vr_t, vr_v = szal_validate_path(bayan_json_v_str(cwv));
         if (is_err_result(vr_t) == 1) {
@@ -268,7 +268,7 @@ fn _proc_trim_end(s) {
 # szal_which: is `command` on PATH? Mirrors Which::call (process_tools.rs 139-174).
 fn _which_handler(args, claims) {
     var o = _proc_parse_args(args);
-    var cv = bayan_json_v_obj_get(o, "command");
+    var cv = bayan_json_v_obj_get_by_cstr(o, "command");
     if (bayan_json_v_is_str(cv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: command"));
         return str_data(e);

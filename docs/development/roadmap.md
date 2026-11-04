@@ -13,7 +13,7 @@
 ## Target
 
 **Rust 1.2.0 → Cyrius 2.0.0.** Plain SemVer from 2.0.0 onward (majra is the precedent).
-Toolchain pinned in `cyrius.cyml` (`cyrius = "6.6.6"` at 2.2.0; 6.1.33 at M0 — history in [`state.md`](state.md)). `VERSION` is the single source of truth.
+Toolchain pinned in `cyrius.cyml` (`cyrius = "6.6.20"` at 2.2.1; 6.1.33 at M0 — history in [`state.md`](state.md)). `VERSION` is the single source of truth.
 
 ## Pre-port decisions
 

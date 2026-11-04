@@ -58,7 +58,7 @@ fn _json_eq(a, b) {
             var key = load64(pair);
             var va = load64(pair + 8);
             var kc = str_cstr(key);
-            var vb = bayan_json_v_obj_get(b, kc);
+            var vb = bayan_json_v_obj_get_by_cstr(b, kc);
             if (vb == 0) { return 0; }
             if (_json_eq(va, vb) == 0) { return 0; }
             i = i + 1;
@@ -101,12 +101,12 @@ fn _json_seg_index(seg) {
 # objects. Mirrors JsonPath::call (json_tools.rs 24-84).
 fn _json_path_handler(args, claims) {
     var o = _json_parse_args(args);
-    var jv = bayan_json_v_obj_get(o, "json");
+    var jv = bayan_json_v_obj_get_by_cstr(o, "json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: json"));
         return str_data(e);
     }
-    var pv = bayan_json_v_obj_get(o, "path");
+    var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e2 = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
         return str_data(e2);
@@ -146,7 +146,7 @@ fn _json_path_handler(args, claims) {
             current = next;
         } else {
             var sc = str_cstr(seg);
-            var nx = bayan_json_v_obj_get(current, sc);
+            var nx = bayan_json_v_obj_get_by_cstr(current, sc);
             if (nx == 0) {
                 var kb = str_builder_new();
                 str_builder_add_cstr(kb, "key '");
@@ -166,7 +166,7 @@ fn _json_path_handler(args, claims) {
 # Parse the named string field as JSON, or emit a typed Validation error naming the field. Returns the
 # json_v on success; on failure writes the result cstr to *out_err (a 1-slot cell) and returns 0.
 fn _json_field_or_err(o, field, out_err) {
-    var fv = bayan_json_v_obj_get(o, field);
+    var fv = bayan_json_v_obj_get_by_cstr(o, field);
     if (bayan_json_v_is_str(fv) == 0) {
         var mb = str_builder_new();
         str_builder_add_cstr(mb, "missing required field: ");
@@ -212,7 +212,7 @@ fn _json_diff_handler(args, claims) {
 # (json_tools.rs 181-212). Valid -> {valid,type,size_bytes}; invalid -> {valid,error,position}.
 fn _json_validate_handler(args, claims) {
     var o = _json_parse_args(args);
-    var jv = bayan_json_v_obj_get(o, "json");
+    var jv = bayan_json_v_obj_get_by_cstr(o, "json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: json"));
         return str_data(e);

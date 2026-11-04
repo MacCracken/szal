@@ -60,7 +60,7 @@ fn _cb_parse(s) { return bayan_json_v_parse(s); }
 fn _cb_rpc(d, msg) {
     var out = codec_process_message(msg, d, 0);
     var o = _cb_parse(str_from(out));
-    return bayan_json_v_obj_get(o, "result");
+    return bayan_json_v_obj_get_by_cstr(o, "result");
 }
 
 # tools/call `name` with `args_json`; return the tool's result object.
@@ -76,11 +76,11 @@ fn _cb_call(d, name, args_json) {
 }
 
 fn _cb_text(res) {
-    var item = bayan_json_v_arr_get(bayan_json_v_obj_get(res, "content"), 0);
-    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+    var item = bayan_json_v_arr_get(bayan_json_v_obj_get_by_cstr(res, "content"), 0);
+    return bayan_json_v_str(bayan_json_v_obj_get_by_cstr(item, "text"));
 }
 
-fn _cb_is_error(res) { return bayan_json_v_bool(bayan_json_v_obj_get(res, "isError")); }
+fn _cb_is_error(res) { return bayan_json_v_bool(bayan_json_v_obj_get_by_cstr(res, "isError")); }
 
 fn t_register_into() {
     var d = dispatcher_new(tool_registry_new());
@@ -92,7 +92,7 @@ fn t_register_into() {
     assert_eq(szal_register_into(d), 0, "szal_register_into on the consumer's dispatcher");
     assert_eq(registry_len(dispatcher_registry(d)), 55, "1 consumer tool + 54 szal tools");
     var list = _cb_rpc(d, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
-    assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get(list, "tools")), 55, "tools/list returns 55");
+    assert_eq(bayan_json_v_arr_len(bayan_json_v_obj_get_by_cstr(list, "tools")), 55, "tools/list returns 55");
     assert_eq(_cb_registered, 54, "the consumer's event sink heard 54 registrations");
     assert_eq(vec_len(szal_all_tools()), 54, "szal_all_tools() is the 54");
 

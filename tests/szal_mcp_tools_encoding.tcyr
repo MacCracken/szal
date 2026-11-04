@@ -38,9 +38,9 @@ fn _call(fp, args) {
 # Extract content[0].text (a Str) from a result envelope Str.
 fn _result_text(r) {
     var o = bayan_json_v_parse(r);
-    var content = bayan_json_v_obj_get(o, "content");
+    var content = bayan_json_v_obj_get_by_cstr(o, "content");
     var item = bayan_json_v_arr_get(content, 0);
-    return bayan_json_v_str(bayan_json_v_obj_get(item, "text"));
+    return bayan_json_v_str(bayan_json_v_obj_get_by_cstr(item, "text"));
 }
 
 # --- szal_uuid ---

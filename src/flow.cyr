@@ -394,10 +394,10 @@ fn flow_to_json(f) {
 # matching step_from_json). Internal — flow_from_json wraps the Str entry.
 fn _flow_from_v(o) {
     if (o == 0) { return 0; }
-    var name_v = bayan_json_v_obj_get(o, "name");
+    var name_v = bayan_json_v_obj_get_by_cstr(o, "name");
     var name = str_from("");
     if (bayan_json_v_is_str(name_v) == 1) { name = bayan_json_v_str(name_v); }
-    var mode_v = bayan_json_v_obj_get(o, "mode");
+    var mode_v = bayan_json_v_obj_get_by_cstr(o, "mode");
     var mode = FLOW_SEQUENTIAL;
     if (bayan_json_v_is_str(mode_v) == 1) {
         mode = flow_mode_from_name(bayan_json_v_str(mode_v));
@@ -405,7 +405,7 @@ fn _flow_from_v(o) {
     var f = flow_new(name, mode);
     if (f == 0) { return 0; }
     # id (parse the UUID string; malformed -> keep the fresh generated id)
-    var id_v = bayan_json_v_obj_get(o, "id");
+    var id_v = bayan_json_v_obj_get_by_cstr(o, "id");
     if (bayan_json_v_is_str(id_v) == 1) {
         var hi, lo = uuid_parse(str_cstr(bayan_json_v_str(id_v)));
         if (uuid_parse_ok(hi, lo) == 1) {
@@ -414,12 +414,12 @@ fn _flow_from_v(o) {
         }
     }
     # description (default "")
-    var desc_v = bayan_json_v_obj_get(o, "description");
+    var desc_v = bayan_json_v_obj_get_by_cstr(o, "description");
     if (bayan_json_v_is_str(desc_v) == 1) {
         store64(f + FD_DESCRIPTION, bayan_json_v_str(desc_v));
     }
     # steps (default empty; array of StepDef objects)
-    var steps_v = bayan_json_v_obj_get(o, "steps");
+    var steps_v = bayan_json_v_obj_get_by_cstr(o, "steps");
     if (bayan_json_v_is_arr(steps_v) == 1) {
         var sn = bayan_json_v_arr_len(steps_v);
         var i = 0;
@@ -430,18 +430,18 @@ fn _flow_from_v(o) {
         }
     }
     # rollback_on_failure (default false)
-    var rb_v = bayan_json_v_obj_get(o, "rollback_on_failure");
+    var rb_v = bayan_json_v_obj_get_by_cstr(o, "rollback_on_failure");
     if (bayan_json_v_is_bool(rb_v) == 1) {
         store64(f + FD_ROLLBACK, bayan_json_v_bool(rb_v));
     }
     # timeout_ms (Option<u64> -> None when missing/null)
-    var to_v = bayan_json_v_obj_get(o, "timeout_ms");
+    var to_v = bayan_json_v_obj_get_by_cstr(o, "timeout_ms");
     if (bayan_json_v_is_int(to_v) == 1) {
         store64(f + FD_TIMEOUT_PRESENT, 1);
         store64(f + FD_TIMEOUT_MS, bayan_json_v_int(to_v));
     }
     # version (#[serde(default = "default_flow_version")] -> 1 when missing)
-    var ver_v = bayan_json_v_obj_get(o, "version");
+    var ver_v = bayan_json_v_obj_get_by_cstr(o, "version");
     if (bayan_json_v_is_int(ver_v) == 1) {
         store64(f + FD_VERSION, bayan_json_v_int(ver_v));
     }

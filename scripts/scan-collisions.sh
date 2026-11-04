@@ -5,22 +5,25 @@
 # namespace, last-definition-wins. `cyrius build --strict` does NOT report most of that:
 #
 #   fn X    vs fn X                        -> warning
-#   enumconst X vs enumconst X, diff value -> warning   (SILENT if the values match, and SILENT for
-#                                                       constants past var index 1024 — see below)
+#   enumconst X vs enumconst X, diff value -> warning   (SILENT if the values match; and SILENT
+#                                                       past var index 1024 until cyrius 6.6.8)
 #   enum/var vs var, different int         -> warning
 #   enumconst X then `var X = <non-int>`   -> hard error ("shadows an enum constant")
 #   enumconst X then `var X[8];`           -> SILENT    (array form skips the shadow check)
 #   fn X    vs var X                       -> SILENT  <-- and it MISCOMPILES: `&X` binds to the
 #   fn X    vs enumconst X                 -> SILENT  <-- data symbol, so any fn pointer taken on
-#   struct X vs struct X / fn X            -> SILENT       that name jumps into .bss. szal
+#   struct X vs fn X                       -> SILENT       that name jumps into .bss. szal
 #   enum TYPE name vs enum TYPE name       -> SILENT       dispatches 54 MCP tools via fn pointers.
+#   struct X vs struct X, other layout     -> warning   from 6.6.20 (SILENT at 6.6.6); the FIRST wins
+# (Re-measured with cycc 6.6.6 and 6.6.20 at szal 2.2.1.)
 #
-# And an enum constant registered past var-table index 1024 is not constant-FOLDED at all (cycc
-# 6.6.6 PARSE_ENUM_DEF, `vcnt < 1024`): it behaves as a global, so a later same-named constant wins
-# for EVERY read, including reads compiled before it. That is how szal <= 2.1.2 shipped a condition
-# parser that could not parse `(x)`: src/mcp_tools_math.cyr redeclared src/condition.cyr's
-# TOK_LPAREN / TOK_RPAREN (13/14 -> 6/7) — two szal files, so the old szal-vs-everyone-else scan
-# never compared them. The INTRA-SZAL pass below exists because of it.
+# A later same-named enum constant wins for EVERY read, including reads compiled before it — at any
+# var index, on both compilers (measured at 2.2.1: `fn early() { return K; }` between `K = 6` and
+# `K = 13` returns 13). Through cyrius 6.6.7 a constant past var index 1024 was also not folded and
+# its conflicting redeclaration printed nothing (PARSE_ENUM_DEF's `vcnt < 1024`). That is how szal
+# <= 2.1.2 shipped a condition parser that could not parse `(x)`: src/mcp_tools_math.cyr redeclared
+# src/condition.cyr's TOK_LPAREN / TOK_RPAREN (13/14 -> 6/7) — two szal files, so the old
+# szal-vs-everyone-else scan never compared them. The INTRA-SZAL pass below exists because of it.
 #
 # Caught so far by this scanner or its predecessors:
 #   * BYTES_PER_GB  — szal enum 2^30 vs ai-hwaccel `var` 10^9 (cross-kind, different values); 2.1.0.

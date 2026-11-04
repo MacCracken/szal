@@ -216,25 +216,25 @@ fn execution_record_to_json(r) {
 fn _execution_record_from_v(o) {
     if (o == 0) { return 0; }
     var eid = str_from("");
-    var eid_v = bayan_json_v_obj_get(o, "execution_id");
+    var eid_v = bayan_json_v_obj_get_by_cstr(o, "execution_id");
     if (bayan_json_v_is_str(eid_v) == 1) { eid = bayan_json_v_str(eid_v); }
     var fname = str_from("");
-    var fname_v = bayan_json_v_obj_get(o, "flow_name");
+    var fname_v = bayan_json_v_obj_get_by_cstr(o, "flow_name");
     if (bayan_json_v_is_str(fname_v) == 1) { fname = bayan_json_v_str(fname_v); }
     var state = STATE_CREATED;
-    var state_v = bayan_json_v_obj_get(o, "state");
+    var state_v = bayan_json_v_obj_get_by_cstr(o, "state");
     if (bayan_json_v_is_str(state_v) == 1) {
         var parsed = state_from_json(str_cstr(bayan_json_v_str(state_v)));
         if (parsed != (0 - 1)) { state = parsed; }
     }
     var result = 0;
-    var result_v = bayan_json_v_obj_get(o, "result");
+    var result_v = bayan_json_v_obj_get_by_cstr(o, "result");
     if (bayan_json_v_is_obj(result_v) == 1) { result = _flow_result_from_v(result_v); }
     var started = str_from("");
-    var started_v = bayan_json_v_obj_get(o, "started_at");
+    var started_v = bayan_json_v_obj_get_by_cstr(o, "started_at");
     if (bayan_json_v_is_str(started_v) == 1) { started = bayan_json_v_str(started_v); }
     var finished = 0;
-    var finished_v = bayan_json_v_obj_get(o, "finished_at");
+    var finished_v = bayan_json_v_obj_get_by_cstr(o, "finished_at");
     if (bayan_json_v_is_str(finished_v) == 1) { finished = bayan_json_v_str(finished_v); }
     return execution_record_new(eid, fname, state, result, started, finished);
 }

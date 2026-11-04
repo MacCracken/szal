@@ -482,7 +482,7 @@ fn cond_resolve_path(path, context) {
         if ((i == len) || (load8(data + i) == 46)) {
             # segment is [seg_start, i)
             var seg = str_new(data + seg_start, i - seg_start);
-            var nxt = bayan_json_v_obj_get(current, str_cstr(seg));
+            var nxt = bayan_json_v_obj_get_by_cstr(current, str_cstr(seg));
             if (nxt == 0) {
                 return bayan_json_v_null();
             }

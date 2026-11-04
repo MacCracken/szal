@@ -33,7 +33,7 @@ fn _state_transitions_arr(st) {
 # szal_state_check: terminal-ness + valid transitions of a state. Mirrors StateCheck::call (state_tools.rs 41-76).
 fn _state_check_handler(args, claims) {
     var o = _state_parse_args(args);
-    var sv = bayan_json_v_obj_get(o, "state");
+    var sv = bayan_json_v_obj_get_by_cstr(o, "state");
     if (bayan_json_v_is_str(sv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: state"));
         return str_data(e);
@@ -58,7 +58,7 @@ fn _state_check_handler(args, claims) {
 
 # Read a state field as a parsed WorkflowState, or -1 if missing/invalid.
 fn _state_field(o, field) {
-    var fv = bayan_json_v_obj_get(o, field);
+    var fv = bayan_json_v_obj_get_by_cstr(o, field);
     if (bayan_json_v_is_str(fv) == 0) { return (0 - 1); }
     return state_from_name(str_cstr(bayan_json_v_str(fv)));
 }
@@ -77,8 +77,8 @@ fn _state_transition_handler(args, claims) {
         return str_data(e2);
     }
 
-    var from_s = bayan_json_v_str(bayan_json_v_obj_get(o, "from"));
-    var to_s = bayan_json_v_str(bayan_json_v_obj_get(o, "to"));
+    var from_s = bayan_json_v_str(bayan_json_v_obj_get_by_cstr(o, "from"));
+    var to_s = bayan_json_v_str(bayan_json_v_obj_get_by_cstr(o, "to"));
     var out = bayan_json_v_obj_new();
     bayan_json_v_obj_set(out, str_from("from"), bayan_json_v_str_new(from_s));
     bayan_json_v_obj_set(out, str_from("to"), bayan_json_v_str_new(to_s));

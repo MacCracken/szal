@@ -85,7 +85,7 @@ fn t_hub_delivers() {
     var second = chan_recv(rx);
     assert(str_eq_cstr(step_progress_step_name(first), "a"), "first event is a");
     var d2 = step_progress_data(second);
-    assert_eq(bayan_json_v_int(bayan_json_v_obj_get(d2, "percent")), 20, "second percent 20");
+    assert_eq(bayan_json_v_int(bayan_json_v_obj_get_by_cstr(d2, "percent")), 20, "second percent 20");
     return 0;
 }
 fn t_hub_fans_out() {

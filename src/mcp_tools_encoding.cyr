@@ -29,7 +29,7 @@ fn _parse_args(args) {
 fn _uuid_handler(args, claims) {
     var o = _parse_args(args);
     var count = 1;
-    var cv = bayan_json_v_obj_get(o, "count");
+    var cv = bayan_json_v_obj_get_by_cstr(o, "count");
     if (bayan_json_v_is_int(cv) == 1) {
         var c = bayan_json_v_int(cv);
         if (c >= 0) { count = c; }
@@ -62,7 +62,7 @@ fn _uuid_handler(args, claims) {
 # unknown operation -> Validation error. Mirrors Base64Tool::call (encoding_tools.rs 63-104).
 fn _base64_handler(args, claims) {
     var o = _parse_args(args);
-    var iv = bayan_json_v_obj_get(o, "input");
+    var iv = bayan_json_v_obj_get_by_cstr(o, "input");
     if (bayan_json_v_is_str(iv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: input"));
         return str_data(e);
@@ -70,7 +70,7 @@ fn _base64_handler(args, claims) {
     var input = bayan_json_v_str(iv);
 
     var op = "encode";
-    var opv = bayan_json_v_obj_get(o, "operation");
+    var opv = bayan_json_v_obj_get_by_cstr(o, "operation");
     if (bayan_json_v_is_str(opv) == 1) { op = str_cstr(bayan_json_v_str(opv)); }
 
     if (streq(op, "encode") == 1) {

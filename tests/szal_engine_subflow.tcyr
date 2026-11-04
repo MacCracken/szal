@@ -93,10 +93,10 @@ fn t_subflow_exec() {
 
     # The infra step's output is the sub-flow's serialized FlowResult.
     var out = step_result_output(flow_result_step_at(fr, 1));
-    var fn_v = bayan_json_v_obj_get(out, "flow_name");
+    var fn_v = bayan_json_v_obj_get_by_cstr(out, "flow_name");
     assert_eq(bayan_json_v_is_str(fn_v), 1, "output has flow_name string");
     assert(str_eq_cstr(bayan_json_v_str(fn_v), "deploy-infra"), "output flow_name == deploy-infra");
-    var su_v = bayan_json_v_obj_get(out, "success");
+    var su_v = bayan_json_v_obj_get_by_cstr(out, "success");
     assert_eq(bayan_json_v_is_bool(su_v), 1, "output has success bool");
     assert_eq(bayan_json_v_bool(su_v), 1, "output success == true");
     return 0;
