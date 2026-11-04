@@ -562,7 +562,8 @@ cyrius 6.7.18; `rust-old/` untouched. Two open issues:
 [`issues/2026-10-05-cyrius-6616-channels-block-on-macos-and-windows.md`](issues/2026-10-05-cyrius-6616-channels-block-on-macos-and-windows.md)
 (information; closes once the stream / parallel suites run on arm64 macOS and Windows) and
 [`issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`](issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md)
-(the bote-side ask behind ADR 0003 — drafted, **not yet filed with bote**). Release history is
+(tracks the bote-side issue behind ADR 0003, which lives in bote's repo:
+`bote/docs/development/issues/2026-11-03-request-duplicate-keys-read-first-wins.md`). Release history is
 CHANGELOG.md; this section is only what to do next.
 
 1. **M4 — verification** (roadmap): port the remaining Rust assertions across the split suites;

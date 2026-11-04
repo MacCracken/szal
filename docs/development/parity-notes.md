@@ -507,7 +507,8 @@ ground, and refusing is the only answer that keeps bote's first-wins schema chec
 agreeing — taking the last value would act on one nobody validated (`{"count":3,"count":"x"}`: bote
 checks `3`). The inputs are non-conforming JSON (RFC 8259: object names SHOULD be unique). Restoring
 last-wins would also mean a JSON parser of szal's own. Decision and alternatives:
-[ADR 0003](../adr/0003-refuse-json-the-stdlib-refuses.md); the bote-side ask:
+[ADR 0003](../adr/0003-refuse-json-the-stdlib-refuses.md); the bote-side ask is an issue in bote's repo
+(`bote/docs/development/issues/2026-11-03-request-duplicate-keys-read-first-wins.md`), tracked by
 [`issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`](issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md).
 
 ---

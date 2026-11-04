@@ -36,8 +36,9 @@ arguments bayan refuses are now a tool error instead of being read as `{}` (Fixe
   Tests: `szal_mcp` +9 (the helpers, exact reason and byte), `szal_mcp_tools_net` +56 (all 54 tools,
   one assertion each, plus totals — mutation-checked: dropping `szal_uuid`'s guard fails exactly
   `szal_uuid`, dropping all 45 fails all 45), `szal_consumer_bundle` +5 (the reproductions above,
-  through bote's dispatcher). Drafted for bote: its request reader should refuse duplicate keys
-  (`docs/development/issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`, not filed).
+  through bote's dispatcher). The bote side — its request reader should refuse duplicate keys — is an
+  issue in bote's repo, `bote/docs/development/issues/2026-11-03-request-duplicate-keys-read-first-wins.md`, tracked here by
+  `docs/development/issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`.
 
 ### Changed — cyrius pin 6.7.9 → 6.7.18
 - **Stdlib folds:** bayan 1.5.13 → **1.11.1**, sigil 3.13.11 → 3.13.15, patra 1.16.0 → 1.16.6, sakshi
@@ -89,8 +90,8 @@ arguments bayan refuses are now a tool error instead of being read as `{}` (Fixe
   last-wins.
 
 ### Issues
-- New, open: `2026-11-03-bote-request-reader-first-wins-duplicate-keys.md` — the bote-side ask,
-  drafted, not filed.
+- New, open: `2026-11-03-bote-request-reader-first-wins-duplicate-keys.md` — tracks the issue written
+  into bote's repo (`bote/docs/development/issues/2026-11-03-request-duplicate-keys-read-first-wins.md`).
 - The 2026-10-05 channels issue stays open (macOS / Windows still not run).
 
 ## [2.3.0] — 2026-11-03

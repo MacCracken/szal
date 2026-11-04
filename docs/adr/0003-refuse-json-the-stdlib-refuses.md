@@ -47,7 +47,8 @@ The nine tools that take no arguments keep ignoring them, as Rust's do.
 - **Negative** — a deliberate divergence from Rust: a request whose arguments repeat a key, which
   Rust serves using the last value, is refused. parity-notes §25 records it with the measured
   matrix. It also diverges from bote's own first-wins reading, which szal cannot change (bote-core
-  is vendored byte-for-byte, ADR 0002); the bote-side ask is
+  is vendored byte-for-byte, ADR 0002); the bote-side ask is an issue in bote's repo,
+  `bote/docs/development/issues/2026-11-03-request-duplicate-keys-read-first-wins.md`, tracked by
   `docs/development/issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`.
 - **Neutral** — JSON a tool is handed to inspect (`szal_json_validate`, `_path`, `_diff`) and
   step / flow / record JSON were already refused explicitly when they do not parse; nothing changes
