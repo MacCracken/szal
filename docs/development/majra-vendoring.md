@@ -1,5 +1,8 @@
-# Vendored libraries — majra 2.9.3, bote-core 3.3.17, ai-hwaccel 2.4.2 at `src/vendor/`
+# Vendored libraries — majra 2.12.0, bote-core 3.4.10, ai-hwaccel 2.4.2 at `src/vendor/`
 
+> **Status at szal 2.3.0 (2026-11-03):** re-synced to cyrius 6.7.9 — majra 2.12.0 and bote-core
+> 3.4.10 pin it; ai-hwaccel has no 6.7.9 release and stays at 2.4.2 (6.6.20). §12 is the log.
+>
 > **Status at szal 2.2.1 (2026-11-03):** re-synced to the last release of each library pinned to
 > cyrius 6.6.20 (szal's pin) — not the latest, which pins 6.7.x. Same procedure, same byte-for-byte
 > rule; §11 is the log.
@@ -36,11 +39,14 @@ metrics vtable (row 10 — shipped now via the shim). All but metrics need the *
 
 | file | release | lines | sync |
 |---|---|---|---|
-| `src/vendor/majra.cyr` | majra **2.9.3** `dist/majra.cyr` (the base bundle) | 6,008 | `scripts/sync-majra.sh` |
-| `src/vendor/bote-core.cyr` | bote **3.3.17** `dist/bote-core.cyr` (`[lib.core]`) | 2,911 | `scripts/sync-bote.sh` |
+| `src/vendor/majra.cyr` | majra **2.12.0** `dist/majra.cyr` (the base bundle) | 6,493 | `scripts/sync-majra.sh` |
+| `src/vendor/bote-core.cyr` | bote **3.4.10** `dist/bote-core.cyr` (`[lib.core]`) | 4,074 | `scripts/sync-bote.sh` |
 | `src/vendor/ai-hwaccel.cyr` | ai-hwaccel **2.4.2** `dist/ai-hwaccel.cyr` | 7,532 | `scripts/sync-ai-hwaccel.sh` |
 
-- **Which release:** the last one whose `cyrius.cyml` pins szal's cyrius. Find it with
+- **Which release:** the last one whose `cyrius.cyml` pins szal's cyrius — or, where a library has
+  no release at that pin, its last release below it (ai-hwaccel at 2.3.0: 2.4.2 pins 6.6.20, and
+  2.5.0 jumps to 6.7.18). The hoosh release on the same pin is a cross-check: it vendors the same
+  files. Find the pins with
   `git -C ../<lib> show <tag>:cyrius.cyml | grep '^cyrius = '` per tag (in zsh, write
   `"${tag}:cyrius.cyml"` — a bare `$tag:c…` is read as a history modifier), then pass the tag
   explicitly: `scripts/sync-majra.sh ../majra 2.9.3`. With no tag the scripts take the checkout's
@@ -305,3 +311,25 @@ maintenance bump, and it belongs in its own change with its own tests.
       lint; fmt; doc; `rust-old/` untouched.
 - [ ] Still open from §9: majra's `PUBSUB_LAG_*` policy — or now simply the stdlib's
       `chan_try_send` — could retire parity-notes §9. Behavioural; its own release.
+
+## 12. 2.3.0 re-sync — to the cyrius 6.7.9 releases (2026-11-03)
+
+- [x] **Pins:** majra 2.9.3 → **2.12.0**, bote-core 3.3.17 → **3.4.10** (each the last release pinning
+      6.7.9; majra 2.12.1 and bote 3.4.11 move to 6.7.18). **ai-hwaccel stays 2.4.2** — no release pins
+      6.7.9 — and builds clean on it. hoosh 2.9.0, the 6.7.9 hoosh, vendors the same majra and bote-core
+      (`cmp` clean) and locks the same ai-hwaccel.
+- [x] **API:** no fn szal calls changed signature or vanished (24 majra, 19 bote, compared over the
+      old and new dists). Behaviour that reaches szal: bote 3.4.8 compiles schemas at registration and
+      checks `tools/call` arguments against them before the handler runs (bote's audit: all 73 of
+      szal's property schemas are valid), and audits an `isError` result as a failure; majra 2.12.0's
+      metrics hooks pass arguments as parameters (szal never read the old `_metrics_arg3/4` globals).
+- [x] **bote-core needs `sakshi` from the consumer** — it calls `sakshi_*` and its requires block does
+      not include it. szal's builds already declare it; `tests/szal_consumer_bundle.tcyr` (a stand-in
+      consumer with hand-written includes) gained `include "lib/sakshi.cyr"`.
+- [x] **Scan:** still one intersection (`REQ_NONE`); consumer-check clean, generic and against hoosh
+      2.9.0. The bundle's sidecar is unchanged, and order-independent with or without the seed include
+      (cyrius 6.7.7 sorts the snapshot).
+- [x] Re-provisioned `lib/` from empty — a `lib sync` over the old pin's `lib/` produced a lock the
+      build refused (CHANGELOG 2.3.0).
+- [x] Main build: 22 warnings, the same set as 2.2.1; 47/47 test files, 1,495 assertions (same per
+      suite); 5/5 fuzz; 15 benchmarks; lint; fmt; doc; `rust-old/` untouched.

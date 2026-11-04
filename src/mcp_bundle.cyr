@@ -9,12 +9,15 @@
 #
 # INCLUDE, IN THIS ORDER, BEFORE THIS FILE:
 #   1. the stdlib leaves named in dist/szal-mcp.deps (`cyrius deps` reads that sidecar; a raw-include
-#      consumer includes each lib/<leaf>.cyr itself) — szal 2.2.1 builds and tests against the cyrius
-#      6.6.20 snapshot. It cannot compile below cyrius 6.6.13: every JSON field read is
+#      consumer includes each lib/<leaf>.cyr itself) — szal 2.3.0 builds and tests against the cyrius
+#      6.7.9 snapshot. It cannot compile below cyrius 6.6.13: every JSON field read is
 #      bayan_json_v_obj_get_by_cstr, which bayan added at 1.5.10;
-#   2. bote-core (its dist/bote-core.cyr, the [lib.core] cut) — szal 2.2.1 builds and tests against
-#      3.3.17. It cannot compile below 3.1.3, where bote's error tags became BOTE_ERR_*;
-#   3. majra (its dist/majra.cyr) — szal 2.2.1 builds and tests against 2.9.3, and calls only
+#   2. bote-core (its dist/bote-core.cyr, the [lib.core] cut) — szal 2.3.0 builds and tests against
+#      3.4.10, which needs cyrius >= 6.7.2 and `lib/sakshi.cyr` in scope (bote-core's own requires
+#      block omits it). szal needs bote-core >= 3.1.3, where bote's error tags became BOTE_ERR_*.
+#      From bote 3.4.8 the dispatcher checks each argument against the tool's schema (types, enums,
+#      bounds) before the handler runs, and audits an `isError` result as a failure;
+#   3. majra (its dist/majra.cyr) — szal 2.3.0 builds and tests against 2.12.0, and calls only
 #      ratelimit_new / ratelimit_check. Below 2.7.0 majra keyed its buckets on the caller's key
 #      POINTER, so szal's per-request keys got a fresh bucket every call and nothing was ever
 #      rate-limited;
@@ -39,12 +42,10 @@
 # SZAL_TRIGGER_*, ...). Before vendoring a new szal-mcp, run szal's
 # `scripts/scan-collisions.sh --check --consumer <your compile set>` against it.
 #
-# SIDECAR SEED (2.2.1) — the one include below is what makes dist/szal-mcp.deps come out the same
-# on every host. cyrius 6.6.20's distlib credits a name that two stdlib leaves both declare to
-# whichever one its snapshot listing reaches first, and that listing order is the filesystem's.
-# O_WRONLY (the file_open flags in mcp_tools_file) is declared by lib/io.cyr AND the syscalls
-# peers, so a CI runner could derive the sidecar in a different order from a local run and fail the
-# drift check. A `lib/` include in a bundled module is kept and seeds the verify, so the name is in
-# scope before any attribution runs (majra 2.9.3 fixed the same way). io is the leaf whose
-# file_open those flags are for; it brings syscalls and result with it.
+# SIDECAR SEED (2.2.1) — the one include below names io as the leaf the O_WRONLY / file_open use in
+# mcp_tools_file needs. O_WRONLY is declared by lib/io.cyr AND the syscalls peers, and cyrius
+# 6.6.20's distlib credited such a name in filesystem-listing order, so without this seed CI could
+# derive the sidecar in a different order from a local run and fail the drift check. cyrius 6.7.7
+# fixed that upstream (the snapshot is sorted); the seed stays because it is the honest leaf and
+# keeps the sidecar the same on any distlib. io brings syscalls and result with it.
 include "lib/io.cyr"

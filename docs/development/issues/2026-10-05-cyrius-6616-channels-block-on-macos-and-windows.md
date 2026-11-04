@@ -12,6 +12,9 @@
 > them on arm64 macOS or Windows — CI is `ubuntu-latest` only — and that run is this issue's closing
 > condition.
 
+> **At szal 2.3.0 (2026-11-03, pin `cyrius = "6.7.9"`):** unchanged — the Linux suites still pass;
+> macOS / Windows still not run.
+
 ~~⛔ Nothing to do until cyrius 6.6.16 is tagged and out and szal's pin moves to it.~~ (done at 2.2.1)
 
 ## What changed in cyrius

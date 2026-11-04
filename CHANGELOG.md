@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-11-03
+
+Toolchain and dependency refresh onto the cyrius **6.7** language minor — cyrius 6.6.20 →
+**6.7.9**; majra 2.9.3 → **2.12.0**, bote-core 3.3.17 → **3.4.10**, ai-hwaccel **2.4.2** (kept: no
+ai-hwaccel release pins 6.7.9). Each library is at its last release pinned to 6.7.9 or below,
+vendored byte-for-byte from its tag, and the three are the files hoosh 2.9.0 (its 6.7.9 release)
+uses. A MINOR release for the language minor and for bote 3.4's dispatcher contract (below); szal's
+own source, behaviour and public names are unchanged. **1,495 assertions across 47 test files**, the
+same count suite for suite as 2.2.1, 5 fuzz harnesses (356,290 properties), 15 benchmarks, 0
+failures; `rust-old/` untouched.
+
+### Changed — cyrius pin 6.6.20 → 6.7.9
+- **No source change was needed.** The 6.7 changes that could silently alter a program were
+  checked against szal's own code (`src/`, tests, fuzz, benches): no lone `!` (until 6.7.3 the lexer
+  dropped it, so `!x` compiled as `x`), no identifier named `trait` / `const` / `true` / `false` /
+  `do` / `dyn` (now reserved), and no unary `-` / `~` on a constant followed by an operator (6.7.9
+  re-binds `-K + 10`). The main build prints the same 22 warnings as 2.2.1, kind for kind.
+- **Stdlib folds:** bayan 1.5.12 → 1.5.13, sigil 3.13.10 → 3.13.11, patra 1.15.2 → 1.16.0, sakshi
+  2.5.7 → 2.5.8. `cyrius lib sync` still provisions 58 files; `cyrius.lock` regenerated (64 files +
+  the `cyrius 6.7.9` trailer, the same from a fresh checkout).
+- ⚠ **Re-provision `lib/` from empty on a pin move:** `rm -rf lib cyrius.lock && cyrius lib sync`.
+  Run over the 6.6.20 tree, 6.7.9's `lib sync` left the four files the previous *build* had pulled in
+  (`mmap`, `boxed`, `sys`, `slice`) at their 6.6.20 content, hashed them into the new lock, and the
+  next `cyrius build` refused: "cyrius.lock and the pinned stdlib snapshot DISAGREE under an
+  unchanged pin 6.7.9". CI starts from an empty `lib/` and is not affected. Recorded in
+  `cyrius.cyml` and state.md.
+- **distlib no longer depends on the filesystem's listing order** (fixed upstream in 6.7.7: the
+  snapshot is sorted). Re-checked: `dist/szal-mcp.cyr` / `.deps` are byte-identical under four
+  listing orders, with or without `src/mcp_bundle.cyr`'s 2.2.1 seed include. The seed stays — it names
+  the honest leaf and keeps the sidecar the same on any distlib; its comment says so. The sidecar is
+  unchanged (11 leaves).
+- `scripts/scan-collisions.sh`'s table of what `cyrius build --strict` reports, re-measured on
+  6.7.9: every row unchanged, and a later same-named enum constant still wins for earlier code.
+
+### Changed — dependencies
+- **bote-core 3.3.17 → 3.4.10.** Every fn szal calls (19) keeps its signature. What changes for a
+  consumer of `dist/szal-mcp.cyr`, all on bote's side of the dispatcher:
+  - from 3.4.8 `dispatcher_register_tool` compiles each tool's schema and checks the definition —
+    bote's own consumer audit names szal: "its 73 literal property schemas are all valid, so
+    registration accepts every tool" — and **`tools/call` arguments are checked against the
+    schema** (types, enums, bounds) before szal's handler runs, so a wrong-typed argument gets bote's
+    `isError` result naming it instead of the handler's own validation error;
+  - a result with `isError: true` is audited and published as a failure (`bote/tool/failed`); szal's
+    handlers already return CallToolResults, so nothing is re-wrapped;
+  - bote-core needs cyrius ≥ 6.7.2 and calls `sakshi_*` without including `lib/sakshi.cyr` (its
+    requires block omits it): a consumer that vendors it declares `sakshi` itself.
+    `tests/szal_consumer_bundle.tcyr`, which stands in for such a consumer, now includes it — the
+    one test change in this release. hoosh 2.9.0 already declares it.
+- **majra 2.9.3 → 2.12.0.** Every fn szal calls (24) keeps its signature. 2.12.0's metrics hooks pass
+  their third and fourth arguments as parameters (they went through unsynchronised globals,
+  `_metrics_arg3` / `_metrics_arg4`, now deprecated); szal only calls the hooks and never reads those
+  globals. Also new: `ratelimit_evict_to` (unused by szal), and free functions for the lists and
+  stats blocks majra returns.
+- **ai-hwaccel stays 2.4.2.** It pins 6.6.20 and builds clean on 6.7.9; 2.5.0+ pin 6.7.18, a later
+  move. hoosh 2.9.0 makes the same choice.
+- `scripts/consumer-check.sh` passes generic and against hoosh 2.9.0 (extracted from its tag):
+  nothing collides, the bundle adds no duplicate warning, `tools/list` = 55; hoosh adds only `math`.
+- `src/mcp_bundle.cyr` (the bundle's contract header) names the new tested versions, bote-core's
+  cyrius and sakshi requirements, and the dispatcher's schema checks.
+
+### Issues
+- The 2026-10-05 channels issue stays open: nothing has run the stream / parallel suites on arm64
+  macOS or Windows.
+
 ## [2.2.1] — 2026-11-03
 
 Toolchain and dependency patch — cyrius 6.6.6 → **6.6.20**; majra 2.9.1 → **2.9.3**, bote-core

@@ -27,6 +27,9 @@ include "lib/assert.cyr"
 include "lib/io.cyr"
 include "lib/bayan.cyr"
 include "lib/chrono.cyr"
+# bote-core 3.4.x logs through sakshi, and its requires block does not include it (bote's log.cyr
+# header): a consumer that vendors bote-core declares sakshi itself, as hoosh does.
+include "lib/sakshi.cyr"
 include "lib/thread.cyr"
 include "lib/fs.cyr"
 include "lib/process.cyr"

@@ -15,7 +15,7 @@
 #   struct X vs fn X                       -> SILENT       that name jumps into .bss. szal
 #   enum TYPE name vs enum TYPE name       -> SILENT       dispatches 54 MCP tools via fn pointers.
 #   struct X vs struct X, other layout     -> warning   from 6.6.20 (SILENT at 6.6.6); the FIRST wins
-# (Re-measured with cycc 6.6.6 and 6.6.20 at szal 2.2.1.)
+# (Re-measured with cycc 6.6.6 and 6.6.20 at szal 2.2.1, and 6.7.9 at 2.3.0 — every row unchanged.)
 #
 # A later same-named enum constant wins for EVERY read, including reads compiled before it — at any
 # var index, on both compilers (measured at 2.2.1: `fn early() { return K; }` between `K = 6` and
