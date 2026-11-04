@@ -133,6 +133,7 @@ fn _wc_chars(d, n) {
 # (template_tools.rs 24-52).
 fn _template_render_handler(args, claims) {
     var o = _tpl_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var tv = bayan_json_v_obj_get_by_cstr(o, "template");
     if (bayan_json_v_is_str(tv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: template"));
@@ -151,6 +152,7 @@ fn _template_render_handler(args, claims) {
 # szal_wc: count lines/words/chars/bytes of `text` or a `file`. Mirrors WordCount::call (template_tools.rs 71-111).
 fn _wc_handler(args, claims) {
     var o = _tpl_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var dptr = 0;
     var dlen = 0;
 
@@ -200,6 +202,7 @@ fn _wc_handler(args, claims) {
 # Mirrors TextReplace::call (template_tools.rs 132-173).
 fn _text_replace_handler(args, claims) {
     var o = _tpl_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var tv = bayan_json_v_obj_get_by_cstr(o, "text");
     if (bayan_json_v_is_str(tv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: text"));
@@ -228,6 +231,7 @@ fn _text_replace_handler(args, claims) {
 # (template_tools.rs 193-215).
 fn _text_split_handler(args, claims) {
     var o = _tpl_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var tv = bayan_json_v_obj_get_by_cstr(o, "text");
     if (bayan_json_v_is_str(tv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: text"));
@@ -254,6 +258,7 @@ fn _text_split_handler(args, claims) {
 # (template_tools.rs 234-253).
 fn _text_join_handler(args, claims) {
     var o = _tpl_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var pv = bayan_json_v_obj_get_by_cstr(o, "parts");
     if (bayan_json_v_is_arr(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: parts"));

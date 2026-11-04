@@ -23,3 +23,4 @@ Decisions about szal — what we chose, the context, and the consequences we acc
 |---|---|---|
 | [0001](0001-1.2-persistence-and-distribution.md) | Persistence, streaming, and distribution without bloating the default build (Rust 1.2) | Accepted |
 | [0002](0002-szal-owns-its-namespace.md) | szal owns its namespace; vendored libraries stay byte-identical | Accepted |
+| [0003](0003-refuse-json-the-stdlib-refuses.md) | Tool arguments the stdlib refuses are a tool error, not `{}` and not Rust's last-wins | Accepted |

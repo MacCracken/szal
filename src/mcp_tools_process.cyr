@@ -185,6 +185,7 @@ fn _proc_run(argv, cwd_c) {
 # (process_tools.rs 29-107).
 fn _exec_handler(args, claims) {
     var o = _proc_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cv = bayan_json_v_obj_get_by_cstr(o, "command");
     if (bayan_json_v_is_str(cv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: command"));
@@ -268,6 +269,7 @@ fn _proc_trim_end(s) {
 # szal_which: is `command` on PATH? Mirrors Which::call (process_tools.rs 139-174).
 fn _which_handler(args, claims) {
     var o = _proc_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cv = bayan_json_v_obj_get_by_cstr(o, "command");
     if (bayan_json_v_is_str(cv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: command"));

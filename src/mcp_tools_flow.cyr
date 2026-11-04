@@ -29,6 +29,7 @@ fn _flow_mode_parse(s) {
 # (flow_tools.rs 38-89).
 fn _flow_create_handler(args, claims) {
     var o = _flow_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var nv = bayan_json_v_obj_get_by_cstr(o, "name");
     if (bayan_json_v_is_str(nv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: name"));
@@ -74,6 +75,7 @@ fn _flow_create_handler(args, claims) {
 # (flow_tools.rs 104-139).
 fn _flow_validate_handler(args, claims) {
     var o = _flow_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "flow_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: flow_json"));
@@ -122,6 +124,7 @@ fn _flow_step_deps_arr(step) {
 # szal_flow_from_json: parse + structured summary. Mirrors FlowFromJson::call (flow_tools.rs 154-192).
 fn _flow_from_json_handler(args, claims) {
     var o = _flow_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "flow_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: flow_json"));
@@ -193,6 +196,7 @@ fn _flow_list_modes_handler(args, claims) {
 # szal_flow_add_step: append a step to a flow. Mirrors FlowAddStep::call (flow_tools.rs 238-282).
 fn _flow_add_step_handler(args, claims) {
     var o = _flow_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var fv = bayan_json_v_obj_get_by_cstr(o, "flow_json");
     if (bayan_json_v_is_str(fv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: flow_json"));

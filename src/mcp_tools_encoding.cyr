@@ -28,6 +28,7 @@ fn _parse_args(args) {
 # otherwise a JSON array. Mirrors UuidGen::call (encoding_tools.rs 25-44).
 fn _uuid_handler(args, claims) {
     var o = _parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var count = 1;
     var cv = bayan_json_v_obj_get_by_cstr(o, "count");
     if (bayan_json_v_is_int(cv) == 1) {
@@ -62,6 +63,7 @@ fn _uuid_handler(args, claims) {
 # unknown operation -> Validation error. Mirrors Base64Tool::call (encoding_tools.rs 63-104).
 fn _base64_handler(args, claims) {
     var o = _parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var iv = bayan_json_v_obj_get_by_cstr(o, "input");
     if (bayan_json_v_is_str(iv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: input"));

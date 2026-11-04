@@ -101,6 +101,7 @@ fn _json_seg_index(seg) {
 # objects. Mirrors JsonPath::call (json_tools.rs 24-84).
 fn _json_path_handler(args, claims) {
     var o = _json_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: json"));
@@ -191,6 +192,7 @@ fn _json_field_or_err(o, field, out_err) {
 # szal_json_diff: structural equality + both type names. Mirrors JsonDiff::call (json_tools.rs 104-154).
 fn _json_diff_handler(args, claims) {
     var o = _json_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var err = alloc(8);
     store64(err, 0);
 
@@ -212,6 +214,7 @@ fn _json_diff_handler(args, claims) {
 # (json_tools.rs 181-212). Valid -> {valid,type,size_bytes}; invalid -> {valid,error,position}.
 fn _json_validate_handler(args, claims) {
     var o = _json_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: json"));

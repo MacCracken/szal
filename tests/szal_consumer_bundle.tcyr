@@ -138,6 +138,24 @@ fn t_guards(d) {
     return 0;
 }
 
+# Arguments bote's reader accepts and the stdlib refuses (2.3.1). bote reads the FIRST of two duplicate
+# keys (its schema check passed `count: 3`) and hands the handler the raw arguments; bayan 1.11.1
+# refuses them. 2.3.0 answered one uuid with isError false — the handler ran on its defaults.
+fn t_refused_args(d) {
+    var u3 = _cb_call(d, "szal_uuid", "{\"count\":3}");
+    assert_eq(_cb_is_error(u3), 0, "szal_uuid {count:3} answers");
+    var dup = _cb_call(d, "szal_uuid", "{\"count\":3,\"count\":3}");
+    assert_eq(_cb_is_error(dup), 1, "szal_uuid with a duplicate key is a tool error, not defaults");
+    assert(str_eq_cstr(_cb_text(dup), "invalid arguments: duplicate key at byte 11") == 1,
+        "naming the duplicate and its byte");
+    var mixed = _cb_call(d, "szal_uuid", "{\"count\":3,\"count\":\"x\"}");
+    assert_eq(_cb_is_error(mixed), 1, "a duplicate bote validated by its first value is still refused");
+    var v = _cb_call(d, "szal_json_validate", "{\"json\":\"[1]\",\"json\":\"{}\"}");
+    assert(str_eq_cstr(_cb_text(v), "invalid arguments: duplicate key at byte 14") == 1,
+        "a required-argument tool names the duplicate, not a missing field");
+    return 0;
+}
+
 # The szal-owned entry points still work from the bundle alone.
 fn t_fresh_dispatchers() {
     var d = szal_register_tools();
@@ -160,6 +178,9 @@ fn main() {
 
     test_group("host guards");
     t_guards(d);
+
+    test_group("arguments the stdlib refuses");
+    t_refused_args(d);
 
     test_group("szal-built dispatchers");
     t_fresh_dispatchers();

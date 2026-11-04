@@ -476,32 +476,39 @@ Rust's `mode & 0o222 == 0`).
 tool is handed to inspect (`szal_json_validate` / `_path` / `_diff`), and step / flow / record JSON.
 From bayan 1.11.1 (szal 2.3.1, cyrius 6.7.18) a document with a **duplicate object key** or a
 **malformed number** (`01`, no digits, an out-of-range integer) does not parse. Before it, bayan
-answered the FIRST of two duplicate keys and accepted `01`.
+answered the FIRST of two duplicate keys and accepted `01`. A tool whose ARGUMENTS bayan refuses
+returns `invalid arguments: <reason> at byte <n>` (`szal_args_parse` / `szal_args_error`, ADR 0003).
 
-**Rust:** `serde_json::from_str::<Value>` accepts a duplicate key and keeps the LAST value, and
-rejects `01` ("invalid number"); a serde-derived struct (`StepDef`, `FlowDef`, …) rejects a duplicate
-field.
+**Rust:** `serde_json::from_str::<Value>` (and the `Value` a Rust tool receives its arguments as)
+accepts a duplicate key and keeps the LAST value, and rejects `01` ("invalid number"); a
+serde-derived struct (`StepDef`, `FlowDef`, …) rejects a duplicate field.
 
 | input | Rust | szal ≤ 2.3.0 | szal 2.3.1 |
 |---|---|---|---|
+| tool arguments `{"count":3,"count":3}` (`szal_uuid`) | 3 UUIDs | **1 UUID, success** (read as `{}`) | `invalid arguments: duplicate key at byte 11` |
+| tool arguments `{"json":"[1]","json":"{}"}` | runs on `{}` | runs on `[1]` | `invalid arguments: duplicate key at byte 14` |
 | `szal_json_validate` of `{"a":1,"a":2}` | `valid: true` | `valid: true` | `valid: false`, `"duplicate key"` |
-| `szal_json_path` / `_diff` over that document | `a` = 2 | `a` = 1 | parse error |
-| tool arguments `{"json":"[1]","json":"{}"}` | runs on `{}` | runs on `[1]` | `missing required field: json` |
+| `szal_json_path` / `_diff` over that document | `a` = 2 | `a` = 1 | `invalid JSON` / `invalid JSON in 'a'` |
 | `{"a":01}` anywhere | refused | accepted | refused |
 | step / flow JSON with a duplicate field | refused | first value used | refused |
 
-(Measured at 2.3.1 through `_json_validate_handler` on cyrius 6.7.9 and 6.7.18; Rust from
-`serde_json`'s documented behaviour, oracle read only.)
+(The 2.3.0 column is the 2.3.0 handlers on cyrius 6.7.18 — the "1 UUID, success" row is the defect
+2.3.1 fixes; on 6.7.9 bayan still accepted duplicates and answered the first. Measured through
+bote 3.8.4's dispatcher and the handlers directly; Rust from `serde_json`'s documented behaviour,
+oracle read only.)
 
-**Net:** 6.7.18 brings szal to Rust's answer for malformed numbers and for step / flow JSON, and
-moves it away for free-form JSON with a duplicate key — which already diverged (first value vs
-last). A tool whose ARGUMENTS repeat a key now reports its first required field as missing,
-because the handlers read an unparseable argument object as an empty one.
+**Net:** szal now gives Rust's answer for malformed numbers and for step / flow JSON, and refuses —
+explicitly — what Rust serves by its last value: tool arguments, and documents a tool inspects, that
+repeat a key. Through bote the argument case is also a divergence from bote, whose reader (and
+inputSchema check) takes the FIRST value.
 
-**Why accepted (2.3.1):** the change is the stdlib's, made deliberately upstream (bayan's 1.11.1
-"refusals"), and the inputs are non-conforming JSON — RFC 8259 says object names SHOULD be unique,
-and the official MCP clients never send a duplicate key. Restoring last-wins would mean a JSON parser
-of szal's own. Revisit if a consumer sends such documents, or if bayan grows a last-wins option.
+**Why accepted (2.3.1):** the refusal is the stdlib's, made deliberately upstream on a security
+ground, and refusing is the only answer that keeps bote's first-wins schema check and szal's handler
+agreeing — taking the last value would act on one nobody validated (`{"count":3,"count":"x"}`: bote
+checks `3`). The inputs are non-conforming JSON (RFC 8259: object names SHOULD be unique). Restoring
+last-wins would also mean a JSON parser of szal's own. Decision and alternatives:
+[ADR 0003](../adr/0003-refuse-json-the-stdlib-refuses.md); the bote-side ask:
+[`issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`](issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md).
 
 ---
 

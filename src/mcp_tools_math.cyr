@@ -284,6 +284,7 @@ fn _fmt_f64_clean(val) {
 # szal_math_eval handler. Mirrors MathEval::call (math_tools.rs 21-58).
 fn _math_eval_handler(args, claims) {
     var o = _math_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var ev = bayan_json_v_obj_get_by_cstr(o, "expression");
     if (bayan_json_v_is_str(ev) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: expression"));

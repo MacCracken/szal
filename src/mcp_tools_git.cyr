@@ -63,6 +63,7 @@ fn _git_cwd(o) {
 # (git_tools.rs 50-92).
 fn _git_status_handler(args, claims) {
     var o = _git_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cwd = _git_cwd(o);
 
     var ba = vec_new();
@@ -143,6 +144,7 @@ fn _git_split6(line) {
 # szal_git_log: recent commits as structured records. Mirrors GitLog::call (git_tools.rs 111-151).
 fn _git_log_handler(args, claims) {
     var o = _git_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cwd = _git_cwd(o);
     var count = DEFAULT_LOG_COUNT;
     var cv = bayan_json_v_obj_get_by_cstr(o, "count");
@@ -194,6 +196,7 @@ fn _git_log_handler(args, claims) {
 # (git_tools.rs 173-220).
 fn _git_diff_handler(args, claims) {
     var o = _git_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cwd = _git_cwd(o);
 
     var da = vec_new();
@@ -250,6 +253,7 @@ fn _git_ref_msg(s) {
 # szal_git_branch: current branch + branch list. Mirrors GitBranch::call (git_tools.rs 239-269).
 fn _git_branch_handler(args, claims) {
     var o = _git_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cwd = _git_cwd(o);
     var all = 0;
     var av = bayan_json_v_obj_get_by_cstr(o, "all");
@@ -301,6 +305,7 @@ fn _git_branch_handler(args, claims) {
 # GitBlame::call (git_tools.rs 288-343).
 fn _git_blame_handler(args, claims) {
     var o = _git_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var fv = bayan_json_v_obj_get_by_cstr(o, "file");
     if (bayan_json_v_is_str(fv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: file"));

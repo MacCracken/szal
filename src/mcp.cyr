@@ -111,6 +111,44 @@ fn szal_result_error_typed(code, msg) {
     return s;
 }
 
+# --- Tool arguments ---
+#
+# Every handler that reads arguments parses them with szal_args_parse and, on 0, returns
+# szal_args_error(args) at once. bote always hands a handler an object (`{}` when `arguments` is
+# absent; anything else is a protocol error), so a 0 here means JSON bote's reader accepted and the
+# stdlib's bayan refuses: since bayan 1.11.1 (cyrius 6.7.18) a duplicate object key or a malformed
+# number (`01`). Before 2.3.1 handlers read such arguments as `{}`, so a tool with optional
+# arguments silently ran on its defaults. Rust (serde_json) keeps a duplicate's LAST value; szal
+# refuses instead, because bote's schema check reads the FIRST, and acting on any other value would
+# act on arguments nobody checked (ADR 0003, parity-notes §25).
+
+# Parse a tool's arguments (a JSON object cstr) into a json_v, or 0 if bayan refuses them.
+fn szal_args_parse(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# The Validation error for arguments szal_args_parse refused, naming bayan's reason and byte.
+fn szal_args_error(args) {
+    # Re-parse into a state of our own: bayan_json_last_error is shared by every thread, and bote may
+    # run handlers on worker threads, so the reason is read from this call's state only.
+    var ps = alloc(bayan_json_parse_state_size());
+    var mb = str_builder_new();
+    str_builder_add_cstr(mb, "invalid arguments");
+    if (ps != 0) {
+        var s = str_from(args);
+        var v = bayan_json_v_parse_ctx_str(ps, s);
+        if (v == 0) {
+            str_builder_add_cstr(mb, ": ");
+            str_builder_add_cstr(mb, bayan_json_state_error(ps));
+            str_builder_add_cstr(mb, " at byte ");
+            str_builder_add_int(mb, bayan_json_state_error_pos(ps));
+        }
+    }
+    var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(mb));
+    return str_data(e);
+}
+
 # --- szal_validate_path: the filesystem security boundary ---
 
 # Current working directory as a cstr (kernel NUL-terminates), or 0 on failure. Linux SYS_getcwd=79.

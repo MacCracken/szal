@@ -96,6 +96,7 @@ fn _strip_base_prefix(s) {
 # szal_base_convert. Mirrors BaseConvert::call (conversion_tools.rs 33-104).
 fn _base_convert_handler(args, claims) {
     var o = _conv_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var vv = bayan_json_v_obj_get_by_cstr(o, "value");
     if (bayan_json_v_is_str(vv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: value"));
@@ -156,6 +157,7 @@ fn _ratio_json(bytes, divisor) {
 # szal_byte_format. Mirrors ByteFormat::call (conversion_tools.rs 120-155).
 fn _byte_format_handler(args, claims) {
     var o = _conv_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var bv = bayan_json_v_obj_get_by_cstr(o, "bytes");
     if (bayan_json_v_is_int(bv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: bytes"));
@@ -194,6 +196,7 @@ fn _byte_format_handler(args, claims) {
 # szal_duration_format. Mirrors DurationFormat::call (conversion_tools.rs 173-216).
 fn _duration_format_handler(args, claims) {
     var o = _conv_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var sv = bayan_json_v_obj_get_by_cstr(o, "seconds");
     if (bayan_json_v_is_int(sv) == 0 && bayan_json_v_is_float(sv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: seconds"));

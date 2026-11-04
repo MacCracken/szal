@@ -33,6 +33,7 @@ fn _state_transitions_arr(st) {
 # szal_state_check: terminal-ness + valid transitions of a state. Mirrors StateCheck::call (state_tools.rs 41-76).
 fn _state_check_handler(args, claims) {
     var o = _state_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var sv = bayan_json_v_obj_get_by_cstr(o, "state");
     if (bayan_json_v_is_str(sv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: state"));
@@ -66,6 +67,7 @@ fn _state_field(o, field) {
 # szal_state_transition: is from->to a valid transition? Mirrors StateTransition::call (state_tools.rs 94-131).
 fn _state_transition_handler(args, claims) {
     var o = _state_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var from = _state_field(o, "from");
     if (from < 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing or invalid 'from' state"));

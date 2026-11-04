@@ -13,9 +13,9 @@ in `src/mcp_tools_engine.cyr` (what `szal_server_info` reports; CI cross-checks 
 ## Toolchain
 
 - **Cyrius pin**: `6.7.18` (`cyrius.cyml [package].cyrius`), cyrius's latest at 2.3.1. Suite at
-  this pin: **1,495 assertions across 47 test files**, 5 fuzz harnesses (356,290 properties), 15
-  benchmarks, main — 0 failures, the same per suite as at 6.6.20 and 6.7.9. (2.2.0 recorded 1,494;
-  its tree counts 1,495 on 6.6.6 too.) History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 →
+  this pin: **1,565 assertions across 47 test files**, 5 fuzz harnesses (356,290 properties), 15
+  benchmarks, main — 0 failures: the 1,495 of 2.3.0, the same per suite on 6.6.20, 6.7.9 and 6.7.18,
+  plus 70 for the 2.3.1 argument fix. (2.2.0 recorded 1,494; its tree counts 1,495 on 6.6.6 too.) History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 →
   6.2.2 → 6.5.2 → 6.5.35 → 6.6.2 → 6.6.6 → 6.6.20 → 6.7.9 → 6.7.18. At 2.2.1 and 2.3.0 the vendored
   libraries followed the pin (each at its last release pinned to it); at 2.3.1 each is at its
   latest release, which pins 6.7.18 anyway.
@@ -27,8 +27,10 @@ in `src/mcp_tools_engine.cyr` (what `szal_server_info` reports; CI cross-checks 
   (a statement that is only `load64(..)` etc. no longer compiles — none in szal). Re-check at the
   next language minor; the full list is cyrius's `docs/development/ecosystem-migration.md`.
 - **bayan 1.11.1 (cyrius 6.7.18) refuses JSON with a duplicate object key or a malformed number**
-  (`01`): such a document does not parse, and a tool whose arguments repeat a key reports a missing
-  field. Rust accepts duplicates (last wins) — parity-notes §25.
+  (`01`): such a document does not parse. A tool whose arguments bayan refuses returns
+  `invalid arguments: <reason> at byte <n>` (2.3.1; before, handlers read them as `{}` and ran on
+  defaults). Rust accepts duplicates (last wins); szal refuses because bote's schema check reads the
+  FIRST — ADR 0003, parity-notes §25.
 - **`cyrius build` writes `cyrius.lock`** (from 6.6.20): the hashes of the provisioned stdlib files
   plus a `cyrius <pin>` trailer. Deterministic, and committed (the siblings commit theirs).
   **On a pin move, `rm -rf lib cyrius.lock && cyrius lib sync` first:** a `lib sync` over the old
@@ -469,6 +471,12 @@ ported, tested (per-group + full-stack), security-audited (validate_path / no-sh
 
 - **Handler ABI:** `fn _name(args, claims)` where `args` is a **cstr**; return `str_data(result)`
   (the `szal_result_*` builders NUL-terminate via `str_builder_build`, so the cstr is valid).
+- **Parse arguments, then guard (2.3.1, ADR 0003):** `var o = szal_args_parse(args);` (or the group's
+  `_<group>_parse_args`, the same parse) followed at once by
+  `if (o == 0) { return szal_args_error(args); }` — never read fields off a refused parse, which
+  answers 0 for every field and runs the tool on its defaults. `tests/szal_mcp_tools_net.tcyr`
+  `t_args_refused_everywhere` fails a new tool that skips the guard; a tool that takes no arguments
+  goes in its `_takes_no_args` list instead.
 - **`bayan_json_v_parse` takes a `Str`, not a cstr** — wrap first:
   `fn _parse_args(a) { var s = str_from(a); return bayan_json_v_parse(s); }`. Passing the raw cstr
   segfaults.
@@ -541,18 +549,20 @@ cyrius 6.7.18 — szal's pin and cyrius's latest — and szal has **zero git dep
   warning, nothing collides, `tools/list` = 55. hoosh must add only `math` to its `[deps] stdlib`.
   The bundle needs a cyrius ≥ 6.6.13 stdlib (`bayan_json_v_obj_get_by_cstr`); the bote-core it sits
   on needs ≥ 6.7.13 and `sakshi`. Through bote 3.4.8+ the dispatcher checks each `tools/call`'s
-  arguments against the tool's schema before szal's handler sees them. A consumer's JSON with a
-  duplicate key is refused by the stdlib's bayan (parity-notes §25).
+  arguments against the tool's schema before szal's handler sees them; bote reads the first of two
+  duplicate keys, and szal's handler refuses such arguments (ADR 0003, parity-notes §25).
 - daimon, sutra, samay — planned; `dist/szal-mcp.cyr` is the shape a tool-only consumer takes, the
   full `dist/szal.cyr` is M5 (roadmap).
 
 ## Next — ▶ START HERE (handoff)
 
 **Where it stands (2.3.1):** M1 ✅, M2 ✅, M3 ✅ — 43 ported modules, the six execution modes, the
-54-tool MCP surface; 47 test files / 1,495 assertions, 5 fuzz harnesses, 15 benchmarks, all green on
-cyrius 6.7.18; `rust-old/` untouched. One open issue, information only:
+54-tool MCP surface; 47 test files / 1,565 assertions, 5 fuzz harnesses, 15 benchmarks, all green on
+cyrius 6.7.18; `rust-old/` untouched. Two open issues:
 [`issues/2026-10-05-cyrius-6616-channels-block-on-macos-and-windows.md`](issues/2026-10-05-cyrius-6616-channels-block-on-macos-and-windows.md)
-— it closes once the stream / parallel suites run on arm64 macOS and Windows. Release history is
+(information; closes once the stream / parallel suites run on arm64 macOS and Windows) and
+[`issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`](issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md)
+(the bote-side ask behind ADR 0003 — drafted, **not yet filed with bote**). Release history is
 CHANGELOG.md; this section is only what to do next.
 
 1. **M4 — verification** (roadmap): port the remaining Rust assertions across the split suites;

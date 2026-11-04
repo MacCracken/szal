@@ -58,6 +58,44 @@ fn t_result_error_typed() {
     assert(str_contains(v, str_from("\"retryable\":false")), "validation not retryable");
     return 0;
 }
+# content[0].text of a handler-style result cstr, as a Str (parse through a helper, never inline).
+fn _args_parse_result(rc) {
+    var s = str_from(rc);
+    return bayan_json_v_parse(s);
+}
+fn _args_text(rc) {
+    var o = _args_parse_result(rc);
+    var item = bayan_json_v_arr_get(bayan_json_v_obj_get_by_cstr(o, "content"), 0);
+    return bayan_json_v_str(bayan_json_v_obj_get_by_cstr(item, "text"));
+}
+
+# szal_args_parse / szal_args_error (2.3.1): arguments bayan refuses are an explicit Validation
+# error naming the reason and byte — never `{}`, which let optional-argument tools run on defaults.
+fn t_args() {
+    var ok = szal_args_parse("{\"count\":3}");
+    assert(ok != 0, "args: an object parses");
+    var empty = szal_args_parse("{}");
+    assert(empty != 0, "args: {} parses (bote's default when arguments are absent)");
+
+    var dup = szal_args_parse("{\"count\":3,\"count\":3}");
+    assert_eq(dup, 0, "args: a duplicate key is refused (bayan 1.11.1)");
+    var de = szal_args_error("{\"count\":3,\"count\":3}");
+    var dt = _args_text(de);
+    assert(str_eq_cstr(dt, "invalid arguments: duplicate key at byte 11") == 1,
+        "args: the error names the duplicate key and the byte of its second occurrence");
+    var ds = str_from(de);
+    assert(str_contains(ds, str_from("\"isError\":true")), "args: the error is a tool error");
+    assert(str_contains(ds, str_from("\"error_code\":\"validation\"")), "args: typed validation");
+
+    var lz = szal_args_parse("{\"n\":01}");
+    assert_eq(lz, 0, "args: a leading-zero number is refused");
+    var le = szal_args_error("{\"n\":01}");
+    var lt = _args_text(le);
+    assert(str_starts_with(lt, str_from("invalid arguments: ")) == 1, "args: malformed number names a reason");
+    assert(str_contains(lt, str_from(" at byte ")) == 1, "args: malformed number names its byte");
+    return 0;
+}
+
 fn t_errcode() {
     assert(streq(szal_mcp_err_name(SZAL_MCP_NOT_FOUND), "not_found"), "name not_found");
     assert(streq(szal_mcp_err_name(SZAL_MCP_PERMISSION_DENIED), "permission_denied"), "name permission_denied");
@@ -96,6 +134,9 @@ fn main() {
     t_result_ok_json();
     t_result_error();
     t_result_error_typed();
+
+    test_group("tool arguments");
+    t_args();
 
     test_group("error codes");
     t_errcode();

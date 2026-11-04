@@ -50,6 +50,7 @@ fn _eng_str_arr(items) {
 # EngineCreate::call (engine_tools.rs 24-41). Default max_concurrency 16, global_timeout_ms None.
 fn _engine_create_handler(args, claims) {
     var o = _eng_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var mc = DEFAULT_MAX_CONCURRENCY;
     var mcv = bayan_json_v_obj_get_by_cstr(o, "max_concurrency");
     if (bayan_json_v_is_int(mcv) == 1) { mc = bayan_json_v_int(mcv); }
@@ -85,6 +86,7 @@ fn _eng_count_status(steps, want_c) {
 # szal_result_inspect: summarize a FlowResult JSON. Mirrors ResultInspect::call (engine_tools.rs 56-116).
 fn _result_inspect_handler(args, claims) {
     var o = _eng_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "result_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: result_json"));

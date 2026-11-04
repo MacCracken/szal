@@ -12,10 +12,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Toolchain and dependency patch — cyrius 6.7.9 → **6.7.18**; majra 2.12.0 → **2.13.0**, bote-core
 3.4.10 → **3.8.4**, ai-hwaccel 2.4.2 → **2.5.6** — each its library's latest release (checked against
 GitHub as well as the local tags), all three pinned to 6.7.18, which is also cyrius's latest. Vendored
-byte-for-byte from the tags. No source change in szal's code; **1,495 assertions across 47 test
-files**, the same count suite for suite as 2.3.0, 5 fuzz harnesses (356,290 properties), 15
-benchmarks, 0 failures; `rust-old/` untouched. One behaviour change comes in with the stdlib's bayan
-(below, and parity-notes §25).
+byte-for-byte from the tags. The one source change is a fix the new stdlib made necessary: tool
+arguments bayan refuses are now a tool error instead of being read as `{}` (Fixed, ADR 0003).
+**1,565 assertions across 47 test files** (1,495 + 70 new), 5 fuzz harnesses (356,290 properties),
+15 benchmarks, 0 failures; `rust-old/` untouched.
+
+### Fixed
+- **Tools ran on their defaults when their arguments repeated a key** — a defect the 6.7.18 bump
+  made reachable. bayan 1.11.1 refuses a JSON document with a duplicate key or a malformed number,
+  and none of the 45 handlers that read arguments checked their parse: they read the arguments as
+  `{}`. Through bote 3.8.4's dispatcher (hoosh's path), with the 2.3.0 handlers on 6.7.18:
+  `szal_uuid {count:3,count:3}` answered ONE uuid and `szal_random_token {length:4,length:4}` a
+  32-byte token, both `isError: false`; `szal_uuid {count:3,count:"x"}` answered one uuid after bote's
+  schema check had validated `3` (bote reads the FIRST of two duplicates); a tool with a required
+  argument answered `missing required field: …`. Each of the 45 handlers now parses with
+  `szal_args_parse` and, on a refusal, returns `szal_args_error(args)` before reading anything:
+  `invalid arguments: duplicate key at byte 11`, `isError: true`, `error_code: "validation"`. The
+  reason is read from a parse state of szal's own (bayan's `_ctx` API), not bayan's shared last-error
+  globals, since bote may run handlers on worker threads. The nine tools that take no arguments keep
+  ignoring them, as Rust's do. Rust keeps a duplicate's LAST value; szal refuses instead, because
+  acting on the last value would act on one bote's schema check never saw — **ADR 0003**, and
+  parity-notes §25 has the measured matrix.
+  Tests: `szal_mcp` +9 (the helpers, exact reason and byte), `szal_mcp_tools_net` +56 (all 54 tools,
+  one assertion each, plus totals — mutation-checked: dropping `szal_uuid`'s guard fails exactly
+  `szal_uuid`, dropping all 45 fails all 45), `szal_consumer_bundle` +5 (the reproductions above,
+  through bote's dispatcher). Drafted for bote: its request reader should refuse duplicate keys
+  (`docs/development/issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`, not filed).
 
 ### Changed — cyrius pin 6.7.9 → 6.7.18
 - **Stdlib folds:** bayan 1.5.13 → **1.11.1**, sigil 3.13.11 → 3.13.15, patra 1.16.0 → 1.16.6, sakshi
@@ -24,10 +46,11 @@ benchmarks, 0 failures; `rust-old/` untouched. One behaviour change comes in wit
 - ⚠ **JSON with a duplicate object key or a malformed number no longer parses** (bayan 1.11.1's
   refusals). Measured through `szal_json_validate`: `{"a":1,"a":2}` was `valid: true` on 6.7.9 and is
   `valid: false, "duplicate key"` on 6.7.18; `{"a":01}` was accepted and is refused; a tool whose
-  arguments repeat a key answers `missing required field: …`. Against the Rust oracle (`serde_json`):
-  malformed numbers and duplicate step / flow fields now get Rust's answer (refused), while free-form
-  JSON with a duplicate key, which Rust accepts keeping the last value (szal ≤ 2.3.0 kept the first),
-  now diverges further. Recorded and accepted as parity-notes **§25**; the bundle header says so.
+  arguments repeat a key returns `invalid arguments: …` (see Fixed). Against the Rust oracle
+  (`serde_json`): malformed numbers and duplicate step / flow fields now get Rust's answer (refused),
+  while JSON with a duplicate key, which Rust accepts keeping the last value (szal ≤ 2.3.0 kept the
+  first), is refused. Recorded and accepted as parity-notes **§25** / ADR 0003; the bundle header
+  says so.
 - **Main-build warnings 22 → 21.** sigil 3.13.15 no longer puts its over-budget buffer in static
   storage, so its frame-budget warning is gone and `large static data` drops from 455 KB to 136 KB.
   Left: 20 of the "assigning non-pointer to typed pointer" family, and `large static data`. The
@@ -59,7 +82,15 @@ benchmarks, 0 failures; `rust-old/` untouched. One behaviour change comes in wit
   extracted from the tag; it vendors bote-core 3.8.3 and the same majra and ai-hwaccel): nothing
   collides, the bundle adds no duplicate warning, `tools/list` = 55, hoosh adds only `math`.
 
+### Added
+- **`szal_args_parse(args)` / `szal_args_error(args)`** (`src/mcp.cyr`, in the consumer bundle) — the
+  argument parse every handler now uses, and the Validation error for arguments it refuses.
+- **ADR 0003** — tool arguments the stdlib refuses are a tool error, not `{}` and not Rust's
+  last-wins.
+
 ### Issues
+- New, open: `2026-11-03-bote-request-reader-first-wins-duplicate-keys.md` — the bote-side ask,
+  drafted, not filed.
 - The 2026-10-05 channels issue stays open (macOS / Windows still not run).
 
 ## [2.3.0] — 2026-11-03

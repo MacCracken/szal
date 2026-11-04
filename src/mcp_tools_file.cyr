@@ -69,6 +69,7 @@ fn _fs_validate(path, out_err) {
 # szal_file_read: read up to max_bytes of a validated path. Mirrors FileRead::call (file_tools.rs 37-79).
 fn _file_read_handler(args, claims) {
     var o = _file_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
@@ -104,6 +105,7 @@ fn _file_read_handler(args, claims) {
 # szal_file_write: write/append content to a validated path. Mirrors FileWrite::call (file_tools.rs 99-154).
 fn _file_write_handler(args, claims) {
     var o = _file_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
@@ -205,6 +207,7 @@ fn _fs_collect_dir(dir_path, recursive, max, entries, depth) {
 # szal_dir_list: list a validated directory (optionally recursive). Mirrors DirList::call (file_tools.rs 174-205).
 fn _dir_list_handler(args, claims) {
     var o = _file_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var path = str_from(".");
     var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 1) { path = bayan_json_v_str(pv); }
@@ -243,6 +246,7 @@ fn _dir_list_handler(args, claims) {
 # szal_file_stat: metadata of a validated path. Mirrors FileStat::call (file_tools.rs 272-320).
 fn _file_stat_handler(args, claims) {
     var o = _file_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
@@ -281,6 +285,7 @@ fn _file_stat_handler(args, claims) {
 # (file_tools.rs 336-365).
 fn _path_exists_handler(args, claims) {
     var o = _file_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));

@@ -12,8 +12,9 @@
 #      consumer includes each lib/<leaf>.cyr itself) — szal 2.3.1 builds and tests against the cyrius
 #      6.7.18 snapshot. It cannot compile below cyrius 6.6.13: every JSON field read is
 #      bayan_json_v_obj_get_by_cstr, which bayan added at 1.5.10. From bayan 1.11.1 (cyrius 6.7.18)
-#      a JSON document with a duplicate object key or a malformed number (`01`) does not parse, so a
-#      tool given one answers as if its arguments were missing (parity-notes §25);
+#      a JSON document with a duplicate object key or a malformed number (`01`) does not parse; a
+#      tool given such arguments returns `invalid arguments: <reason> at byte <n>` (szal 2.3.1+;
+#      ADR 0003, parity-notes §25) — 2.3.0 and older ran on their defaults instead;
 #   2. bote-core (its dist/bote-core.cyr, the [lib.core] cut) — szal 2.3.1 builds and tests against
 #      3.8.4, which needs cyrius >= 6.7.13 and `lib/sakshi.cyr` in scope (bote-core's own requires
 #      block omits it). szal needs bote-core >= 3.1.3, where bote's error tags became BOTE_ERR_*.

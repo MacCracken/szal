@@ -33,8 +33,9 @@ include "lib/syscalls.cyr"
 #      consumer includes each lib/<leaf>.cyr itself) — szal 2.3.1 builds and tests against the cyrius
 #      6.7.18 snapshot. It cannot compile below cyrius 6.6.13: every JSON field read is
 #      bayan_json_v_obj_get_by_cstr, which bayan added at 1.5.10. From bayan 1.11.1 (cyrius 6.7.18)
-#      a JSON document with a duplicate object key or a malformed number (`01`) does not parse, so a
-#      tool given one answers as if its arguments were missing (parity-notes §25);
+#      a JSON document with a duplicate object key or a malformed number (`01`) does not parse; a
+#      tool given such arguments returns `invalid arguments: <reason> at byte <n>` (szal 2.3.1+;
+#      ADR 0003, parity-notes §25) — 2.3.0 and older ran on their defaults instead;
 #   2. bote-core (its dist/bote-core.cyr, the [lib.core] cut) — szal 2.3.1 builds and tests against
 #      3.8.4, which needs cyrius >= 6.7.13 and `lib/sakshi.cyr` in scope (bote-core's own requires
 #      block omits it). szal needs bote-core >= 3.1.3, where bote's error tags became BOTE_ERR_*.
@@ -3022,6 +3023,44 @@ fn szal_result_error_typed(code, msg) {
     return s;
 }
 
+# --- Tool arguments ---
+#
+# Every handler that reads arguments parses them with szal_args_parse and, on 0, returns
+# szal_args_error(args) at once. bote always hands a handler an object (`{}` when `arguments` is
+# absent; anything else is a protocol error), so a 0 here means JSON bote's reader accepted and the
+# stdlib's bayan refuses: since bayan 1.11.1 (cyrius 6.7.18) a duplicate object key or a malformed
+# number (`01`). Before 2.3.1 handlers read such arguments as `{}`, so a tool with optional
+# arguments silently ran on its defaults. Rust (serde_json) keeps a duplicate's LAST value; szal
+# refuses instead, because bote's schema check reads the FIRST, and acting on any other value would
+# act on arguments nobody checked (ADR 0003, parity-notes §25).
+
+# Parse a tool's arguments (a JSON object cstr) into a json_v, or 0 if bayan refuses them.
+fn szal_args_parse(args) {
+    var s = str_from(args);
+    return bayan_json_v_parse(s);
+}
+
+# The Validation error for arguments szal_args_parse refused, naming bayan's reason and byte.
+fn szal_args_error(args) {
+    # Re-parse into a state of our own: bayan_json_last_error is shared by every thread, and bote may
+    # run handlers on worker threads, so the reason is read from this call's state only.
+    var ps = alloc(bayan_json_parse_state_size());
+    var mb = str_builder_new();
+    str_builder_add_cstr(mb, "invalid arguments");
+    if (ps != 0) {
+        var s = str_from(args);
+        var v = bayan_json_v_parse_ctx_str(ps, s);
+        if (v == 0) {
+            str_builder_add_cstr(mb, ": ");
+            str_builder_add_cstr(mb, bayan_json_state_error(ps));
+            str_builder_add_cstr(mb, " at byte ");
+            str_builder_add_int(mb, bayan_json_state_error_pos(ps));
+        }
+    }
+    var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_builder_build(mb));
+    return str_data(e);
+}
+
 # --- szal_validate_path: the filesystem security boundary ---
 
 # Current working directory as a cstr (kernel NUL-terminates), or 0 on failure. Linux SYS_getcwd=79.
@@ -3291,6 +3330,7 @@ fn _parse_args(args) {
 # otherwise a JSON array. Mirrors UuidGen::call (encoding_tools.rs 25-44).
 fn _uuid_handler(args, claims) {
     var o = _parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var count = 1;
     var cv = bayan_json_v_obj_get_by_cstr(o, "count");
     if (bayan_json_v_is_int(cv) == 1) {
@@ -3325,6 +3365,7 @@ fn _uuid_handler(args, claims) {
 # unknown operation -> Validation error. Mirrors Base64Tool::call (encoding_tools.rs 63-104).
 fn _base64_handler(args, claims) {
     var o = _parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var iv = bayan_json_v_obj_get_by_cstr(o, "input");
     if (bayan_json_v_is_str(iv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: input"));
@@ -3435,6 +3476,7 @@ fn _hash_result(algo, hex_c, nbytes) {
 # Mirrors Sha256::call (hash_tools.rs 26-65).
 fn _sha256_handler(args, claims) {
     var o = _hash_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
 
     var iv = bayan_json_v_obj_get_by_cstr(o, "input");
     if (bayan_json_v_is_str(iv) == 1) {
@@ -3473,6 +3515,7 @@ fn _sha256_handler(args, claims) {
 # szal_md5 handler: hash the required `input` string. Mirrors Md5::call (hash_tools.rs 83-109).
 fn _md5_handler(args, claims) {
     var o = _hash_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var iv = bayan_json_v_obj_get_by_cstr(o, "input");
     if (bayan_json_v_is_str(iv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: input"));
@@ -3487,6 +3530,7 @@ fn _md5_handler(args, claims) {
 # RandomToken::call (hash_tools.rs 125-159).
 fn _random_token_handler(args, claims) {
     var o = _hash_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var nbytes = 32;
     var bv = bayan_json_v_obj_get_by_cstr(o, "bytes");
     if (bayan_json_v_is_int(bv) == 1) {
@@ -3667,6 +3711,7 @@ fn _cwd_handler(args, claims) {
 # szal_env_get: value of env var `name` (required). Unset -> NotFound. Mirrors EnvGet::call (system_tools.rs 95-116).
 fn _env_get_handler(args, claims) {
     var o = _sys_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var nv = bayan_json_v_obj_get_by_cstr(o, "name");
     if (bayan_json_v_is_str(nv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: name"));
@@ -3835,6 +3880,7 @@ fn _json_seg_index(seg) {
 # objects. Mirrors JsonPath::call (json_tools.rs 24-84).
 fn _json_path_handler(args, claims) {
     var o = _json_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: json"));
@@ -3925,6 +3971,7 @@ fn _json_field_or_err(o, field, out_err) {
 # szal_json_diff: structural equality + both type names. Mirrors JsonDiff::call (json_tools.rs 104-154).
 fn _json_diff_handler(args, claims) {
     var o = _json_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var err = alloc(8);
     store64(err, 0);
 
@@ -3946,6 +3993,7 @@ fn _json_diff_handler(args, claims) {
 # (json_tools.rs 181-212). Valid -> {valid,type,size_bytes}; invalid -> {valid,error,position}.
 fn _json_validate_handler(args, claims) {
     var o = _json_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: json"));
@@ -4160,6 +4208,7 @@ fn _wc_chars(d, n) {
 # (template_tools.rs 24-52).
 fn _template_render_handler(args, claims) {
     var o = _tpl_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var tv = bayan_json_v_obj_get_by_cstr(o, "template");
     if (bayan_json_v_is_str(tv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: template"));
@@ -4178,6 +4227,7 @@ fn _template_render_handler(args, claims) {
 # szal_wc: count lines/words/chars/bytes of `text` or a `file`. Mirrors WordCount::call (template_tools.rs 71-111).
 fn _wc_handler(args, claims) {
     var o = _tpl_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var dptr = 0;
     var dlen = 0;
 
@@ -4227,6 +4277,7 @@ fn _wc_handler(args, claims) {
 # Mirrors TextReplace::call (template_tools.rs 132-173).
 fn _text_replace_handler(args, claims) {
     var o = _tpl_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var tv = bayan_json_v_obj_get_by_cstr(o, "text");
     if (bayan_json_v_is_str(tv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: text"));
@@ -4255,6 +4306,7 @@ fn _text_replace_handler(args, claims) {
 # (template_tools.rs 193-215).
 fn _text_split_handler(args, claims) {
     var o = _tpl_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var tv = bayan_json_v_obj_get_by_cstr(o, "text");
     if (bayan_json_v_is_str(tv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: text"));
@@ -4281,6 +4333,7 @@ fn _text_split_handler(args, claims) {
 # (template_tools.rs 234-253).
 fn _text_join_handler(args, claims) {
     var o = _tpl_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var pv = bayan_json_v_obj_get_by_cstr(o, "parts");
     if (bayan_json_v_is_arr(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: parts"));
@@ -4503,6 +4556,7 @@ fn _strip_base_prefix(s) {
 # szal_base_convert. Mirrors BaseConvert::call (conversion_tools.rs 33-104).
 fn _base_convert_handler(args, claims) {
     var o = _conv_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var vv = bayan_json_v_obj_get_by_cstr(o, "value");
     if (bayan_json_v_is_str(vv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: value"));
@@ -4563,6 +4617,7 @@ fn _ratio_json(bytes, divisor) {
 # szal_byte_format. Mirrors ByteFormat::call (conversion_tools.rs 120-155).
 fn _byte_format_handler(args, claims) {
     var o = _conv_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var bv = bayan_json_v_obj_get_by_cstr(o, "bytes");
     if (bayan_json_v_is_int(bv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: bytes"));
@@ -4601,6 +4656,7 @@ fn _byte_format_handler(args, claims) {
 # szal_duration_format. Mirrors DurationFormat::call (conversion_tools.rs 173-216).
 fn _duration_format_handler(args, claims) {
     var o = _conv_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var sv = bayan_json_v_obj_get_by_cstr(o, "seconds");
     if (bayan_json_v_is_int(sv) == 0 && bayan_json_v_is_float(sv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: seconds"));
@@ -4988,6 +5044,7 @@ fn _fmt_f64_clean(val) {
 # szal_math_eval handler. Mirrors MathEval::call (math_tools.rs 21-58).
 fn _math_eval_handler(args, claims) {
     var o = _math_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var ev = bayan_json_v_obj_get_by_cstr(o, "expression");
     if (bayan_json_v_is_str(ev) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: expression"));
@@ -5078,6 +5135,7 @@ fn _state_transitions_arr(st) {
 # szal_state_check: terminal-ness + valid transitions of a state. Mirrors StateCheck::call (state_tools.rs 41-76).
 fn _state_check_handler(args, claims) {
     var o = _state_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var sv = bayan_json_v_obj_get_by_cstr(o, "state");
     if (bayan_json_v_is_str(sv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: state"));
@@ -5111,6 +5169,7 @@ fn _state_field(o, field) {
 # szal_state_transition: is from->to a valid transition? Mirrors StateTransition::call (state_tools.rs 94-131).
 fn _state_transition_handler(args, claims) {
     var o = _state_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var from = _state_field(o, "from");
     if (from < 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing or invalid 'from' state"));
@@ -5211,6 +5270,7 @@ fn _stp_parse_args(args) {
 # szal_step_create: build a StepDef from optional fields. Mirrors StepCreate::call (step_tools.rs 34-89).
 fn _step_create_handler(args, claims) {
     var o = _stp_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var nv = bayan_json_v_obj_get_by_cstr(o, "name");
     if (bayan_json_v_is_str(nv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: name"));
@@ -5269,6 +5329,7 @@ fn _step_create_handler(args, claims) {
 # (step_tools.rs 107-145).
 fn _step_validate_handler(args, claims) {
     var o = _stp_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "step_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: step_json"));
@@ -5313,6 +5374,7 @@ fn _step_validate_handler(args, claims) {
 # szal_step_inspect: structured config of a StepDef. Mirrors StepInspect::call (step_tools.rs 163-198).
 fn _step_inspect_handler(args, claims) {
     var o = _stp_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "step_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: step_json"));
@@ -5437,6 +5499,7 @@ fn _flow_mode_parse(s) {
 # (flow_tools.rs 38-89).
 fn _flow_create_handler(args, claims) {
     var o = _flow_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var nv = bayan_json_v_obj_get_by_cstr(o, "name");
     if (bayan_json_v_is_str(nv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: name"));
@@ -5482,6 +5545,7 @@ fn _flow_create_handler(args, claims) {
 # (flow_tools.rs 104-139).
 fn _flow_validate_handler(args, claims) {
     var o = _flow_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "flow_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: flow_json"));
@@ -5530,6 +5594,7 @@ fn _flow_step_deps_arr(step) {
 # szal_flow_from_json: parse + structured summary. Mirrors FlowFromJson::call (flow_tools.rs 154-192).
 fn _flow_from_json_handler(args, claims) {
     var o = _flow_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "flow_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: flow_json"));
@@ -5601,6 +5666,7 @@ fn _flow_list_modes_handler(args, claims) {
 # szal_flow_add_step: append a step to a flow. Mirrors FlowAddStep::call (flow_tools.rs 238-282).
 fn _flow_add_step_handler(args, claims) {
     var o = _flow_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var fv = bayan_json_v_obj_get_by_cstr(o, "flow_json");
     if (bayan_json_v_is_str(fv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: flow_json"));
@@ -5749,6 +5815,7 @@ fn _eng_str_arr(items) {
 # EngineCreate::call (engine_tools.rs 24-41). Default max_concurrency 16, global_timeout_ms None.
 fn _engine_create_handler(args, claims) {
     var o = _eng_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var mc = DEFAULT_MAX_CONCURRENCY;
     var mcv = bayan_json_v_obj_get_by_cstr(o, "max_concurrency");
     if (bayan_json_v_is_int(mcv) == 1) { mc = bayan_json_v_int(mcv); }
@@ -5784,6 +5851,7 @@ fn _eng_count_status(steps, want_c) {
 # szal_result_inspect: summarize a FlowResult JSON. Mirrors ResultInspect::call (engine_tools.rs 56-116).
 fn _result_inspect_handler(args, claims) {
     var o = _eng_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "result_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: result_json"));
@@ -6009,6 +6077,7 @@ fn _fs_validate(path, out_err) {
 # szal_file_read: read up to max_bytes of a validated path. Mirrors FileRead::call (file_tools.rs 37-79).
 fn _file_read_handler(args, claims) {
     var o = _file_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
@@ -6044,6 +6113,7 @@ fn _file_read_handler(args, claims) {
 # szal_file_write: write/append content to a validated path. Mirrors FileWrite::call (file_tools.rs 99-154).
 fn _file_write_handler(args, claims) {
     var o = _file_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
@@ -6145,6 +6215,7 @@ fn _fs_collect_dir(dir_path, recursive, max, entries, depth) {
 # szal_dir_list: list a validated directory (optionally recursive). Mirrors DirList::call (file_tools.rs 174-205).
 fn _dir_list_handler(args, claims) {
     var o = _file_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var path = str_from(".");
     var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 1) { path = bayan_json_v_str(pv); }
@@ -6183,6 +6254,7 @@ fn _dir_list_handler(args, claims) {
 # szal_file_stat: metadata of a validated path. Mirrors FileStat::call (file_tools.rs 272-320).
 fn _file_stat_handler(args, claims) {
     var o = _file_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
@@ -6221,6 +6293,7 @@ fn _file_stat_handler(args, claims) {
 # (file_tools.rs 336-365).
 fn _path_exists_handler(args, claims) {
     var o = _file_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var pv = bayan_json_v_obj_get_by_cstr(o, "path");
     if (bayan_json_v_is_str(pv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: path"));
@@ -6516,6 +6589,7 @@ fn _proc_run(argv, cwd_c) {
 # (process_tools.rs 29-107).
 fn _exec_handler(args, claims) {
     var o = _proc_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cv = bayan_json_v_obj_get_by_cstr(o, "command");
     if (bayan_json_v_is_str(cv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: command"));
@@ -6599,6 +6673,7 @@ fn _proc_trim_end(s) {
 # szal_which: is `command` on PATH? Mirrors Which::call (process_tools.rs 139-174).
 fn _which_handler(args, claims) {
     var o = _proc_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cv = bayan_json_v_obj_get_by_cstr(o, "command");
     if (bayan_json_v_is_str(cv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: command"));
@@ -6734,6 +6809,7 @@ fn _git_cwd(o) {
 # (git_tools.rs 50-92).
 fn _git_status_handler(args, claims) {
     var o = _git_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cwd = _git_cwd(o);
 
     var ba = vec_new();
@@ -6814,6 +6890,7 @@ fn _git_split6(line) {
 # szal_git_log: recent commits as structured records. Mirrors GitLog::call (git_tools.rs 111-151).
 fn _git_log_handler(args, claims) {
     var o = _git_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cwd = _git_cwd(o);
     var count = DEFAULT_LOG_COUNT;
     var cv = bayan_json_v_obj_get_by_cstr(o, "count");
@@ -6865,6 +6942,7 @@ fn _git_log_handler(args, claims) {
 # (git_tools.rs 173-220).
 fn _git_diff_handler(args, claims) {
     var o = _git_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cwd = _git_cwd(o);
 
     var da = vec_new();
@@ -6921,6 +6999,7 @@ fn _git_ref_msg(s) {
 # szal_git_branch: current branch + branch list. Mirrors GitBranch::call (git_tools.rs 239-269).
 fn _git_branch_handler(args, claims) {
     var o = _git_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var cwd = _git_cwd(o);
     var all = 0;
     var av = bayan_json_v_obj_get_by_cstr(o, "all");
@@ -6972,6 +7051,7 @@ fn _git_branch_handler(args, claims) {
 # GitBlame::call (git_tools.rs 288-343).
 fn _git_blame_handler(args, claims) {
     var o = _git_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var fv = bayan_json_v_obj_get_by_cstr(o, "file");
     if (bayan_json_v_is_str(fv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: file"));
@@ -7249,6 +7329,7 @@ fn _net_is_safe(url) {
 # (net_tools.rs 81-205). The successful-curl path is faithful but untested (tests cover rejections).
 fn _http_handler(args, claims) {
     var o = _net_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var uv = bayan_json_v_obj_get_by_cstr(o, "url");
     if (bayan_json_v_is_str(uv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: url"));
@@ -7404,6 +7485,7 @@ fn _net_atoi(s) {
 # szal_dns_lookup: resolve a hostname (via `getent ahosts`). Mirrors DnsLookup::call (net_tools.rs 221-258).
 fn _dns_handler(args, claims) {
     var o = _net_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var hv = bayan_json_v_obj_get_by_cstr(o, "hostname");
     if (bayan_json_v_is_str(hv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: hostname"));
@@ -7502,6 +7584,7 @@ fn _net_parse_ipv4(host) {
 # szal_port_check: is a TCP port open on a dotted-quad host? Mirrors PortCheck::call (net_tools.rs 278-331).
 fn _port_check_handler(args, claims) {
     var o = _net_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var host = str_from("127.0.0.1");
     var hv = bayan_json_v_obj_get_by_cstr(o, "host");
     if (bayan_json_v_is_str(hv) == 1) { host = bayan_json_v_str(hv); }
@@ -7571,6 +7654,7 @@ fn _net_unhex(c) {
 # szal_url_encode: percent-encode/decode. Mirrors UrlEncode::call (net_tools.rs 350-413).
 fn _url_encode_handler(args, claims) {
     var o = _net_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var iv = bayan_json_v_obj_get_by_cstr(o, "input");
     if (bayan_json_v_is_str(iv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: input"));

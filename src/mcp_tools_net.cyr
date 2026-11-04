@@ -111,6 +111,7 @@ fn _net_is_safe(url) {
 # (net_tools.rs 81-205). The successful-curl path is faithful but untested (tests cover rejections).
 fn _http_handler(args, claims) {
     var o = _net_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var uv = bayan_json_v_obj_get_by_cstr(o, "url");
     if (bayan_json_v_is_str(uv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: url"));
@@ -266,6 +267,7 @@ fn _net_atoi(s) {
 # szal_dns_lookup: resolve a hostname (via `getent ahosts`). Mirrors DnsLookup::call (net_tools.rs 221-258).
 fn _dns_handler(args, claims) {
     var o = _net_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var hv = bayan_json_v_obj_get_by_cstr(o, "hostname");
     if (bayan_json_v_is_str(hv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: hostname"));
@@ -364,6 +366,7 @@ fn _net_parse_ipv4(host) {
 # szal_port_check: is a TCP port open on a dotted-quad host? Mirrors PortCheck::call (net_tools.rs 278-331).
 fn _port_check_handler(args, claims) {
     var o = _net_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var host = str_from("127.0.0.1");
     var hv = bayan_json_v_obj_get_by_cstr(o, "host");
     if (bayan_json_v_is_str(hv) == 1) { host = bayan_json_v_str(hv); }
@@ -433,6 +436,7 @@ fn _net_unhex(c) {
 # szal_url_encode: percent-encode/decode. Mirrors UrlEncode::call (net_tools.rs 350-413).
 fn _url_encode_handler(args, claims) {
     var o = _net_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var iv = bayan_json_v_obj_get_by_cstr(o, "input");
     if (bayan_json_v_is_str(iv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: input"));

@@ -15,6 +15,7 @@ fn _stp_parse_args(args) {
 # szal_step_create: build a StepDef from optional fields. Mirrors StepCreate::call (step_tools.rs 34-89).
 fn _step_create_handler(args, claims) {
     var o = _stp_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var nv = bayan_json_v_obj_get_by_cstr(o, "name");
     if (bayan_json_v_is_str(nv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: name"));
@@ -73,6 +74,7 @@ fn _step_create_handler(args, claims) {
 # (step_tools.rs 107-145).
 fn _step_validate_handler(args, claims) {
     var o = _stp_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "step_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: step_json"));
@@ -117,6 +119,7 @@ fn _step_validate_handler(args, claims) {
 # szal_step_inspect: structured config of a StepDef. Mirrors StepInspect::call (step_tools.rs 163-198).
 fn _step_inspect_handler(args, claims) {
     var o = _stp_parse_args(args);
+    if (o == 0) { return szal_args_error(args); }
     var jv = bayan_json_v_obj_get_by_cstr(o, "step_json");
     if (bayan_json_v_is_str(jv) == 0) {
         var e = szal_result_error_typed(SZAL_MCP_VALIDATION, str_from("missing required field: step_json"));
