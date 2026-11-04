@@ -1,5 +1,8 @@
-# Vendored libraries — majra 2.13.0, bote-core 3.8.4, ai-hwaccel 2.5.6 at `src/vendor/`
+# Vendored libraries — majra 2.13.0, bote-core 3.8.9, ai-hwaccel 2.5.6 at `src/vendor/`
 
+> **Status at szal 2.3.2 (2026-11-04):** bote-core alone moved, 3.8.4 → 3.8.9 (latest; still cyrius
+> 6.7.18) — the release line that fixed the duplicate-key issue szal wrote into bote's repo. §14.
+>
 > **Status at szal 2.3.1 (2026-11-03):** every library at its LATEST release (the user's ask this
 > time; all three pin cyrius 6.7.18, szal's new pin and cyrius's latest). §13 is the log.
 >
@@ -43,7 +46,7 @@ metrics vtable (row 10 — shipped now via the shim). All but metrics need the *
 | file | release | lines | sync |
 |---|---|---|---|
 | `src/vendor/majra.cyr` | majra **2.13.0** `dist/majra.cyr` (the base bundle) | 6,514 | `scripts/sync-majra.sh` |
-| `src/vendor/bote-core.cyr` | bote **3.8.4** `dist/bote-core.cyr` (`[lib.core]`) | 9,232 | `scripts/sync-bote.sh` |
+| `src/vendor/bote-core.cyr` | bote **3.8.9** `dist/bote-core.cyr` (`[lib.core]`) | 10,922 | `scripts/sync-bote.sh` |
 | `src/vendor/ai-hwaccel.cyr` | ai-hwaccel **2.5.6** `dist/ai-hwaccel.cyr` | 10,843 | `scripts/sync-ai-hwaccel.sh` |
 
 - **Which release:** the last one whose `cyrius.cyml` pins szal's cyrius — or, where a library has
@@ -355,3 +358,19 @@ maintenance bump, and it belongs in its own change with its own tests.
       Bundle order-independent under four listing orders.
 - [x] Main build 21 warnings (sigil's frame-budget one gone); 47/47 test files, 1,495 assertions (same
       per suite); 5/5 fuzz; 15 benchmarks; lint; fmt; doc; `rust-old/` untouched.
+
+## 14. 2.3.2 re-sync — bote-core 3.8.9 (2026-11-04)
+
+- [x] **Pin:** bote-core 3.8.4 → **3.8.9**, the latest release (GitHub agrees), pinning cyrius 6.7.18 like
+      szal. majra and ai-hwaccel unchanged.
+- [x] **Why now:** bote 3.8.6 fixed the issue szal 2.3.1 wrote into bote's repo — a request that names a
+      key twice is refused before dispatch (`-32600`). Re-measured on the 3.8.9 dist through
+      `codec_process_message`: all three filed requests are refused and no handler runs.
+- [x] **API:** no fn szal calls (19) changed signature or vanished; requires block still `hashmap` +
+      `sys`; minimum cyrius still 6.7.13; consumers still declare `sakshi`.
+- [x] **Behaviour that reaches szal:** only the duplicate-key refusal. 3.8.7 – 3.8.9's broader
+      inputSchema judging changes nothing for szal's plain property schemas.
+- [x] **Scan:** one intersection (`REQ_NONE`); consumer-check clean, generic and against hoosh 2.9.14
+      (latest; vendors bote-core 3.8.3). Bundle order-independent under four listing orders.
+- [x] Main build 21 warnings (same set); 47/47 test files, 1,566 assertions; 5/5 fuzz; 15 benchmarks;
+      lint; fmt; doc; `rust-old/` untouched.

@@ -5,7 +5,7 @@
 
 ## Version
 
-**2.3.1** (2026-11-03) — Rust→Cyrius port. Rust 1.2.0 (13172 lines) frozen at `rust-old/` (git tag
+**2.3.2** (2026-11-04) — Rust→Cyrius port. Rust 1.2.0 (13172 lines) frozen at `rust-old/` (git tag
 `1.2.0`) as the parity oracle. `VERSION` is the single source of truth; `cyrius.cyml` reads
 `${file:VERSION}`, and `scripts/version-bump.sh` also writes the one derived copy, `var SZAL_VERSION`
 in `src/mcp_tools_engine.cyr` (what `szal_server_info` reports; CI cross-checks the two).
@@ -13,9 +13,9 @@ in `src/mcp_tools_engine.cyr` (what `szal_server_info` reports; CI cross-checks 
 ## Toolchain
 
 - **Cyrius pin**: `6.7.18` (`cyrius.cyml [package].cyrius`), cyrius's latest at 2.3.1. Suite at
-  this pin: **1,565 assertions across 47 test files**, 5 fuzz harnesses (356,290 properties), 15
+  this pin: **1,566 assertions across 47 test files**, 5 fuzz harnesses (356,290 properties), 15
   benchmarks, main — 0 failures: the 1,495 of 2.3.0, the same per suite on 6.6.20, 6.7.9 and 6.7.18,
-  plus 70 for the 2.3.1 argument fix. (2.2.0 recorded 1,494; its tree counts 1,495 on 6.6.6 too.) History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 →
+  plus 70 for the 2.3.1 argument fix and 1 for bote 3.8.9's refusal (2.3.2). (2.2.0 recorded 1,494; its tree counts 1,495 on 6.6.6 too.) History: 6.1.33 (M0) → 6.1.34 → 6.1.35 → 6.1.36 → 6.1.37 →
   6.2.2 → 6.5.2 → 6.5.35 → 6.6.2 → 6.6.6 → 6.6.20 → 6.7.9 → 6.7.18. At 2.2.1 and 2.3.0 the vendored
   libraries followed the pin (each at its last release pinned to it); at 2.3.1 each is at its
   latest release, which pins 6.7.18 anyway.
@@ -524,10 +524,11 @@ cyrius 6.7.18 — szal's pin and cyrius's latest — and szal has **zero git dep
 - **stdlib** — `cyrius lib sync` at the 6.7.18 snapshot (58 files, plus 7 the build pulls in;
   bayan 1.11.1, sigil 3.13.15, patra 1.16.6, sakshi 2.5.10); `math` / `trait` resolve from the
   snapshot (see Toolchain).
-- **majra 2.13.0**, **bote-core 3.8.4**, **ai-hwaccel 2.5.6** — vendored at `src/vendor/`
+- **majra 2.13.0**, **bote-core 3.8.9**, **ai-hwaccel 2.5.6** — vendored at `src/vendor/`
   **byte-for-byte** from their release tags (`scripts/sync-{majra,bote,ai-hwaccel}.sh <checkout>
-  <tag>` use `git show <tag>:…` and check the dist's `# Version:` line). hoosh 2.9.4 uses the same
-  majra and ai-hwaccel, and bote-core 3.8.3. szal renames nothing inside them — szal renames its own
+  <tag>` use `git show <tag>:…` and check the dist's `# Version:` line). hoosh 2.9.14 uses the same
+  majra and ai-hwaccel, and bote-core 3.8.3. bote-core 3.8.6+ refuses a request that names a JSON
+  key twice (`-32600`) before dispatch. szal renames nothing inside them — szal renames its own
   side (ADR 0002). bote-core 3.4+ calls sakshi without including it, so `sakshi` must stay in
   `[deps].stdlib`; it needs cyrius ≥ 6.7.13. Maintenance record: [`majra-vendoring.md`](majra-vendoring.md).
 - **Collision status:** `scripts/scan-collisions.sh` reports ONE intersection anywhere in szal's
@@ -543,27 +544,26 @@ cyrius 6.7.18 — szal's pin and cyrius's latest — and szal has **zero git dep
 ## Consumers
 
 - **hoosh** — `dist/szal-mcp.cyr` (+ `.deps`) is built for it: the 54 MCP tools, registered into
-  hoosh's own dispatcher with `szal_register_into`. Checked at 2.3.1 against **hoosh 2.9.4** (its
+  hoosh's own dispatcher with `szal_register_into`. Checked at 2.3.2 against **hoosh 2.9.14** (its
   latest release, cyrius 6.7.18, extracted from the tag with `lib/ai-hwaccel.cyr` supplied from
   szal's identical copy): `scripts/consumer-check.sh <checkout>` passes — the bundle adds no duplicate
   warning, nothing collides, `tools/list` = 55. hoosh must add only `math` to its `[deps] stdlib`.
   The bundle needs a cyrius ≥ 6.6.13 stdlib (`bayan_json_v_obj_get_by_cstr`); the bote-core it sits
   on needs ≥ 6.7.13 and `sakshi`. Through bote 3.4.8+ the dispatcher checks each `tools/call`'s
-  arguments against the tool's schema before szal's handler sees them; bote reads the first of two
-  duplicate keys, and szal's handler refuses such arguments (ADR 0003, parity-notes §25).
+  arguments against the tool's schema before szal's handler sees them. A consumer should take
+  bote-core ≥ 3.8.6, which refuses a repeated key before dispatch; through 3.8.5 bote read the first
+  of two and handed the handler both, which szal 2.3.1+ refuses (ADR 0003, parity-notes §25).
 - daimon, sutra, samay — planned; `dist/szal-mcp.cyr` is the shape a tool-only consumer takes, the
   full `dist/szal.cyr` is M5 (roadmap).
 
 ## Next — ▶ START HERE (handoff)
 
-**Where it stands (2.3.1):** M1 ✅, M2 ✅, M3 ✅ — 43 ported modules, the six execution modes, the
-54-tool MCP surface; 47 test files / 1,565 assertions, 5 fuzz harnesses, 15 benchmarks, all green on
-cyrius 6.7.18; `rust-old/` untouched. Two open issues:
+**Where it stands (2.3.2):** M1 ✅, M2 ✅, M3 ✅ — 43 ported modules, the six execution modes, the
+54-tool MCP surface; 47 test files / 1,566 assertions, 5 fuzz harnesses, 15 benchmarks, all green on
+cyrius 6.7.18; `rust-old/` untouched. One open issue, information only:
 [`issues/2026-10-05-cyrius-6616-channels-block-on-macos-and-windows.md`](issues/2026-10-05-cyrius-6616-channels-block-on-macos-and-windows.md)
-(information; closes once the stream / parallel suites run on arm64 macOS and Windows) and
-[`issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`](issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md)
-(tracks the bote-side issue behind ADR 0003, which lives in bote's repo:
-`bote/docs/development/issues/2026-11-03-request-duplicate-keys-read-first-wins.md`). Release history is
+— it closes once the stream / parallel suites run on arm64 macOS and Windows. (The bote duplicate-key
+issue behind ADR 0003 was fixed at bote 3.8.6 and is archived on both sides.) Release history is
 CHANGELOG.md; this section is only what to do next.
 
 1. **M4 — verification** (roadmap): port the remaining Rust assertions across the split suites;

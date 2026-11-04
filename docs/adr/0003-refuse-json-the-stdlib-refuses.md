@@ -3,6 +3,10 @@
 - **Status**: Accepted
 - **Date**: 2026-11-03
 - **Release**: 2.3.1
+- **Update (2.3.2, 2026-11-04)**: bote fixed its side at **3.8.6** — a request that names a key twice
+  anywhere is refused before dispatch with `-32600` — and szal 2.3.2 vendors 3.8.9. The decision
+  stands unchanged: the handler guard still answers what bote passes and bayan refuses (measured: an
+  integer past i64 under a key the schema does not name). Both issues are archived.
 
 ## Context
 
@@ -46,10 +50,11 @@ The nine tools that take no arguments keep ignoring them, as Rust's do.
   tool), and `tests/szal_consumer_bundle.tcyr` drives the original reproductions through bote.
 - **Negative** — a deliberate divergence from Rust: a request whose arguments repeat a key, which
   Rust serves using the last value, is refused. parity-notes §25 records it with the measured
-  matrix. It also diverges from bote's own first-wins reading, which szal cannot change (bote-core
-  is vendored byte-for-byte, ADR 0002); the bote-side ask is an issue in bote's repo,
-  `bote/docs/development/issues/2026-11-03-request-duplicate-keys-read-first-wins.md`, tracked by
-  `docs/development/issues/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`.
+  matrix. Through bote 3.8.5 it also diverged from bote's own first-wins reading, which szal cannot
+  change (bote-core is vendored byte-for-byte, ADR 0002); the bote-side issue, fixed at bote 3.8.6,
+  is archived at `bote/docs/development/issues/archive/2026-11-03-request-duplicate-keys-read-first-wins.md`,
+  with szal's tracking note at
+  `docs/development/issues/archive/2026-11-03-bote-request-reader-first-wins-duplicate-keys.md`.
 - **Neutral** — JSON a tool is handed to inspect (`szal_json_validate`, `_path`, `_diff`) and
   step / flow / record JSON were already refused explicitly when they do not parse; nothing changes
   there. For step / flow JSON the refusal matches Rust, whose derived structs reject a duplicate
@@ -64,6 +69,7 @@ The nine tools that take no arguments keep ignoring them, as Rust's do.
 - **Take the first value, as bote does** — rejected: also needs a parser of szal's own, matches
   neither Rust nor the stdlib, and silently drops part of what the client sent.
 - **Leave it** — rejected: tools reported success while ignoring the caller's arguments.
-- **Make bote refuse duplicates** — right, and asked for (the issue above); it would turn these
-  requests into a protocol error before any handler runs. szal's guard stays either way: it is what
-  makes a handler fail closed on any argument text bayan refuses.
+- **Make bote refuse duplicates** — right, and asked for (the issue above); bote 3.8.6 did it, so
+  these requests are now a protocol error before any handler runs. szal's guard stays: it is what
+  makes a handler fail closed on any argument text bayan refuses, and bote still passes some (an
+  integer past i64 under an unnamed key).

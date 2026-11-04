@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] — 2026-11-04
+
+bote-core 3.8.4 → **3.8.9**, its latest release (checked against GitHub), which fixes the issue szal
+2.3.1 wrote into bote's repo: from bote **3.8.6** a request that names a JSON key twice is refused
+before dispatch. cyrius stays 6.7.18 (bote 3.8.9 pins it too, and it is still cyrius's latest); majra
+and ai-hwaccel unchanged. **1,566 assertions across 47 test files**, 5 fuzz harnesses (356,290
+properties), 15 benchmarks, 0 failures; `rust-old/` untouched.
+
+### Changed — dependencies
+- **bote-core 3.8.4 → 3.8.9.** Every fn szal calls (19) keeps its signature; minimum cyrius unchanged
+  (6.7.13); the main build prints the same 21 warnings.
+  - **3.8.6 — a key named twice is refused.** In the codec's admission and in `dispatcher_dispatch`,
+    anywhere in the request (envelope, `params`, arguments, nested objects; keys compared decoded):
+    `-32600 invalid request: a key named twice, or one that is no text`, and no handler runs.
+    Re-measured on 3.8.9 through `codec_process_message`: `params.name` given twice,
+    `szal_uuid {"count":"x","count":3}` and `{"count":3,"count":"x"}` — which through 3.8.5 bote read
+    first-wins, the last passing its schema check on `3` and reaching szal's handler — are all `-32600`.
+  - 3.8.7 – 3.8.9: inputSchema judging grows (`allOf` / `anyOf` / `oneOf` / `not` / `if`, character
+    counting for lengths, a per-document work budget). szal's property schemas are plain and every
+    dispatcher-path test passes unchanged.
+- **szal's argument guard stays** (`szal_args_parse` / `szal_args_error`, ADR 0003): bote still passes
+  argument text bayan refuses — an integer past i64 under a key the schema does not name
+  (`szal_uuid {"count":2,"zz":99999999999999999999999}` → `invalid arguments: integer is out of range
+  for i64 at byte 16`; without the guard it answered one UUID). `{"count":01}` is bote's `-32700`.
+- `scripts/consumer-check.sh` passes generic and against **hoosh 2.9.14** (its latest release; it
+  vendors bote-core 3.8.3): nothing collides, the bundle adds no duplicate warning, `tools/list` = 55,
+  hoosh adds only `math`. distlib output is still the same under four listing orders.
+- `src/mcp_bundle.cyr` (the bundle's contract header): tested against bote-core 3.8.9; recommends
+  ≥ 3.8.6.
+
+### Changed — tests
+- `tests/szal_consumer_bundle.tcyr` `t_refused_args` (+1): repeated keys now expect bote's `-32600`
+  (three cases, no handler run), and the i64-overflow case keeps szal's guard covered through the
+  dispatcher — mutation-checked: dropping `szal_uuid`'s guard fails it.
+
+### Issues
+- `2026-11-03-bote-request-reader-first-wins-duplicate-keys.md` closed (bote 3.8.6) and moved to
+  `docs/development/issues/archive/`, its resolution on top. bote archived its side at 3.8.6.
+- parity-notes §25 and ADR 0003 updated: through bote 3.8.6+ a repeated key never reaches a handler;
+  a new row records the i64-overflow case (Rust reads the integer as an `f64`; szal refuses).
+
 ## [2.3.1] — 2026-11-03
 
 Toolchain and dependency patch — cyrius 6.7.9 → **6.7.18**; majra 2.12.0 → **2.13.0**, bote-core

@@ -64,12 +64,12 @@ stdlib = ["string", "fmt", "alloc", "freelist", "vec", "str", "syscalls", "io", 
 # would make `cyrius deps` recurse into each dep's own git sub-deps (lib/ bloat + last-definition-
 # wins symbol collisions).
 #
-# Pins at 2.3.1 — each at its LATEST release (all three pin cyrius 6.7.18, szal's pin, which is
+# Pins at 2.3.2 — each at its LATEST release (all three pin cyrius 6.7.18, szal's pin, which is
 # also cyrius's latest), vendored byte-for-byte from the tag:
 #   majra       2.13.0  dist/majra.cyr        -> scripts/sync-majra.sh
-#   bote-core   3.8.4   dist/bote-core.cyr    -> scripts/sync-bote.sh
+#   bote-core   3.8.9   dist/bote-core.cyr    -> scripts/sync-bote.sh       (3.8.6+ refuses a key named twice)
 #   ai-hwaccel  2.5.6   dist/ai-hwaccel.cyr   -> scripts/sync-ai-hwaccel.sh
-# hoosh 2.9.4 uses the same majra and ai-hwaccel, and bote-core 3.8.3.
+# hoosh 2.9.14 uses the same majra and ai-hwaccel, and bote-core 3.8.3.
 # Nothing is renamed inside a copy since 2.2.0 — szal renames its own side (ADR 0002). bote-core
 # 3.4+ calls sakshi without including it, so "sakshi" must stay in [deps].stdlib above.
 #
