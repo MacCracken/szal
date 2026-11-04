@@ -15,7 +15,7 @@
 # Usage: include AFTER src/mcp.cyr (+ lib/bayan, lib/str, lib/vec).
 
 # szal's version, as szal_server_info reports it. Written by scripts/version-bump.sh — do not edit.
-var SZAL_VERSION = "2.3.0";
+var SZAL_VERSION = "2.3.1";
 
 enum EngineTools {
     DEFAULT_MAX_CONCURRENCY = 16;

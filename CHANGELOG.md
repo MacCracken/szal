@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-11-03
+
+Toolchain and dependency patch — cyrius 6.7.9 → **6.7.18**; majra 2.12.0 → **2.13.0**, bote-core
+3.4.10 → **3.8.4**, ai-hwaccel 2.4.2 → **2.5.6** — each its library's latest release (checked against
+GitHub as well as the local tags), all three pinned to 6.7.18, which is also cyrius's latest. Vendored
+byte-for-byte from the tags. No source change in szal's code; **1,495 assertions across 47 test
+files**, the same count suite for suite as 2.3.0, 5 fuzz harnesses (356,290 properties), 15
+benchmarks, 0 failures; `rust-old/` untouched. One behaviour change comes in with the stdlib's bayan
+(below, and parity-notes §25).
+
+### Changed — cyrius pin 6.7.9 → 6.7.18
+- **Stdlib folds:** bayan 1.5.13 → **1.11.1**, sigil 3.13.11 → 3.13.15, patra 1.16.0 → 1.16.6, sakshi
+  2.5.8 → 2.5.10. `cyrius lib sync` still provisions 58 files; the build pulls 7 more, and
+  `cyrius.lock` records the 72 (re-provisioned from empty; a fresh checkout regenerates the same lock).
+- ⚠ **JSON with a duplicate object key or a malformed number no longer parses** (bayan 1.11.1's
+  refusals). Measured through `szal_json_validate`: `{"a":1,"a":2}` was `valid: true` on 6.7.9 and is
+  `valid: false, "duplicate key"` on 6.7.18; `{"a":01}` was accepted and is refused; a tool whose
+  arguments repeat a key answers `missing required field: …`. Against the Rust oracle (`serde_json`):
+  malformed numbers and duplicate step / flow fields now get Rust's answer (refused), while free-form
+  JSON with a duplicate key, which Rust accepts keeping the last value (szal ≤ 2.3.0 kept the first),
+  now diverges further. Recorded and accepted as parity-notes **§25**; the bundle header says so.
+- **Main-build warnings 22 → 21.** sigil 3.13.15 no longer puts its over-budget buffer in static
+  storage, so its frame-budget warning is gone and `large static data` drops from 455 KB to 136 KB.
+  Left: 20 of the "assigning non-pointer to typed pointer" family, and `large static data`. The
+  suites' builds print only those two kinds.
+- **No language change reaches szal.** 6.7.10–6.7.18 are mostly typed-struct, vector and generic
+  semantics, which szal's untyped-pointer code does not use; the one statement rule that could have
+  (FA2-1: a statement that is only `load64(..)` and the like no longer compiles) does not occur, and
+  every suite builds. `scripts/scan-collisions.sh`'s table of what the compiler reports is unchanged
+  on 6.7.18.
+- distlib still answers the same under any listing order (re-checked: four orders). The sidecar keeps
+  its 11 leaves; `net` moved from 5th to last in their order.
+- Benchmarks: no regression. Min of three interleaved rounds against the 2.3.0 tree on 6.7.9, on a
+  box at load ~5: every row within ±3 % or faster, the parse rows ~20 % faster (`step_deserialize`,
+  `flow_50_deserialize`). A single run made under heavier load had suggested slowdowns; the A/B did
+  not reproduce them.
+
+### Changed — dependencies
+- **bote-core 3.4.10 → 3.8.4** (3.4.11 – 3.8.4: MCP 2026-07-28 beside the older revisions, HTTP
+  transports, OAuth token checks, output schemas, cancellation and progress — none of it reached by
+  szal's tools). Every fn szal calls (19) keeps its signature, and bote's "Breaking" notes reach only
+  its HTTP functions and `x-mcp-header` annotations ("the handler ABI is untouched"). bote-core now
+  needs cyrius ≥ 6.7.13 (was 6.7.2) and still needs `sakshi` from its consumer; its requires block no
+  longer includes bayan, which szal declares itself.
+- **majra 2.12.0 → 2.13.0** — the changes are in its PostgreSQL / patra-queue backends, outside the
+  base bundle szal vendors; every fn szal calls (24) keeps its signature.
+- **ai-hwaccel 2.4.2 → 2.5.6** — the first move since 2.2.1. Every fn szal calls keeps its signature;
+  the `REQ_*` / `FAMILY_*` values szal uses are unchanged (2.5 adds `FAMILY_UNKNOWN = 5`).
+- `scripts/consumer-check.sh` passes generic and against **hoosh 2.9.4** (its latest release,
+  extracted from the tag; it vendors bote-core 3.8.3 and the same majra and ai-hwaccel): nothing
+  collides, the bundle adds no duplicate warning, `tools/list` = 55, hoosh adds only `math`.
+
+### Issues
+- The 2026-10-05 channels issue stays open (macOS / Windows still not run).
+
 ## [2.3.0] — 2026-11-03
 
 Toolchain and dependency refresh onto the cyrius **6.7** language minor — cyrius 6.6.20 →

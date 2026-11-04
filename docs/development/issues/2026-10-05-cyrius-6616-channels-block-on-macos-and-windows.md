@@ -14,6 +14,7 @@
 
 > **At szal 2.3.0 (2026-11-03, pin `cyrius = "6.7.9"`):** unchanged — the Linux suites still pass;
 > macOS / Windows still not run.
+> **At szal 2.3.1 (2026-11-03, pin `cyrius = "6.7.18"`):** unchanged.
 
 ~~⛔ Nothing to do until cyrius 6.6.16 is tagged and out and szal's pin moves to it.~~ (done at 2.2.1)
 

@@ -470,6 +470,39 @@ CR/LF header rejection, validate_path-on-every-file-op all confirmed exact) and 
 bugs** (the one flagged `file_stat` "readonly" item was a false positive — `0x92` = `0o222` is exactly
 Rust's `mode & 0o222 == 0`).
 
+## 25. JSON with a duplicate object key or a malformed number (stdlib bayan 1.11.1, cyrius 6.7.18)
+
+**What:** szal parses every JSON document with the stdlib's bayan: MCP tool arguments, the JSON a
+tool is handed to inspect (`szal_json_validate` / `_path` / `_diff`), and step / flow / record JSON.
+From bayan 1.11.1 (szal 2.3.1, cyrius 6.7.18) a document with a **duplicate object key** or a
+**malformed number** (`01`, no digits, an out-of-range integer) does not parse. Before it, bayan
+answered the FIRST of two duplicate keys and accepted `01`.
+
+**Rust:** `serde_json::from_str::<Value>` accepts a duplicate key and keeps the LAST value, and
+rejects `01` ("invalid number"); a serde-derived struct (`StepDef`, `FlowDef`, …) rejects a duplicate
+field.
+
+| input | Rust | szal ≤ 2.3.0 | szal 2.3.1 |
+|---|---|---|---|
+| `szal_json_validate` of `{"a":1,"a":2}` | `valid: true` | `valid: true` | `valid: false`, `"duplicate key"` |
+| `szal_json_path` / `_diff` over that document | `a` = 2 | `a` = 1 | parse error |
+| tool arguments `{"json":"[1]","json":"{}"}` | runs on `{}` | runs on `[1]` | `missing required field: json` |
+| `{"a":01}` anywhere | refused | accepted | refused |
+| step / flow JSON with a duplicate field | refused | first value used | refused |
+
+(Measured at 2.3.1 through `_json_validate_handler` on cyrius 6.7.9 and 6.7.18; Rust from
+`serde_json`'s documented behaviour, oracle read only.)
+
+**Net:** 6.7.18 brings szal to Rust's answer for malformed numbers and for step / flow JSON, and
+moves it away for free-form JSON with a duplicate key — which already diverged (first value vs
+last). A tool whose ARGUMENTS repeat a key now reports its first required field as missing,
+because the handlers read an unparseable argument object as an empty one.
+
+**Why accepted (2.3.1):** the change is the stdlib's, made deliberately upstream (bayan's 1.11.1
+"refusals"), and the inputs are non-conforming JSON — RFC 8259 says object names SHOULD be unique,
+and the official MCP clients never send a duplicate key. Restoring last-wins would mean a JSON parser
+of szal's own. Revisit if a consumer sends such documents, or if bayan grows a last-wins option.
+
 ---
 
 ### Disposition log

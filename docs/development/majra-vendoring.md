@@ -1,5 +1,8 @@
-# Vendored libraries — majra 2.12.0, bote-core 3.4.10, ai-hwaccel 2.4.2 at `src/vendor/`
+# Vendored libraries — majra 2.13.0, bote-core 3.8.4, ai-hwaccel 2.5.6 at `src/vendor/`
 
+> **Status at szal 2.3.1 (2026-11-03):** every library at its LATEST release (the user's ask this
+> time; all three pin cyrius 6.7.18, szal's new pin and cyrius's latest). §13 is the log.
+>
 > **Status at szal 2.3.0 (2026-11-03):** re-synced to cyrius 6.7.9 — majra 2.12.0 and bote-core
 > 3.4.10 pin it; ai-hwaccel has no 6.7.9 release and stays at 2.4.2 (6.6.20). §12 is the log.
 >
@@ -39,9 +42,9 @@ metrics vtable (row 10 — shipped now via the shim). All but metrics need the *
 
 | file | release | lines | sync |
 |---|---|---|---|
-| `src/vendor/majra.cyr` | majra **2.12.0** `dist/majra.cyr` (the base bundle) | 6,493 | `scripts/sync-majra.sh` |
-| `src/vendor/bote-core.cyr` | bote **3.4.10** `dist/bote-core.cyr` (`[lib.core]`) | 4,074 | `scripts/sync-bote.sh` |
-| `src/vendor/ai-hwaccel.cyr` | ai-hwaccel **2.4.2** `dist/ai-hwaccel.cyr` | 7,532 | `scripts/sync-ai-hwaccel.sh` |
+| `src/vendor/majra.cyr` | majra **2.13.0** `dist/majra.cyr` (the base bundle) | 6,514 | `scripts/sync-majra.sh` |
+| `src/vendor/bote-core.cyr` | bote **3.8.4** `dist/bote-core.cyr` (`[lib.core]`) | 9,232 | `scripts/sync-bote.sh` |
+| `src/vendor/ai-hwaccel.cyr` | ai-hwaccel **2.5.6** `dist/ai-hwaccel.cyr` | 10,843 | `scripts/sync-ai-hwaccel.sh` |
 
 - **Which release:** the last one whose `cyrius.cyml` pins szal's cyrius — or, where a library has
   no release at that pin, its last release below it (ai-hwaccel at 2.3.0: 2.4.2 pins 6.6.20, and
@@ -333,3 +336,22 @@ maintenance bump, and it belongs in its own change with its own tests.
       build refused (CHANGELOG 2.3.0).
 - [x] Main build: 22 warnings, the same set as 2.2.1; 47/47 test files, 1,495 assertions (same per
       suite); 5/5 fuzz; 15 benchmarks; lint; fmt; doc; `rust-old/` untouched.
+
+## 13. 2.3.1 re-sync — to the latest releases, cyrius 6.7.18 (2026-11-03)
+
+- [x] **Pins:** majra 2.12.0 → **2.13.0**, bote-core 3.4.10 → **3.8.4**, ai-hwaccel 2.4.2 → **2.5.6** —
+      each the latest tag locally and on GitHub (`api.github.com/repos/MacCracken/<lib>/releases/latest`
+      agreed), all three pinning 6.7.18. hoosh 2.9.4 (latest) uses the same majra and ai-hwaccel, and
+      bote-core 3.8.3.
+- [x] **Size:** bote-core more than doubled (4,074 → 9,232 lines: MCP 2026-07-28, HTTP, OAuth, output
+      schemas, cancellation, progress) and ai-hwaccel grew 7,532 → 10,843. szal's main binary goes
+      2.47 → 2.96 MB; the unreachable-fn count rises 3,821 → 4,477 (DCE is off by default).
+- [x] **API:** no fn szal calls changed signature or vanished (24 majra, 19 bote, 6 ai-hwaccel); the
+      `REQ_*` / `FAMILY_*` values szal uses are unchanged (2.5 adds `FAMILY_UNKNOWN = 5`). bote's
+      Breaking notes (3.5.2: its HTTP functions, `x-mcp-header`) do not reach szal.
+- [x] **bote-core's requirements:** cyrius ≥ 6.7.13 (`# Minimum cyrius` in its log.cyr), `sakshi` from
+      the consumer; its requires block now names `hashmap` and `sys` only (bayan dropped at 3.4.13).
+- [x] **Scan:** one intersection (`REQ_NONE`); consumer-check clean, generic and against hoosh 2.9.4.
+      Bundle order-independent under four listing orders.
+- [x] Main build 21 warnings (sigil's frame-budget one gone); 47/47 test files, 1,495 assertions (same
+      per suite); 5/5 fuzz; 15 benchmarks; lint; fmt; doc; `rust-old/` untouched.

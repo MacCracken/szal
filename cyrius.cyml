@@ -5,7 +5,7 @@ description = "szal — workflow engine: step/flow execution with branching, ret
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/szal"
 language = "cyrius"
-cyrius = "6.7.9"
+cyrius = "6.7.18"
 
 [build]
 entry = "src/main.cyr"
@@ -64,14 +64,14 @@ stdlib = ["string", "fmt", "alloc", "freelist", "vec", "str", "syscalls", "io", 
 # would make `cyrius deps` recurse into each dep's own git sub-deps (lib/ bloat + last-definition-
 # wins symbol collisions).
 #
-# Pins at 2.3.0 — each at its LAST release pinned to cyrius 6.7.9 or below, vendored byte-for-byte
-# from the tag; the same three files hoosh 2.9.0 (its 6.7.9 release) uses:
-#   majra       2.12.0  dist/majra.cyr        -> scripts/sync-majra.sh       (pins 6.7.9)
-#   bote-core   3.4.10  dist/bote-core.cyr    -> scripts/sync-bote.sh        (pins 6.7.9)
-#   ai-hwaccel  2.4.2   dist/ai-hwaccel.cyr   -> scripts/sync-ai-hwaccel.sh  (pins 6.6.20: no
-#                                                ai-hwaccel release pins 6.7.9; 2.5.0+ pin 6.7.18)
+# Pins at 2.3.1 — each at its LATEST release (all three pin cyrius 6.7.18, szal's pin, which is
+# also cyrius's latest), vendored byte-for-byte from the tag:
+#   majra       2.13.0  dist/majra.cyr        -> scripts/sync-majra.sh
+#   bote-core   3.8.4   dist/bote-core.cyr    -> scripts/sync-bote.sh
+#   ai-hwaccel  2.5.6   dist/ai-hwaccel.cyr   -> scripts/sync-ai-hwaccel.sh
+# hoosh 2.9.4 uses the same majra and ai-hwaccel, and bote-core 3.8.3.
 # Nothing is renamed inside a copy since 2.2.0 — szal renames its own side (ADR 0002). bote-core
-# 3.4.x calls sakshi without including it, so "sakshi" must stay in [deps].stdlib above.
+# 3.4+ calls sakshi without including it, so "sakshi" must stay in [deps].stdlib above.
 #
 # With all three vendored, szal has ZERO git deps -> CI is `cyrius lib sync` (stdlib only) +
 # `cyrius build --strict --no-deps` (the project build recipe). No `cyrius deps`. From cyrius 6.6.20
